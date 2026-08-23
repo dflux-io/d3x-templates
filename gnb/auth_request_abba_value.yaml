@@ -1,0 +1,204 @@
+# REG-402 — the AUTHENTICATION REQUEST carries an ABBA IE whose value part is
+# exactly 2 octets and equals 0x0000.
+#
+# TS 24.501 §5.4.1.3.2 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, operative sentences verbatim):
+#
+#   "The network initiates the 5G AKA based primary authentication and key
+#    agreement procedure by sending an AUTHENTICATION REQUEST message to the UE
+#    and starting the timer T3560 ... This message shall also include the ABBA
+#    parameter. In this release of specification, the network shall set the
+#    length of ABBA IE to 2 and the ABBA contents to be 2 octets in length with
+#    value 0000H as described in subclause 9.11.3.10."
+#
+# TS 24.501 §9.11.3.10: "The purpose of the ABBA information element is to
+# enable the bidding down protection of security features. ... The ABBA is a
+# type 4 information element with a minimum length of 4 octets and maximum
+# length of 257 octets."
+#
+# TS 33.501 §5.1.1 is the security requirement the IE serves — anti-bidding-down
+# between security features — which is why the row asserts the VALUE and not
+# merely the presence of the IE.
+#
+# HOW "EXACTLY 2 OCTETS, VALUE 0000H" IS ASSERTED, AND WHY IT CANNOT BE FUDGED
+# ---------------------------------------------------------------------------
+# nas5g decodes the type-4 IE into NAS_ABBA{Value []byte} carrying the VALUE
+# PART only (decodeABBA copies the post-length payload verbatim), and the field
+# resolver marshals it to JSON — so `nas.abba.value` resolves to the STANDARD
+# BASE64 of the value octets. Base64 maps N octets to a string whose length and
+# pad pattern determine N uniquely: 2 octets -> 3 payload characters + exactly
+# one '=' pad. `equals "AAA="` therefore asserts BOTH halves of the clause at
+# once and admits nothing else:
+#
+#   value 0x0000  (2 octets)  -> "AAA="   PASS
+#   value 0x0001  (2 octets)  -> "AAE="   FAIL (right length, wrong contents)
+#   value 0x000000 (3 octets) -> "AAAA"   FAIL (right contents, wrong length)
+#   value 0x00     (1 octet)  -> "AA=="   FAIL
+#   IE absent                 -> <missing> FAIL
+#
+# `ie_present` alone would have been satisfied by any of the wrong values above,
+# and an all-zero-but-longer ABBA is precisely the bidding-down shape §5.1.1
+# cares about, so presence is asserted as a separate, weaker first check purely
+# so a missing IE is reported as a missing IE rather than as a value mismatch.
+#
+# The ngKSI half of §5.4.1.3.2 ("This message shall include the ngKSI that will
+# be used by the UE and AMF to identify the KAMF") is asserted here only as
+# presence — that the AMF names a key set at all. Which VALUE it must name is
+# REG-403's clause (the "different ngKSI" sentence), asserted in its own flow.
+#
+# MEASURED (2026-08-11, this lab):
+#   tinycore — nas.abba.value = "AAA="  (wire: 38 02 00 00, IEI 0x38, len 2,
+#              contents 00 00)                                          -> PASS
+
+kind: flow
+name: auth_request_abba_value
+description: Initial registration; assert the AUTHENTICATION REQUEST carries an ABBA IE of exactly 2 octets with value 0000H
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          # --- §5.4.1.3.2: "This message shall also include the ABBA parameter."
+          - type: check
+            field: nas.abba
+            op: ie_present
+          # --- §5.4.1.3.2: "the network shall set the length of ABBA IE to 2 and
+          # --- the ABBA contents to be 2 octets in length with value 0000H".
+          - type: check
+            field: nas.abba.value
+            op: equals
+            expected: "AAA="
+          # --- §5.4.1.3.2: "This message shall include the ngKSI that will be
+          # --- used by the UE and AMF to identify the KAMF and the partial
+          # --- native security context". Presence only — REG-403 owns the
+          # --- value obligation.
+          - type: check
+            field: nas.ngksi
+            op: ie_present
+          # The ABBA is only meaningful as part of a real 5G AKA run, so the
+          # authentication parameters it accompanies must be there too.
+          - type: check
+            field: nas.authentication_param_rand
+            op: ie_present
+          - type: check
+            field: nas.authentication_param_autn
+            op: ie_present
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-402).
+#
+# REG-402 — The received AUTHENTICATION REQUEST contains an ABBA IE; its value part is
+# exactly 2 octets and equals 0x0000.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

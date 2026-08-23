@@ -1,0 +1,188 @@
+# REG-401 — a correct RES* is accepted and the AMF proceeds straight to the
+# NAS security mode control procedure.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py, not recalled):
+#
+#   TS 24.501 §5.4.1.3.4 — "Upon receipt of an AUTHENTICATION RESPONSE message,
+#   the network stops the timer T3560 and checks the correctness of RES* (see
+#   3GPP TS 33.501 [24])."
+#
+#   TS 24.501 §5.4.1.3.1 — "Upon successful completion of the 5G AKA based
+#   primary authentication, the AMF shall initiate a security mode control
+#   procedure (see subclause 5.4.2) to take the new partial native 5G NAS
+#   security context into use."  NOTE 2: "The AMF immediately initiates a
+#   security mode control procedure … after 5G AKA primary authentication is
+#   successful to avoid KAUSF key mismatch between the UE and the network."
+#
+# ---------------------------------------------------------------------------
+# Why the three reject messages have EXPLICIT transitions to `failed`
+# ---------------------------------------------------------------------------
+# The criterion is "a SECURITY MODE COMMAND is received with NO INTERVENING
+# AUTHENTICATION REJECT, REGISTRATION REJECT or UEContextReleaseCommand". An
+# FSM state ignores any event it has no transition for: without the `or`
+# transition below, an AMF that rejected the correct RES* and then (or never)
+# sent an SMC would leave this flow either timing out or, worse, matching a
+# later SMC and calling that a pass. Naming the three messages and routing them
+# to `failed` is what turns "we happened not to look" into "we looked and it
+# did not happen". That is the defect this row exists to remove.
+#
+# UEContextReleaseCommand is the NGAP-level form of the same rejection: the AMF
+# tearing the UE context down instead of proceeding to security mode control.
+# It is a bare (non-NAS) event name — see runner/runner/event_resolver.go.
+#
+# on_timeout targets `failed` here, in both wait states: a core that answers a
+# correct RES* with silence has not "proceeded straight to security mode
+# control" either.
+#
+# The correct RES* comes from the AuthResponse enricher, which derives it from
+# the subscriber's K/OPc and the RAND/AUTN of this very challenge — no
+# `corrupt_res_star` param (compare auth_response_wrong_res_star.yaml, the
+# negative twin of this row).
+#
+# MEASURED (2026-08-10, this lab): SECURITY MODE COMMAND received on both cores
+# ~4 ms after the AuthResponse, no reject and no release in between.
+
+kind: flow
+name: auth_res_star_accepted_smc
+description: Answer the 5G-AKA challenge with a correct RES* and assert the AMF proceeds to SECURITY MODE COMMAND with no intervening reject or UE context release
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - security_mode_commanded
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          # RAND and AUTN are the inputs the correct RES* is computed from, so
+          # a missing one would mean the RES* we send is not an answer to a
+          # real challenge and the rest of the row would prove nothing.
+          - { type: check, field: nas.authentication_param_rand, op: ie_present }
+          - { type: check, field: nas.authentication_param_autn, op: ie_present }
+          - { type: send, message: AuthResponse }
+      # A reject in place of a challenge is not this row's subject, but it must
+      # not be silently ignored either.
+      - event:
+          or:
+            - NASDownlinkTransport.AuthenticationReject
+            - NASDownlinkTransport.RegistrationReject
+            - UEContextReleaseCommand
+        target: failed
+
+  wait_security_mode:
+    # Row budget timeout_s: 20; 10 s here leaves the earlier state its own 10 s.
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # §5.4.1.3.1: the correct RES* must be answered by the security mode
+      # control procedure. ue.SecCtx not_empty proves the SMC actually
+      # established the partial native context on our side.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: security_mode_commanded
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+      # The "no intervening …" half of the criterion — see the header note.
+      - event:
+          or:
+            - NASDownlinkTransport.AuthenticationReject
+            - NASDownlinkTransport.RegistrationReject
+            - UEContextReleaseCommand
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-401).
+#
+# REG-401 — After AuthResponse carrying the correct RES*, a SECURITY MODE COMMAND is
+# received on N1 with no intervening AUTHENTICATION REJECT, REGISTRATION REJECT or
+# UEContextReleaseCommand.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `security_mode_commanded`
+    metric: final_state_counts.security_mode_commanded
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NAS UPLINK TRANSPORT was sent (AuthResponse)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # REG-401 in full: the SECURITY MODE COMMAND arrived with NOTHING
+  # intervening. Each of these three is a way the AMF could have refused
+  # instead, and each reads 0 when it did not arrive (the event name is
+  # checked against the closed vocabulary at load, so 0 is an assertion
+  # and not a typo).
+  - name: no AUTHENTICATION REJECT intervened
+    metric: rx_events.NASDownlinkTransport.AuthenticationReject
+    op: equals
+    value: 0
+  - name: nor a REGISTRATION REJECT
+    metric: rx_events.NASDownlinkTransport.RegistrationReject
+    op: equals
+    value: 0
+  - name: nor a UE CONTEXT RELEASE COMMAND
+    metric: rx_events.UEContextReleaseCommand
+    op: equals
+    value: 0
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

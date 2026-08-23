@@ -1,0 +1,48 @@
+# Signature demo Act 4 — same abuse class, edge rules installed.
+#
+# Prerequisites:
+#   edgectl apply -f deploy/signature-demo/policies/demo-policy.yaml
+#   (or policy-rules add @block-forged.json + rate-limits add @flood-limit.json)
+#   edge max_request_body_size <= 4096 (see configs/edge-demo-allow.yaml)
+#
+# Expected edge statuses:
+#   unauthorized → 403 (block-forged path deny)
+#   oversized    → 413 (max_request_body_size)
+#   flood probe  → ≥1 × 429 (flood-limit global bucket)
+#
+# Run:
+#   d3x-run run-suite -suite signature-blocked \
+#     -templates . \
+#     -c deploy/signature-demo/configs/runner-sbi-via-edge.yaml \
+#     -output junit -output-file act4-blocked.xml
+
+kind: suite
+name: signature-blocked
+description: Act 4 — edge blocks forged CreateSMContext (403), oversized (413), flood (429).
+steps:
+  - name: unauthorized_edge_403
+    flow: smf_nsmf_create_smcontext_edge_403
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: oversized_edge_413
+    flow: smf_nsmf_smcontext_oversized_payload_edge413
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: flood_edge_429
+    # Allowed path (GET am-data) so policy does not short-circuit before
+    # the rate-limit filter. rps=1 burst=2 + 20@rate=50 → ≥1 × 429.
+    flow: sbi_edge_flood_probe
+    repetitions: 20
+    rate: 50
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rate_limited

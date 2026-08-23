@@ -1,0 +1,51 @@
+# S6a CLR/CLA 4-step echo flow (relay scenario).
+# Cancel-Location-Request/Answer (3GPP TS 29.272 §7.2.7).
+# HSS-initiated subscriber cancellation; mirrors dsr-sim's clr_cla_relay.
+
+kind: flow
+name: diameter_s6a_clr_cla_relay
+description: S6a CLR/CLA 4-step echo (relay) against edge
+category: functional
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_clr_echo
+        actions:
+          - type: send
+            message: CLR
+
+  wait_clr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CLR
+        target: wait_cla_echo
+        actions:
+          - type: check
+            field: Cancellation-Type
+            op: exists
+          - type: send
+            message: CLA
+
+  wait_cla_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CLA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001

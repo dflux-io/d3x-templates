@@ -1,0 +1,186 @@
+# Registration + gNB-initiated partial NG Reset (3GPP TS 38.413 §8.7.4).
+#
+# Registers a UE, then issues a *partial* (UE-associated) NG Reset via
+# NGResetPartial, which selectively tears down only the listed UE-associated
+# logical NG-C connections rather than the whole association.
+#
+# Sends:    NGResetPartial.
+# Expected-correct Open5GS behavior: the AMF releases only the referenced
+# UE-associated signalling connection(s) — leaving the NG-C association and any
+# other UE contexts intact — and replies with NGResetAcknowledge. The assertion
+# is that partial reset is honored as a selective (per-UE) teardown rather than
+# a global one. Reaching partial_reset_complete is the compliance assertion.
+
+kind: flow
+name: ng_reset_partial
+description: Registration + gNB-initiated partial (UE-associated) NG Reset (YAML)
+detail: |
+  Performs registration to establish a UE context, then initiates a
+  gNB-initiated *partial* NG Reset (3GPP TS 38.413 §8.7.4).
+
+  NG Reset is the primary error-recovery mechanism on the NG-C interface.
+  Where a global reset (NGReset) clears all UE contexts on the association,
+  a partial reset (NGReset with a UE-associated logical NG-connection list)
+  selectively releases only the referenced UE-associated connections. The gNB
+  uses this when it needs to resynchronize state for specific UEs without
+  disrupting unrelated UE contexts or the association itself.
+
+  Phase 1 — Registration: standard auth/security/context-setup establishes a
+  UE context and active NGAP UE association.
+  Phase 2 — Partial reset: the gNB sends NGResetPartial referencing the
+  UE-associated connection to be torn down selectively.
+
+  The AMF responds with NGResetAcknowledge, confirming the partial reset was
+  processed. Only the referenced UE-associated signalling is released; the NG-C
+  association and any other UE contexts remain intact. Reaching
+  partial_reset_complete is the compliance assertion — the distinction from a
+  global selective teardown is the point being verified.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - partial_reset_complete
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_ng_reset_ack
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: NGResetPartial
+
+  wait_ng_reset_ack:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NGResetAcknowledge
+        target: partial_reset_complete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-841).
+#
+# REG-841 — NGResetAcknowledge received whose UE-associated Logical NG-connection List
+# has the listed items in the order sent, each carrying back the AMF UE NGAP ID and RAN
+# UE NGAP ID that were supplied
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `partial_reset_complete`
+    metric: final_state_counts.partial_reset_complete
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: one NG RESET was sent (NGResetPartial)
+    metric: msg_types.tx.ngap.NGAP_NG_RESET
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: an NG RESET ACKNOWLEDGE arrived
+    metric: rx_events.NGResetAcknowledge
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

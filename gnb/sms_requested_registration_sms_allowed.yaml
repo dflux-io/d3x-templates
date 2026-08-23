@@ -1,0 +1,191 @@
+# REG-600 — an initial registration that requests SMS over NAS must be accepted
+# with the SMS allowed bit of the 5GS registration result IE SET.
+#
+# THE CLAUSE (TS 24.501 §5.5.1.2.4, retrieved with matrix/scripts/spec-clause.py):
+#
+#   If the 5GS update type IE was included in the REGISTRATION REQUEST message
+#   with the SMS requested bit set to "SMS over NAS supported", and SMSF
+#   selection is successful, then the AMF shall send the REGISTRATION ACCEPT
+#   message after the SMSF has confirmed that the activation of the SMS service
+#   was successful. When sending the REGISTRATION ACCEPT message, the AMF shall:
+#     a) set the SMS allowed bit of the 5GS registration result IE to "SMS over
+#        NAS allowed" … if the UE has set the SMS requested bit … and the network
+#        allows the use of SMS over NAS for the UE; and
+#     b) store the SMSF address and the value of the SMS allowed bit … in the UE
+#        5GMM context and consider the UE available for SMS over NAS.
+#
+# The bit is TS 24.501 §9.11.3.6 bit 4 of the 5GS registration result — the
+# runner surfaces it as `nas.sms_allowed` off the decoded REGISTRATION ACCEPT.
+#
+# WHERE THE "SMS REQUESTED" BIT TRAVELS, AND WHY IT IS NOT ON THE FIRST WIRE
+# MESSAGE. The 5GS update type IE is NOT one of the cleartext IEs §4.4.6
+# enumerates for a REGISTRATION REQUEST (the list is: EPD, security header type,
+# spare half octet, message identity, 5GS registration type, ngKSI, 5GS mobile
+# identity, UE security capability, Additional GUTI, UE status, EPS NAS message
+# container, NID, UE determined PLMN with disaster condition). §4.4.6 a)1) says
+# where a non-cleartext IE goes instead: the UE "shall include the entire
+# REGISTRATION REQUEST message (i.e. containing both cleartext IEs and
+# non-cleartext IEs) in the NAS message container IE" of SECURITY MODE COMPLETE.
+#
+# So a conformant AMF learns that this UE wants SMS over NAS from the REPLAYED
+# message, and must have read it before it builds the accept — which §5.5.1.2.4
+# permits, because the accept is only sent after the SMSF confirms activation,
+# which is after the security mode procedure. The alternative — putting the IE
+# on the unprotected INITIAL UE MESSAGE — is the same §4.4.6 defect Open5GS
+# answers with "Non cleartext IEs is included" + REGISTRATION REJECT, so it
+# would trade this row for the whole registration on that core. Not authored
+# that way on purpose; see EnrichInitialUEMessageSMSRequested's doc comment.
+#
+# WHAT THE CHECKS ASSERT.
+#   1. `ue.Params.reg_sms_requested equals true` — THE UE ACTUALLY ASKED. The
+#      enricher writes this key only on the branch that set the bit, so a param
+#      that failed to reach the enricher cannot leave this row scoring a correct
+#      "SMS allowed clear" answer as a core defect. Guard first, assert second.
+#   2. `nas.sms_allowed equals true` on the REGISTRATION ACCEPT — the row.
+#      `equals`, not `ie_present`: the field is a bool the decoder always emits,
+#      so `ie_present` would be satisfied by the value `false`.
+#   3. Terminal `registered`, reached only after REGISTRATION COMPLETE, because
+#      the criterion names the terminal state as well as the bit.
+#
+# MEASURED AGAINST tinycore 2026-08-11: FAIL — the accept carries
+# sms_allowed=false. Diagnosed, not guessed: tinycore's AMF captures the bit at
+# tinycore/dmf/amf/registration.go:455 (`ue.SmsOverNasRequested = req.SMSRequested`)
+# while handling the FIRST, cleartext REGISTRATION REQUEST, and its
+# handleSecurityModeComplete decodes the replayed NAS message container only to
+# re-check the UE security capabilities (registration.go:924-935) — it never
+# re-reads the replay for anything else. Confirmed on the wire by a one-off
+# diagnostic build that emitted the IE in the clear in violation of §4.4.6: the
+# same core then answered sms_allowed=true. The check stays as written; a core
+# that only reads the unprotected copy cannot see any non-cleartext IE a real
+# handset sends, and this row is one instance of that.
+#
+# Terminals are (registered, failed) only and every on_timeout targets `failed`.
+
+kind: flow
+name: sms_requested_registration_sms_allowed
+description: REG-600 — initial registration requesting SMS over NAS is accepted with the SMS allowed bit set (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessageSMSRequested
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          # (1) The precondition, asserted rather than assumed.
+          - { type: check, field: ue.Params.reg_sms_requested, op: equals, expected: true }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      # SECURITY MODE COMPLETE is the message that carries the SMS requested bit
+      # to the network (§4.4.6 a)1)) — EnrichSecurityModeComplete replays
+      # ue.NGAP.RegNasPdu, which EnrichInitialUEMessage stashed with the IE in it.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          # (2) THE ROW.
+          - { type: check, field: nas.sms_allowed, op: equals, expected: true }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-600).
+#
+# REG-600 — RegistrationAccept received on N1 and terminal state 'registered'; and, ON A
+# CORE THAT DEPLOYS AN SMSF, its 5GS registration result IE has the SMS allowed bit set
+# to 'SMS over NAS allowed', the accept having been sent only after the SMSF confirmed
+# that activation of the SMS service was successful (TS 24.501 §5.5.1.2.4). On a core
+# with no SMSF, §5.5.1.2.4 case a) mandates the bit be clear, so the row is not-
+# applicable rather than failed — a distinction the harness cannot yet make; see the
+# note below
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent (InitialUEMessageSMSRequested)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

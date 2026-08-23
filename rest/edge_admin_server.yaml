@@ -1,0 +1,40 @@
+# REST smoke — server side.
+# Mocks a generic admin API. Any inbound POST on /generic/config-rules
+# is acked with a canned 201 response. Demonstrates that server flows
+# match inbound REST requests by "rest.<METHOD>.<url>" event names
+# without any per-endpoint registry.
+#
+# NOTE: this template used to model edge's HTTP admin API. Edge's admin
+# plane is now gRPC-only; drive it with edgectl. This template stays
+# as a REST-transport demo paired with edge_admin_client.yaml.
+
+kind: flow
+name: rest_generic_admin_server
+description: Mock generic admin API — accepts any POST /generic/config-rules and replies 201
+category: functional
+type: server
+protocol: rest
+nf: external
+
+initial_state: waiting
+final_states:
+  - completed
+  - failed
+
+states:
+  waiting:
+    transitions:
+      - event: rest.POST./generic/config-rules
+        target: waiting
+        actions:
+          - type: send
+            message: AddConfig_Answer
+            message_body: |
+              {
+                "status": 201,
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "ruleId": "rule-001",
+                  "result": "installed"
+                }
+              }

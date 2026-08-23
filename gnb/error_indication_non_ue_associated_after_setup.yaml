@@ -1,0 +1,207 @@
+# REG-857 — a non-UE-associated ERROR INDICATION on the NG-C association (no UE context)
+# (TS 38.413 §8.7.5.1 / §8.7.5.2).
+#
+# ============================================================================================
+# THIS ROW ASSERTED NOTHING, IN TWO INDEPENDENT WAYS, AND BOTH ARE FIXED BELOW.
+# ============================================================================================
+#
+# Measured 2026-08-12 (50effc0 baseline), all three cores, identically:
+#
+#     tx: {NGAP_ERROR_INDICATION: 1}
+#     rx: {}
+#     "UE ... timed out in state=wait_tolerance after 8.0s — terminal target=tolerated"
+#     checks_evaluated: 0
+#
+# So the row was:
+#
+#   1. UNSCOREABLE IN PRINCIPLE. Its expected terminal `tolerated` had NO message route at
+#      all — the only way in was the timer. A correct absorption of an ERROR INDICATION emits
+#      nothing, and silence cannot be told apart from a crashed AMF, a dropped SCTP
+#      association, a message that never arrived, or an answer our FSM names no transition
+#      for. lib/outcome.py DEFENCE 11 refuses a verdict from a terminal reached on a timer, in
+#      either direction, and it is right to: making silence mean "tolerated" is exactly how
+#      the MOST conformant core comes to read as the one tolerating an attack.
+#
+#   2. VACUOUS. It evaluated ZERO checks, against a corpus median of 6-12 per row, so DEFENCE 9
+#      classified all three cells `not-tested`. There was nothing to evaluate: the flow sent one
+#      message and asserted nothing about anything.
+#
+# Both have the same cure, and the register already named it. The pass criterion reads: "After
+# sending an ErrorIndication with no UE NGAP IDs, the SCTP association stays up and a following
+# NGSetupRequest or RANConfigurationUpdate is still answered" — and `sendables_required` has
+# listed `NGSetupRequest` since the row was written. The flow simply never sent it.
+#
+# ============================================================================================
+# THE DISCRIMINATOR: MAKE THE INTERFACE ANSWER.
+# ============================================================================================
+#
+# After the absence window the gNB sends an NG SETUP REQUEST on the same SCTP association and
+# asserts the NG SETUP RESPONSE and its mandatory IEs (TS 38.413 §9.2.6.2). That is a positive,
+# association-scoped observation of exactly the thing this row claims: the interface still
+# works.
+#
+#   `tolerated`  the NG SETUP RESPONSE arrives and carries the AMF Name, at least one Served
+#                GUAMI and at least one PLMN Support Item. The association is provably up, our
+#                messages provably arrive, and the AMF is provably still serving the interface
+#                after the association-scoped ERROR INDICATION. That is the claim, on the wire.
+#   `unproven`   no answer at all — or an NG SETUP FAILURE, which proves liveness without
+#                proving the interface was unaffected. We learned nothing, and that must never
+#                read as a pass. Reached by the timer it is a semantic terminal, so DEFENCE 11
+#                turns it into `inconclusive` with no rule needing to know its name.
+#   `failed`     a transport-level Error — the association actually went down, which is the
+#                outage this row exists to catch.
+#
+# WHY AN IN-FLOW NG SETUP IS A MEASURED PROBE AND NOT A HOPEFUL ONE. NG Setup also runs once at
+# association time inside the transport (runner/runner/transport.go), before any flow starts,
+# and that one is not observable from a flow. A SECOND, in-flow NG Setup on the established
+# association IS: REG-802 (ng_setup_response_mandatory_ies) does exactly this and passed on
+# tinycore, Open5GS AND free5GC in the 50effc0 baseline, 13 checks each. So the probe is known
+# to be answered by all three cores when the interface is healthy — which is what makes its
+# ABSENCE here informative rather than ambiguous.
+#
+# THE ONE COST, STATED. §8.7.1.1 has the NG Setup procedure "erase any existing application
+# level configuration data" and replace it, so this probe is not free of side effects. It is
+# fired only AFTER the absence window has closed and only in the branch where the flow is
+# otherwise about to end on a timer, so nothing this row asserts can be disturbed by it; and
+# this flow registers no UE, so there is no UE context for it to disturb either.
+#
+# RANConfigurationUpdate — the criterion's other named probe — would be gentler still, but the
+# NG SETUP RESPONSE is the answer whose mandatory IEs are already grounded in a clause and
+# already asserted elsewhere in this corpus, so it is the one that comes with evidence.
+
+kind: flow
+name: error_indication_non_ue_associated_after_setup
+description: Send a non-UE-associated ErrorIndication with no UE context, then prove the interface still answers (YAML)
+detail: |
+  With the NG-C association established (NG Setup happens at the transport layer)
+  but no UE registered, the gNB sends a non-UE-associated NGAP ErrorIndication
+  carrying only a Cause (3GPP TS 38.413 §8.7.5.1). A compliant AMF absorbs the
+  association-scoped error and keeps serving the interface.
+
+  Tolerance is then PROVED rather than inferred from silence: after the absence
+  window the gNB sends an NG SETUP REQUEST on the same association and asserts
+  the NG SETUP RESPONSE and its mandatory IEs (§9.2.6.2). `tolerated` is reached
+  only on that response. No answer — or an NG SETUP FAILURE, which proves the
+  AMF is alive but not that the interface was unaffected — is `unproven`, never
+  a pass.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - tolerated
+  - unproven
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_tolerance
+        actions:
+          # No registration: UE-NGAP-IDs are zero, so the enricher emits a
+          # non-UE-associated ErrorIndication (Cause only).
+          - type: send
+            message: ErrorIndication
+
+  wait_tolerance:
+    # THE ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. §8.7.5 places no positive duty on
+    # the receiver of an ERROR INDICATION, so a conformant AMF may well say nothing here.
+    # Falling out of this window is not a verdict — it is the cue to go and ASK.
+    on_timeout:
+      duration: 6s
+      target: probe_interface_answers
+      actions:
+        - type: send
+          message: NGSetupRequest
+    transitions:
+      # The AMF bouncing an ERROR INDICATION back is a spec-valid reaction (§8.7.5.1 permits
+      # either node to initiate the procedure) and it proves the AMF is alive — but it does not
+      # prove the interface is still USABLE, which is what this row claims. So it does not end
+      # the flow: it goes straight to the probe, which is the observation that does.
+      - event: ErrorIndication
+        target: probe_interface_answers
+        actions:
+          - type: send
+            message: NGSetupRequest
+
+  probe_interface_answers:
+    # Silence to an NG SETUP REQUEST is silence to a message §8.7.1.2 obliges the AMF to answer
+    # with either a RESPONSE or a FAILURE. It says nothing about §8.7.5 tolerance and it must
+    # never read as a pass.
+    on_timeout:
+      duration: 8s
+      target: unproven
+    transitions:
+      # THE DISCRIMINATOR FIRING. Absence has been turned into presence: the SCTP association
+      # is up, our messages arrive, and the AMF is still configuring the interface after the
+      # association-scoped ERROR INDICATION.
+      #
+      # The three checks are the mandatory IEs of §9.2.6.2 that are genuinely absent from the
+      # decoded view when omitted (they carry `omitempty`), so none of them can pass by
+      # accident — the same three REG-802 asserts, minus Relative AMF Capacity, which is
+      # decoded into a non-pointer int32 and is therefore present whether or not the AMF sent
+      # it (see ng_setup_response_mandatory_ies.yaml's KNOWN LIMIT note).
+      - event: NGSetupResponse
+        target: tolerated
+        actions:
+          - { type: check, field: amf_name, op: not_empty }
+          - { type: check, field: served_guami_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: plmn_support_list.length, op: greater_or_equal, expected: 1 }
+      # AN ANSWER THAT PROVES LIVENESS AND NOTHING ELSE. An NG SETUP FAILURE means the AMF is
+      # alive and reached us, so it is not the outage branch — but "the interface stays up" is
+      # not satisfied by a refusal, and nothing on the wire separates a refusal caused by the
+      # ERROR INDICATION from one the AMF would have given anyway. Named so the bus never has
+      # to refuse the message; scored `unproven` because that is what it is.
+      - event: NGSetupFailure
+        target: unproven
+      # Same reasoning: an ERROR INDICATION in answer to an NG SETUP REQUEST is the AMF telling
+      # us it could not process the message as sent, which is the "never received it as sent"
+      # branch of the failure list rather than evidence about §8.7.5.
+      - event: ErrorIndication
+        target: unproven
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — and note WHICH state this row claims.
+#
+# The correct terminal here is `tolerated`, on a row whose category is
+# `negative`. Any rule of the form "negative rows should end in `rejected`", or
+# "`tolerated` means the core misbehaved", gets this row backwards: §8.7.5
+# places no positive duty on the receiver, so absorbing the ERROR INDICATION
+# and still serving the interface IS the conformant outcome. That is the second
+# half of why the verdict has to be pinned per template rather than derived
+# from the FSM or from the category.
+#
+# The three counts below are the ones this row was measured emitting on
+# 2026-08-12 (tx NGAP_ERROR_INDICATION 1, rx {}), plus the probe the same
+# investigation added. The rx assertion is what turns "we heard nothing" from a
+# pass into a failure.
+final_checks:
+  - name: the interface still answered after the ERROR INDICATION
+    metric: final_state_counts.tolerated
+    op: equals
+    value: 1
+  - name: the non-UE-associated ERROR INDICATION was sent
+    metric: msg_types.tx.ngap.NGAP_ERROR_INDICATION
+    op: equals
+    value: 1
+  - name: the probe went out on the same association
+    metric: msg_types.tx.ngap.NGAP_NG_SETUP_REQUEST
+    op: equals
+    value: 1
+  - name: and the AMF answered it
+    metric: msg_types.rx.ngap.NGAP_NG_SETUP_RESPONSE
+    op: greater_or_equal
+    value: 1
+  - name: all three mandatory-IE checks ran
+    metric: checks_total
+    op: equals
+    value: 3
+  - name: and none failed
+    metric: checks_failed
+    op: equals
+    value: 0

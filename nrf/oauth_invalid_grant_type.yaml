@@ -1,0 +1,142 @@
+# OAUTH-03 — grant_type validation.
+#
+# Two negative sub-cases over the same registered consumer:
+#   1. grant_type=password (a real OAuth2 grant type, not allowed in
+#      client-credentials-only flow) → 400 unsupported_grant_type
+#   2. grant_type=  (empty) → 400 invalid_request (RFC 6749 §5.2)
+#
+# Catches a server that silently accepts any grant type and issues a
+# token, opening up password-grant attack vectors.
+#
+# Form-urlencoded body workaround: see comment in oauth_token.yaml.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.4 OAUTH-03.
+
+kind: flow
+name: nrf_oauth_invalid_grant_type
+description: grant_type=password → 400 unsupported_grant_type; empty → 400 invalid_request.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-oauth-grant-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: probing_password_grant
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: GetTokenPasswordGrant
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "password",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  probing_password_grant:
+    transitions:
+      - event: rest.GetTokenPasswordGrant_Answer
+        target: probing_empty_grant
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.body.error
+            op: equals
+            expected: unsupported_grant_type
+          - type: send
+            message: GetTokenEmptyGrant
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  probing_empty_grant:
+    transitions:
+      - event: rest.GetTokenEmptyGrant_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          # Empty grant_type is a missing required parameter, which per
+          # RFC 6749 §5.2 maps to invalid_request (distinct from the
+          # "unsupported grant" case where the param is present but the
+          # named grant isn't allowed).
+          - type: check
+            field: rest.body.error
+            op: equals
+            expected: invalid_request
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

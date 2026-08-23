@@ -1,0 +1,104 @@
+# N2 HandoverRequired with NO PDU session to relocate (3GPP TS 38.413 §8.4.1).
+# Registers (no PDU session), then sends HandoverRequired. In a single-gNB lab
+# the AMF cannot find a target and reports HandoverPreparationFailure /
+# ErrorIndication — exercised here without any PDU session in the request.
+kind: flow
+name: n2_handover_required_stale_amf_ue_ngap_id
+description: HandoverRequired with a stale AMF-UE-NGAP-ID; assert graceful prep failure (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [prep_failed, handed_over, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions: [{ type: send, message: InitialUEMessage }]
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_ho_reaction
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: HandoverRequired
+            message_body: |
+              { "amf_ue_ngap_id": 8388607 }
+  wait_ho_reaction:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - { event: HandoverPreparationFailure, target: prep_failed }
+      - { event: ErrorIndication, target: prep_failed }
+      - { event: HandoverCommand, target: handed_over }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-507 (robustness, expected_terminal: null) — An
+# ErrorIndication is received on the source association echoing the offending AP ID(s),
+# or the message is silently discarded; in neither case is a HandoverCommand produced,
+# and the association stays up.
+#
+# NO PASS TERMINAL IS PINNED. REG-507 declares `expected_terminal: null` and accepts "An
+# ErrorIndication is received on the source association echoing the offending AP ID(s),
+# OR THE MESSAGE IS SILENTLY DISCARDED". The discard has no terminal in this FSM —
+# wait_ho_reaction's timeout targets `failed` — so pinning `prep_failed` would fail a
+# core doing the thing §10.6 also permits. What the criterion states without an
+# alternative is its second clause: "in neither case is a HandoverCommand produced".
+# That is `handed_over`, and it is pinned to zero. Turning the discard branch into an
+# outcome needs a liveness probe after the absence window, which this flow does not
+# have.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+#
+# THE FLOOR IS NOW PRESENT, AND IT IS WHAT MAKES THE `checks_failed` LINE MEAN ANYTHING.
+# `checks_failed equals 0` is true of a run that evaluated NOTHING — a core that never
+# answered leaves both inline checks unexecuted and satisfies it vacuously. This FSM
+# declares exactly two `check` actions on the path to the handover: `amf_ue_ngap_id`
+# not_empty in wait_auth_request, and `ue.SecCtx` not_empty in wait_security_mode. Both
+# lie on the single route to wait_ho_reaction, so any run that got far enough to send
+# HandoverRequired at all has run both, and 2 is the floor. Neither state loops, so the
+# count cannot exceed 2 either — but it stays a floor per the paragraph above.
+#
+# NO POSITIVE TERMINAL PIN, DELIBERATELY — see the paragraph above on REG-507's
+# `expected_terminal: null`. With the discard branch unpinnable, this floor plus the
+# `handed_over` zero is the whole of what the row can assert today.
+final_checks:
+  - name: no UE ended in `handed_over` — no HANDOVER COMMAND was produced
+    metric: final_state_counts.handed_over
+    op: equals
+    value: 0
+  - name: both pre-handover checks actually ran — `checks_failed` alone is true of a run that evaluated nothing
+    metric: checks_total
+    op: greater_or_equal
+    value: 2
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

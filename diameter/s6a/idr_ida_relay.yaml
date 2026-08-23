@@ -1,0 +1,55 @@
+# S6a IDR/IDA 4-step echo flow (relay scenario).
+# Insert-Subscriber-Data-Request/Answer (3GPP TS 29.272 §7.2.9).
+# Mirrors dsr-sim's idr_ida_relay test — exercises edge's relay handling
+# of HSS-originated push messages.
+
+kind: flow
+name: diameter_s6a_idr_ida_relay
+description: S6a IDR/IDA 4-step echo (relay) against edge
+category: functional
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_idr_echo
+        actions:
+          - type: send
+            message: IDR
+
+  wait_idr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: IDR
+        target: wait_ida_echo
+        actions:
+          - type: check
+            field: IDR-Flags
+            op: exists
+          - type: send
+            message: IDA
+
+  wait_ida_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: IDA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+          - type: check
+            field: IDA-Flags
+            op: exists

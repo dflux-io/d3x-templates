@@ -1,0 +1,45 @@
+# PFCP smoke — client (SMF) side.
+# Drives the AssociationSetupRequest → SessionEstablishmentRequest
+# chain. Each request waits for its matching response (Cause=Request
+# Accepted is the smoke success criterion) before advancing.
+
+kind: flow
+name: pfcp_sm_setup_client
+description: SMF establishes a PFCP association then a session against UPF
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: completed

@@ -1,0 +1,286 @@
+# CLEANUP finalizer: registration -> session release -> de-registration.
+#
+# Used as a suite always_run / teardown step (3GPP TS 24.501 §6.4.3 PDU session
+# release + §5.5.2 UE-initiated de-registration). Its job is to leave the AMF in a
+# clean state regardless of how the prior test flows ended, so it is deliberately
+# tolerant: a missing reaction never blocks suite teardown.
+#
+# TOLERANT IS NOT THE SAME AS UNFALSIFIABLE, and until 2026-08-17 this file
+# conflated them. Every wait state's on_timeout targeted `clean`, so did
+# `any_state_transitions: Error`, and `clean` was the one terminal the row pinned
+# — so a core that answered NOTHING reported `pass`, and so did a run whose own
+# encode failed. Three things changed and none of them costs the tolerance:
+#
+#   1. SILENCE REACHES `unproven`, NOT `clean`. The flow still completes, still
+#      never blocks teardown, and still fails no UE — it just stops CLAIMING that
+#      a de-registration was accepted when nothing arrived. `unproven` is the
+#      corpus's existing word for "the probe proved nothing either way"
+#      (smc_wrong_mac_rejected, error_indication).
+#   2. `Error` REACHES `failed`, as it does in every other gnb template. A dead
+#      association or a bad encode of ours is not a cleanup that completed.
+#   3. THE DE-REGISTRATION IS ACTUALLY SENT. `do_deregister` waited on
+#      `event: Start`, and the engine posts Start exactly ONCE per UE, at launch
+#      (engine.go launchWorkload) — so the transition carrying
+#      `send DeregistrationRequest` was unreachable, its 5 s timer was the state's
+#      only exit, and this flow never de-registered at all. It was the only
+#      template in the corpus with a non-initial `Start` transition, which is why
+#      nothing else had noticed. The send now hangs off the transitions INTO the
+#      release wait, which is where deregistration_switchoff puts it.
+#
+# Note: a single UE per flow. If the UE has an active PDU session it is released
+# via PDUSessionReleaseRequest; if none exists the release is skipped (the AMF
+# simply proceeds to context release). The DeregistrationRequest is a normal
+# (non-switch-off) de-registration so the AMF cleanly tears down the context.
+
+kind: flow
+name: deregistration_after_release
+description: Tolerant cleanup finalizer — register, release session, de-register (YAML)
+detail: |
+  Composite CLEANUP finalizer intended to run as a suite always_run / teardown
+  step. It registers a UE, requests release of any active PDU session, then
+  performs a UE-initiated de-registration.
+
+  Tolerance is a design goal: this flow must never block suite teardown, so a
+  missing reaction always resolves on a timer rather than hanging. What it does
+  NOT do is call a missing reaction a success. There are two non-failure
+  terminals and the difference between them is the row's whole finding:
+
+    clean     — the AMF ANSWERED the de-registration: a DEREGISTRATION ACCEPT
+                and/or a UE CONTEXT RELEASE COMMAND arrived. Every route to this
+                terminal runs through one of those two messages.
+    unproven  — nothing arrived in the window. The cleanup completed, the suite
+                proceeds, and the row reports that it proved nothing.
+
+  Sequence: register (auth, security, context setup) -> send
+  PDUSessionReleaseRequest and wait briefly for a PDUSessionReleaseCommand
+  (skipped via timeout if there is no session) -> send a normal
+  DeregistrationRequest -> on a DeregistrationAccept and/or a
+  UEContextReleaseCommand reach `clean`, answering the latter with a
+  UEContextReleaseComplete.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - clean
+  - unproven
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    # The AMF never challenged: no connection was established, so the message
+    # this row is about cannot have arrived. Nothing is proven.
+    on_timeout:
+      duration: 10s
+      target: unproven
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: unproven
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: unproven
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_session_release
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # Release any active PDU session. If none exists the AMF will not send
+          # a PDUSessionReleaseCommand and the on_timeout below skips ahead.
+          - type: send
+            message: PDUSessionReleaseRequest
+
+  wait_session_release:
+    # No session / no command -> skip straight to the de-registration. The
+    # DeregistrationRequest is sent on the way out of this state on BOTH routes:
+    # it cannot hang off the next state's entry, because a state is only left by
+    # an event or a timer and the engine posts no event here.
+    on_timeout:
+      duration: 8s
+      target: wait_release
+      actions:
+        - type: send
+          message: DeregistrationRequest
+    transitions:
+      - event: PDUSessionReleaseCommand
+        target: wait_release
+        actions:
+          - type: send
+            message: PDUSessionResourceReleaseResponse
+          - type: send
+            message: DeregistrationRequest
+
+  wait_release:
+    # NOTHING arrived after the de-registration went out. The criterion's
+    # message was not received, so this is `unproven` and not `clean`.
+    on_timeout:
+      duration: 10s
+      target: unproven
+    transitions:
+      # TS 24.501 §5.5.2.2.1 — the AMF accepts the normal de-registration. That
+      # alone satisfies the criterion's "and/or", so the release command that
+      # usually follows is waited for but not required.
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release_after_accept
+        actions:
+          # The accept arrived under the NAS security context established for
+          # this connection — i.e. it is an answer to OUR de-registration and
+          # not an unauthenticated downlink.
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+      - event: UEContextReleaseCommand
+        target: clean
+        actions:
+          - type: check
+            field: ran_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: UEContextReleaseComplete
+
+  wait_release_after_accept:
+    # The DEREGISTRATION ACCEPT is already in hand, so the criterion is
+    # satisfied whether or not the NGAP release follows: this timer reaches
+    # `clean` LEGITIMATELY, and it is the only timer in the flow that does.
+    #
+    # Short (5 s, not the 10 s the other waits use) because this window is not
+    # deciding anything — it is giving a release command that usually arrives
+    # within a second a moment to turn up. The suite steps that run this flow as
+    # teardown allow 30 s, and the accept-only path has already spent up to 8 s
+    # in the session-release skip.
+    on_timeout:
+      duration: 5s
+      target: clean
+    transitions:
+      - event: UEContextReleaseCommand
+        target: clean
+        actions:
+          - type: check
+            field: ran_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: UEContextReleaseComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-176).
+#
+# REG-176 — A DeregistrationAccept and/or UEContextReleaseCommand is received for the
+# re-established connection
+#
+# WHERE THE "AND/OR" LIVES, because it is not in this block. final_checks are
+# ANDed numeric comparisons on single metric keys; there is no OR and no metric
+# that sums two rx_events, so `A >= 1` would demand the accept and `B >= 1` the
+# release command, and either would fail a core the criterion calls conformant.
+# The disjunction is carried STRUCTURALLY instead: `clean` is reachable only
+# through a DEREGISTRATION ACCEPT or a UE CONTEXT RELEASE COMMAND, so pinning it
+# IS the assertion that one of the two arrived. Silence reaches `unproven`, an
+# error reaches `failed`, and neither satisfies the pin. That property is
+# enforced as a graph reachability test over this file
+# (TestREG176_TheClaimedTerminalIsReachableOnlyFromTheCoresAnswer), not merely
+# asserted here — pin a terminal a timer can reach and the pin says nothing,
+# which is exactly what this row used to do.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL, and now the row's whole claim about the core.
+  - name: the flow reached `clean` — the core answered the de-registration
+    metric: final_state_counts.clean
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest, DeregistrationRequest)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 5
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  # These three are the CONNECTION the criterion says the de-registration
+  # happened on; without them "the AMF answered" is a claim about a connection
+  # that was never shown to exist.
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  # THE FLOOR, and it is a second assertion about the core's answer rather than
+  # bookkeeping. Four checks run in the registration preamble; the fifth exists
+  # ONLY on the DEREGISTRATION ACCEPT transition and on the UE CONTEXT RELEASE
+  # COMMAND transitions. So a run that reports five has asserted something about
+  # one of the two messages this row is named for. Routes to `clean` evaluate
+  # 5 (either answer alone) or 6 (both), so 5 is the floor.
+  - name: at least five declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

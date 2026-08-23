@@ -1,0 +1,76 @@
+# Npcf_PolicyAuthorization — app-session with no bindable SM policy → 500.
+# 3GPP TS 29.514 §4.2.2 / §5.7. The AF posts an app-session for
+# imsi-001010000000002 with NO prior SM-policy association created for it, so
+# AF-session binding (TS 23.503 §6.1.3.6) finds nothing to bind to.
+#
+# Per ruling R6 the binding failure is 500 + cause PDU_SESSION_NOT_AVAILABLE
+# (A2's TS 29.514 reading, open5gs lineage). supi is the dash-less seed form;
+# the component carries an fDescs entry (E5) so the rejection is the binding
+# failure, not a flow-less-component 400.
+
+kind: flow
+name: npcf_policyauth_appsession_no_binding
+description: POST app-sessions with no SM-policy bound → 500 + PDU_SESSION_NOT_AVAILABLE
+category: negative
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_appsession
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-policyauthorization/v1/app-sessions",
+                "body": {
+                  "ascReqData": {
+                    "supi": "imsi-001010000000002",
+                    "dnn": "internet",
+                    "sliceInfo": {"sst": 1, "sd": "000001"},
+                    "notifUri": "http://127.0.0.1:1/af-unused",
+                    "suppFeat": "0",
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "20 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_appsession:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 500
+          - type: check
+            field: sbi.body.cause
+            op: equals
+            expected: PDU_SESSION_NOT_AVAILABLE

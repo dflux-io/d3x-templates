@@ -1,0 +1,35 @@
+# PFCP smoke — server (UPF) side.
+# Accepts an inbound AssociationSetupRequest and SessionEstablishment
+# Request from a remote SMF and replies with default Cause=Request
+# Accepted answers. The enricher fills NodeID + F-SEID + Cause from
+# binding/UE state — no message_body needed for the happy path.
+
+kind: flow
+name: pfcp_sm_setup_server
+description: UPF accepts an SMF association + session establishment
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: associated
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+
+  associated:
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentRequest
+        target: associated
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentResponse

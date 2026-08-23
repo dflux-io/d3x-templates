@@ -1,0 +1,236 @@
+# N2 handover preparation + source-gNB cancel (3GPP TS 38.413 §8.4.5).
+#
+# Registers a UE and establishes a PDU session, begins an N2 inter-gNB
+# handover by sending HandoverRequired, then immediately aborts the
+# in-progress preparation with HandoverCancel before HandoverCommand
+# arrives. The AMF must roll back the prepared target resources and reply
+# with HandoverCancelAcknowledge, leaving the UE attached to the source
+# cell.
+#
+# Sends:    HandoverRequired (begins prep) then HandoverCancel (aborts it).
+# Expected-correct Open5GS behavior: the AMF cleans up the partially
+# prepared handover context and answers with HandoverCancelAcknowledge.
+# Reaching cancel_acknowledged is the compliance assertion (clean rollback).
+
+kind: flow
+name: handover_cancel
+description: N2 handover preparation aborted by source-gNB HandoverCancel (YAML)
+detail: |
+  Exercises the handover-cancel path of an N2 (inter-gNB) handover from the
+  source gNB perspective (3GPP TS 38.413 §8.4.5).
+
+  Phase 1 — Registration: standard auth/security/context-setup.
+  Phase 2 — PDU session setup: establishes a user-plane bearer so the
+  handover carries at least one PDU session.
+  Phase 3 — HandoverRequired: the source gNB begins handover preparation,
+  sending HandoverRequired with a target cell ID and PDU session list.
+  Phase 4 — HandoverCancel: instead of waiting for HandoverCommand, the
+  source gNB aborts the preparation (e.g., the radio condition that
+  triggered the handover cleared, or the UE returned to the source cell).
+
+  The AMF responds with HandoverCancelAcknowledge, confirming it rolled back
+  the prepared target-side resources cleanly. The UE remains served by the
+  source gNB. Reaching cancel_acknowledged is the compliance assertion.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - cancel_acknowledged
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_cancel_ack
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          # Begin handover preparation, then immediately abort it.
+          - type: send
+            message: HandoverRequired
+          - type: send
+            message: HandoverCancel
+
+  wait_cancel_ack:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: HandoverCancelAcknowledge
+        target: cancel_acknowledged
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-548).
+#
+# REG-548 — HandoverCancelAcknowledge is received on the source association within the
+# timeout after HandoverCancel; the UE remains served by the source gNB.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `cancel_acknowledged`
+    metric: final_state_counts.cancel_acknowledged
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one HANDOVER CANCEL was sent
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_CANCEL
+    op: equals
+    value: 1
+  - name: one HANDOVER REQUIRED was sent
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_REQUIRED
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a HANDOVER CANCEL ACKNOWLEDGE arrived
+    metric: rx_events.HandoverCancelAcknowledge
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The seven `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all seven declared checks ran
+    metric: checks_total
+    op: equals
+    value: 7
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

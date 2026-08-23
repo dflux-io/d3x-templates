@@ -1,0 +1,80 @@
+# NG Setup with the mandatory SupportedTAList OMITTED
+# (3GPP TS 38.413 §9.2.6.1 mandatory IE / §10 abstract-syntax-error).
+#
+# Sends an NGSetupRequest with the mandatory SupportedTAList left out (via the
+# omit_supported_ta SendParam, which bypasses the enricher's default back-fill).
+# A robust AMF rejects with NGSetupFailure (protocol / abstract-syntax-error) or
+# an ErrorIndication, or drops the association — it must not silently accept a
+# setup with no served TAs or crash.
+#
+# Lenient terminals: `rejected` (NGSetupFailure / ErrorIndication — the spec
+# reaction), `tolerated` (timeout: the AMF may reject at the ASN.1 layer with no
+# clean response), `failed` only if an NGSetupResponse is wrongly returned.
+kind: flow
+name: ng_setup_missing_supported_ta
+description: NG Setup omitting the mandatory SupportedTAList; assert AMF rejects/does not accept (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reaction
+        actions:
+          - type: send
+            message: NGSetupRequest
+            params:
+              omit_supported_ta: true
+  wait_reaction:
+    # AMF may reject at the ASN.1 layer with no clean response -> tolerated.
+    on_timeout: { duration: 8s, target: tolerated }
+    transitions:
+      - event: NGSetupFailure
+        target: rejected
+      - event: ErrorIndication
+        target: rejected
+      # Accepting a setup with no served TA would be non-compliant.
+      - event: NGSetupResponse
+        target: failed
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-807 (robustness, expected_terminal: null) —
+# NGSetupFailure or ErrorIndication received, or the PDU is silently discarded; an
+# NGSetupResponse is a failure, and the SCTP association must still be up afterwards
+#
+# NO NON-FAILURE TERMINAL IS PINNED. REG-807 declares `expected_terminal: null` and its
+# criterion accepts "NGSetupFailure or ErrorIndication received, OR THE PDU IS SILENTLY
+# DISCARDED" — so `rejected` (a message) and `tolerated` (the 8 s timer) are both
+# conformant by the register's own text, and nothing here can choose between them. Its
+# remaining requirement, "the SCTP association must still be up afterwards", is
+# `failed`, which this flow reaches only through a transport Error. `checks_total`
+# carries no floor: every path evaluates ZERO checks. The criterion's third requirement
+# — "an NGSetupResponse is a failure" — is not assertable either, because this flow's
+# own NG Setup shares a metric key with the one the transport performs at association
+# time before any flow starts.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` — the SCTP association stayed up
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

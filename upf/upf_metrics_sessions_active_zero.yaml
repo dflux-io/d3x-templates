@@ -1,0 +1,49 @@
+# UPF metrics scrape — assert upf_sessions_active == 0 (baseline).
+#
+# Used as the baseline step of the upf_metrics suite, before any session
+# is established. Pins the exact gauge line "upf_sessions_active 0" so the
+# subsequent post-establish scrape (==1) proves the increment came from
+# the establish, not from pre-existing state. Run against a freshly
+# launched UPF.
+
+kind: flow
+name: upf_metrics_sessions_active_zero
+description: Assert the UPF reports upf_sessions_active 0 (metrics baseline)
+category: functional
+type: client
+protocol: rest
+nf: external
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: ScrapeMetrics
+            peer: metrics
+            message_body: |
+              { "method": "GET", "url": "/metrics" }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: rest.ScrapeMetrics_Answer
+        target: completed
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "upf_sessions_active 0"

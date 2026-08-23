@@ -1,0 +1,65 @@
+# Nsmf_PDUSession_CreateSMContext — bad/unsupported S-NSSAI (negative/security).
+# 3GPP TS 29.502 §6.1.6.3.4; TS 23.501 §5.15.
+#
+# runner (AMF) POSTs a CreateSMContext whose sNssai is not in the subscriber's
+# allowed NSSAI / not supported by the SMF. A spec-correct SMF MUST reject with
+# 4xx and a SmContextCreateError ProblemDetails (cause SNSSAI_DENIED) and
+# stay up.
+kind: flow
+name: smf_nsmf_create_smcontext_bad_snssai
+description: AMF CreateSMContext with unsupported S-NSSAI — expect 4xx rejection
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 7,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 200, "sd": "FFFFFF"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1"
+                }
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

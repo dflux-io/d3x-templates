@@ -1,0 +1,225 @@
+# SUB-01 — NF Status Subscription happy-path lifecycle.
+#
+# POST /nnrf-nfm/v1/subscriptions with the minimum body (just
+# nfStatusNotificationUri) → 201 + Location + body has subscriptionId.
+# PATCH validityTime via JSON-Patch → 200 carrying the lifetime the NRF will
+# actually honour. DELETE → 204. The PATCH body uses
+# application/json-patch+json per TS 29.510 §5.2.2.8.
+#
+# WHY THE PATCH ASSERTION IS NOT "the response echoes what I asked for".
+#
+# It used to be: `rest.body.validityTime equals 2099-12-31T23:59:59Z`. That is
+# testing the wrong property, and defending it kept a real defect open — the
+# create caps validityTime at MaxSubscriptionValidity but the patch did not, so
+# an NF holding a subscription id could give itself an immortal subscription in
+# two requests.
+#
+# TS 29.510 is explicit that the lifetime is the NRF's to decide on this
+# operation. Table 6.1.6.2.16-1 calls the consumer's value "a hint to the
+# server"; clause 5.2.2.5.6 step 1 calls the PATCH value "a new suggested
+# value"; step 2b says that when the NRF "assigns a validity time different than
+# the value suggested by the NF Service Consumer, a 200 OK response code shall
+# be returned … including the new validity time, as determined by the NRF".
+# Nowhere does the spec require the response to echo the request. A conformant
+# consumer therefore asserts what it is entitled to: a validityTime is present,
+# it is a well-formed date-time, and it is not later than the one it asked for.
+#
+# The last of those three is expressed as two checks because the runner's
+# comparison ops are numeric and cannot order two RFC 3339 strings: the regex
+# pins the year to 20xx, and `not_contains "2099-"` excludes the requested year
+# itself. Year ≤ 2098 is strictly earlier than 2099-12-31T23:59:59Z, so the pair
+# proves the bound exactly. "2099-" and not "2099" deliberately: a fractional
+# second could contain "2099" by coincidence, and that would be a one-in-ten-
+# thousand flake rather than an assertion.
+#
+# THE STATUS-CODE SPLIT IS NOW ASSERTED, AND IT IS ASSERTED AS A PAIR (xp-213).
+#
+# TS 29.510 §5.2.2.5.6 step 2a: an NRF that ACCEPTS the suggested value answers
+# "204 No Content"; step 2b reserves 200-with-a-body for the case where it
+# assigned something else. This NRF used to answer 200 with a body for both,
+# which made the two outcomes indistinguishable to a consumer reading the status
+# line — the one thing the split exists to make distinguishable.
+#
+# So this flow now PATCHes twice, and the two PATCHes differ ONLY in the
+# suggested lifetime:
+#
+#   1. year 2099 → beyond MaxSubscriptionValidity → the NRF assigns its own
+#      value → 200, and the body carries the value it picked (step 2b).
+#   2. now + 1h  → inside the cap → the NRF takes the suggestion → 204 (step 2a).
+#
+# Asserting only one of those would be satisfied by an NRF that hardcodes that
+# one code. Asserting both, back to back on the SAME subscription, is what makes
+# this "the code the spec defines for THIS case" rather than "a success code".
+#
+# What this flow deliberately does NOT try to assert is that the 204 stored the
+# exact instant suggested — `$now_plus` is re-evaluated per interpolation, so
+# there is no stable value to compare a later GET against. That property is
+# pinned precisely in Go by
+# TestUpdateSubscription_AValidityTimeInsideTheCapIsHonouredVerbatim. What the
+# GET after step 2 is here for is the control: it proves the 204 was a real
+# success on a live subscription rather than a silent no-op on a vanished one.
+
+kind: flow
+name: nrf_sub_create_patch_delete
+description: POST subscription → PATCH beyond cap (200) → PATCH inside cap (204) → DELETE.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: creating
+        actions:
+          - type: send
+            message: CreateSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-nfm/v1/subscriptions",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfStatusNotificationUri": "http://callback.example.com/notify",
+                  "validityTime": "2099-01-01T00:00:00Z"
+                }
+              }
+
+  creating:
+    transitions:
+      - event: rest.CreateSub_Answer
+        target: patching
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.headers.Location
+            op: contains
+            expected: "/nnrf-nfm/v1/subscriptions/"
+          - type: check
+            field: rest.body.subscriptionId
+            op: not_empty
+          - type: extract
+            field: rest.body.subscriptionId
+            store: subId
+          - type: send
+            message: PatchSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/subscriptions/{{ue.Params.subId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [
+                  {"op": "replace", "path": "/validityTime", "value": "2099-12-31T23:59:59Z"}
+                ]
+              }
+
+  patching:
+    transitions:
+      - event: rest.PatchSub_Answer
+        target: patching_inside_cap
+        actions:
+          # Step 2b: the suggestion was beyond the cap, so the NRF assigned a
+          # value of its own and owes the consumer a body saying which.
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          # The NRF returned the lifetime it will honour …
+          - type: check
+            field: rest.body.validityTime
+            op: not_empty
+          # … it is a well-formed RFC 3339 date-time in the 21st century …
+          - type: check
+            field: rest.body.validityTime
+            op: regex
+            expected: '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+          # … and it is not the year 2099 that was suggested, i.e. the NRF
+          # bounded it. With the regex above this proves "not later than
+          # requested" exactly: any 20xx year that is not 2099 is earlier than
+          # 2099-12-31T23:59:59Z.
+          - type: check
+            field: rest.body.validityTime
+            op: not_contains
+            expected: "2099-"
+          # Now the OTHER half of the split: a lifetime the NRF will accept
+          # verbatim, which must come back 204 rather than 200.
+          - type: send
+            message: PatchSubInsideCap
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/subscriptions/{{ue.Params.subId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [
+                  {"op": "replace", "path": "/validityTime", "value": "{{$now_plus \"1h\"}}"}
+                ]
+              }
+
+  patching_inside_cap:
+    transitions:
+      - event: rest.PatchSubInsideCap_Answer
+        target: verifying_inside_cap
+        actions:
+          # Step 2a. This is the assertion the whole two-PATCH shape exists for:
+          # the ONLY difference from the request above is that this lifetime is
+          # one the NRF accepts, and the code must change because of it.
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+          - type: send
+            message: GetSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/subscriptions/{{ue.Params.subId}}"
+              }
+
+  verifying_inside_cap:
+    transitions:
+      - event: rest.GetSub_Answer
+        target: deleting
+        actions:
+          # The control on the 204: a handler that answered 204 by dropping the
+          # request on the floor would pass the check above and fail here.
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.subscriptionId
+            op: not_empty
+          - type: check
+            field: rest.body.validityTime
+            op: regex
+            expected: '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+          - type: send
+            message: DeleteSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/subscriptions/{{ue.Params.subId}}"
+              }
+
+  deleting:
+    transitions:
+      - event: rest.DeleteSub_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

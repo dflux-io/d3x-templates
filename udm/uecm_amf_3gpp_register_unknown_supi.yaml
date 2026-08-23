@@ -1,0 +1,53 @@
+# Nudm_UECM AMF Registration for an unprovisioned SUPI — security/negative.
+# 3GPP TS 29.503 §6.2.7.3 (USER_NOT_FOUND; 404/403).
+# UDM must reject registration of an unknown subscriber and stay live.
+
+kind: flow
+name: udm_uecm_amf_3gpp_register_unknown_supi
+description: PUT amf-3gpp-access for an unprovisioned SUPI is rejected with 4xx
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudm-uecm/v1/imsi-999999999999999/registrations/amf-3gpp-access",
+                "body": {
+                  "amfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "deregCallbackUri": "http://127.0.0.1:7777/dereg",
+                  "guami": {
+                    "plmnId": {"mcc": "001", "mnc": "01"},
+                    "amfId": "020040"
+                  },
+                  "ratType": "NR"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399

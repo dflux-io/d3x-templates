@@ -1,0 +1,52 @@
+# runner -> standalone NSSF SBI compliance suite (TS 29.531). runner as the AMF
+# consumer against cmd/nssf (subscribed reads from seeded dpf UDR). Run as
+# 08-nssf-compliance in scripts/dpf-sanity-run.sh. Empty expected-fail list —
+# every step must pass.
+#
+# Coverage:
+#   - Nnssf_NSSelection registration, default-slice (empty requested), UE-CU
+#   - required-param enforcement (missing nf-type → 400)
+#   - Nnssf_NSSAIAvailability PUT → NSSelection TAI round-trip (rejectedNssaiInTa)
+#
+# Out of scope (v1): Nnssf_NSSAIAvailability subscriptions
+# (POST/DELETE /nssai-availability/subscriptions) — not registered on the
+# producer; do not add steps that expect them.
+kind: suite
+name: nssf-compliance
+description: Nnssf_NSSelection (registration/default/ue-cu) + Nnssf_NSSAIAvailability (TA-aware) conformance for runner as SBI consumer against standalone NSSF.
+steps:
+  - name: registration_ok
+    flow: nnssf_registration_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+  - name: no_requested_defaults
+    flow: nnssf_no_requested_defaults
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+  - name: ue_cu_ok
+    flow: nnssf_ue_cu_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+  - name: missing_nftype_400
+    flow: nnssf_missing_nftype_400
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+  - name: nssaiavailability_put_select_ta
+    flow: nnssf_nssaiavailability_put_select_ta
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed

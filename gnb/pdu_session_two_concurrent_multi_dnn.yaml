@@ -1,0 +1,337 @@
+# REG-306 — two CONCURRENT PDU sessions on DIFFERENT DNNs (multi-DNN).
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §6.4.1.2 (UE-requested PDU session establishment procedure
+#   initiation): "If the UE requests to establish a new PDU session, the UE
+#   shall allocate a PDU session ID which is not currently being used by another
+#   PDU session over either 3GPP access or non-3GPP access." The DNN is carried
+#   per request, so two requests naming two DNNs are two sessions and not a
+#   re-negotiation of one.
+#
+#   TS 23.502 §4.3.2.2.1 step 11: each session's N2 SM information carries its
+#   own CN Tunnel Info. Two live sessions therefore have two uplink F-TEIDs;
+#   sharing one would leave the UPF unable to tell them apart (TS 29.281 §5.1 —
+#   the TEID identifies the tunnel endpoint).
+#
+# WHAT SEPARATES THIS ROW FROM pdu_session_two_concurrent_same_dnn (REG-307).
+# That row holds the DNN and the S-NSSAI CONSTANT and varies only the session
+# id, so it asks whether the core can hold two sessions at once. This one varies
+# the DNN, so it asks whether the core can hold two sessions to two DIFFERENT
+# DATA NETWORKS at once — the enterprise case where operations traffic and user
+# traffic must not share a data network. A core that supports exactly one DNN
+# passes REG-307 and fails here, which is the whole reason both rows exist.
+#
+# WHAT IS ASSERTED, AND WHY EACH CHECK IS NOT VACUOUS
+#   * two PDU SESSION RESOURCE SETUP REQUESTs arrive, naming session ids 1 and 2
+#     (`equals`, not `ie_present` — the ids are the thing being distinguished);
+#   * the two uplink GTP-U TEIDs DIFFER (`not_equals`) and both are non-zero.
+#     `not_equals` and not `not_contains`: stringified containment would score
+#     TEID 1 vs TEID 12 as identical-and-therefore-failing, a false red on a
+#     correct core;
+#   * the second establishment is not bought by tearing the first down — a
+#     PDU SESSION RELEASE COMMAND arriving while the second is being set up ends
+#     the flow on `failed`, and so does a PDU SESSION ESTABLISHMENT REJECT;
+#   * THE MULTI-DNN ASSERTION ITSELF: the DNN the core echoes in the second PDU
+#     SESSION ESTABLISHMENT ACCEPT differs from the one it echoed in the first,
+#     and the second one is the DNN this flow asked for. Comparing the two
+#     accepts against each other rather than against a literal is what makes
+#     this an assertion about the CORE's answer rather than about the harness's
+#     configuration.
+#
+# THE DNN CHECKS ARE GUARDED, and the guard is load-bearing. `pdu_accept_dnn`
+# is the empty string when the ACCEPT carries no DNN IE, and the IE is OPTIONAL
+# in TS 24.501 Table 8.3.2.1.1. Without the `not_empty` guard the comparison
+# would run between two empty strings — `not_equals` would fail (correctly, but
+# for a reason that has nothing to do with multi-DNN) and, worse, a `contains`
+# or `not_contains` spelling of the same idea would PASS on the absent IE and
+# report multi-DNN support that was never demonstrated.
+#
+# NAMES: "internet" is the DNN the matrix provisions (MATRIX_DNN in
+# matrix/cores/tinycore/versions.env), so session 1 is the ordinary one every
+# other session row establishes and session 2 is the one that asks for more.
+# "mgmt" is a plain second DNN name; nothing about the row depends on which
+# name it is, only that it is a different one.
+#
+# MEASURED AGAINST tinycore 2026-08-11 (git-8523d93): terminal
+# `second_dnn_refused`. Session 1 to "internet" established (id 1, UPF TEID
+# non-zero, DNN "internet" echoed in the accept); session 2 to "mgmt" was
+# answered with a PDU SESSION ESTABLISHMENT REJECT carrying 5GSM cause #27
+# "Missing or unknown DNN". 9/9 checks passed — the row is red on its TERMINAL,
+# not on a content assertion.
+#
+# READ THE DIAGNOSIS BEFORE PUBLISHING THIS CELL, because the obvious reading is
+# not quite the true one. The core's log says
+#   "SMF CreateSmContext failed" error="establish: requested DNN not
+#    provisioned for subscriber"
+# and refusing a DNN that is not in the subscription is CONFORMANT (§6.4.1.6).
+# The finding is one level up: tinycore has no way to put a second DNN in a
+# subscription at all. dpf's seed hardcodes DnnConfigurations to a single
+# "internet" entry per S-NSSAI (tinycore/dpf/seed.go), and the `dpf -import`
+# subscriber schema — which is what matrix/cores/tinycore/subscribers.yaml
+# feeds — carries no DNN field whatsoever. So no provisioning of this core can
+# make this row pass, which is a capability statement about the core and not a
+# gap in the harness. Verified by reading the subscription back out of the core:
+#   GET /nudm-sdm/v2/imsi-001010000000306/sm-data
+#   -> two S-NSSAIs (sd 000001 and 010203), each with exactly one DNN,
+#      "internet".
+
+kind: flow
+name: pdu_session_two_concurrent_multi_dnn
+description: Two concurrent PDU sessions on DIFFERENT DNNs — distinct session IDs, distinct UL GTP-U TEIDs, distinct DNNs echoed in the accepts (YAML)
+detail: |
+  Registration, then two UE-requested PDU session establishments: session 1 to
+  DNN "internet" and session 2 to DNN "mgmt" (TS 23.502 §4.3.2.2.1,
+  TS 24.501 §6.4.1.2).
+
+  The flow asserts the core answers each with its own PDU SESSION RESOURCE
+  SETUP REQUEST carrying its own PDU session id and its own uplink GTP-U TEID,
+  that the DNN echoed in the second establishment accept differs from the first
+  and is the one that was asked for, and that establishing the second session
+  does not release the first.
+
+  A core that serves a single data network answers the second request with a
+  PDU SESSION ESTABLISHMENT REJECT (or with a session on the same DNN); both
+  land on the failure terminal, which is the finding this row exists to make.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - two_dnns
+  - second_dnn_refused
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_id: 1
+              dnn: internet
+
+  wait_first_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_second_accept
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: extract, field: ue.UpfTeid, store: first_upf_teid }
+          # The DNN the CORE echoed for session 1. Guarded by not_empty: an
+          # absent DNN IE resolves to "" and every comparison below would then
+          # be comparing nothing with nothing.
+          - { type: check, field: ue.Params.pdu_accept_dnn, op: not_empty }
+          - { type: check, field: ue.Params.pdu_accept_dnn, op: equals, expected: internet }
+          - { type: extract, field: ue.Params.pdu_accept_dnn, store: first_dnn }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+          # The SECOND session: new id, DIFFERENT DNN, sent immediately so the
+          # first is still up — "concurrent" is the point.
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_id: 2
+              dnn: mgmt
+
+  wait_second_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: two_dnns
+        actions:
+          # --- a second, distinct session ---------------------------------
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 2 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+
+          # --- …on its own uplink GTP-U tunnel ----------------------------
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: not_equals, expected: '{{ue.Params.first_upf_teid}}' }
+
+          # --- …towards a DIFFERENT data network --------------------------
+          - { type: check, field: ue.Params.pdu_accept_dnn, op: not_empty }
+          - { type: check, field: ue.Params.pdu_accept_dnn, op: not_equals, expected: '{{ue.Params.first_dnn}}' }
+          - { type: check, field: ue.Params.pdu_accept_dnn, op: equals, expected: mgmt }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+      # Establishing the second session must not cost the UE the first one.
+      - event:
+          or:
+            - PDUSessionReleaseCommand
+            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+            - NASDownlinkTransport.DLNASTransport.PDUSessionReleaseCommand
+        target: failed
+
+      # A core that serves one DNN refuses the second session. Its own FAILURE
+      # terminal, not the generic one, so the trace says WHICH failure this was
+      # — a decision by the core, not a timeout — and so the 5GSM cause is
+      # recorded on the way past. The check below is informational — the
+      # terminal is a failure whatever it says — but it puts the 5GSM cause in
+      # the trace, and the cause is the whole diagnosis: #27 "Missing or unknown
+      # DNN" says the core refused a data network it does not know about, which
+      # is a provisioning statement, while a #26 or #67 would say it knew the
+      # DNN and ran out of something.
+      #
+      # AND IT IS NOW THE ROW'S PREMISE, READ OFF THE WIRE (xp-261). The register
+      # declares `preconditions.config: multi-dnn` and NOTHING IN THE HARNESS
+      # APPLIES THAT DECLARATION, so this row has never once been run against a
+      # core that had a second DNN to serve. Cause #27 is the SMF saying so in
+      # its own bytes; lib/outcome.py DEFENCE 12 reads it out of facts.observed
+      # and classifies the row `disabled-by-config` — ours, out of the
+      # denominator, never a core failure. That is the honest reading: we did
+      # not test multi-DNN, we tested what a core does when asked for a data
+      # network nobody provisioned.
+      #
+      # IT DOES NOT ERASE THE CAPABILITY FINDING, and the distinction matters
+      # because `disabled-by-config` must never excuse a gap. What is recorded
+      # about tinycore is not this cell: it is that dpf's seed hardcodes
+      # DnnConfigurations to a single "internet" entry per S-NSSAI
+      # (tinycore/dpf/seed.go) and the `dpf -import` subscriber schema carries no
+      # DNN field at all, verified by reading the subscription back out of the
+      # core (see the MEASURED note above). That is CODE-level evidence and it
+      # stands on its own, exactly as xp-257's does.
+      #
+      # THE PATH IS THE NESTED ONE. A 5GSM reject rides inside the DL NAS
+      # TRANSPORT's payload container, so `nas.gsm_cause` does not resolve —
+      # and an unresolvable `extract` swallows the actions after it, which is
+      # how the first draft of this row recorded no cause at all while
+      # reporting 8/8 checks passed.
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: second_dnn_refused
+        actions:
+          - { type: check, field: nas.payload_container.n1_sm_message.gsm_cause, op: not_empty }
+
+      # ==========================================================================
+      # THE TWO ANSWERS THE OTHER TWO CORES GAVE, AND WHICH THIS FLOW REFUSED.
+      # ==========================================================================
+      #
+      # MEASURED ON 50effc0 (2026-08-12). open5gs and free5gc BOTH refused the
+      # second DNN, both said why, and `wait_second_accept` named neither shape —
+      # so the bus refused the message, the state timed out, and the row recorded
+      # `failed` with 8/8 checks passed. THE SILENCE THE VERDICT RESTED ON WAS
+      # OURS. This is the REG-437 scar exactly (see lib/outcome.py DEFENCE 11),
+      # arriving in a second family, and it is why the register's declared premise
+      # could not be checked on two of three cores: the bytes that falsify it were
+      # thrown away by our own state machine.
+      #
+      # The refusal is a 5GMM-level one on both, because the AMF never got as far
+      # as an SMF: TS 24.501 §5.4.5.3.2 says that when the AMF cannot forward the
+      # 5GSM message it answers with the 5GMM cause and, optionally, the message
+      # it did not forward. Both used 5GMM cause #91 "DNN not supported or not
+      # subscribed in the slice" (TS 24.501 Annex A / §9.11.3.2) — which is the
+      # premise of this row denied in as many words.
+      #
+      #   open5gs, arrival#6, 35 bytes, inner plaintext after MAC+SN:
+      #       7e 00 64 5b
+      #       ^EPD ^plain ^0x64 = 5GMM STATUS      ^0x5b = 5GMM cause 91
+      #
+      #   free5gc, arrival#6, 49 bytes, inner plaintext after MAC+SN:
+      #       7e 00 68 01 00 08 | 2e 02 01 c1 00 00 91 a1 | 12 02 | 58 5b
+      #       ^0x68 = DL NAS TRANSPORT, payload container type 1 (N1 SM), len 8
+      #                           ^our OWN PDU SESSION ESTABLISHMENT REQUEST,
+      #                            returned unforwarded per §5.4.5.3.2
+      #                                                    ^PDU session ID 2
+      #                                                              ^IEI 0x58 =
+      #                                                     5GMM cause, 0x5b = 91
+      #
+      # Named as `second_dnn_refused` and not as `failed`, for the same reason the
+      # 5GSM branch above is: the trace must say WHICH failure this was, and a
+      # decision by the core is not a timeout. The check is a real assertion on
+      # the message that fired the branch — the 5GMM cause IE is what makes this
+      # a refusal rather than an unrelated downlink, and `greater_or_equal 1`
+      # rather than `ie_present` because `gmm_cause` is a non-pointer field whose
+      # key is always emitted, so 0 is "no cause IE" and `ie_present` could never
+      # fail on it (xp-255). It also puts the value in facts.observed, which is
+      # what DEFENCE 12 reads.
+      - event:
+          or:
+            - NASDownlinkTransport.5GMMStatus
+            - NASDownlinkTransport.DLNASTransport
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentRequest
+        target: second_dnn_refused
+        actions:
+          - { type: check, field: nas.gmm_cause, op: greater_or_equal, expected: 1 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-306 (positive, expected_terminal: two_dnns) — Two
+# PDUSessionResourceSetupRequest messages received, each with a distinct PDU session ID
+# and a distinct UL GTP-U TEID; neither accept is followed by a release of the other
+# session
+#
+# REG-306: two PDUSessionResourceSetupRequest messages, each with a distinct PDU session
+# ID and a distinct UL GTP-U TEID. `second_dnn_refused` is the core refusing the second
+# DNN, which is the row not being supported rather than the row passing.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `two_dnns` — the terminal this row claims
+    metric: final_state_counts.two_dnns
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 15
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

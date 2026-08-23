@@ -1,0 +1,312 @@
+# runner -> Open5GS UDM SBI security / robustness suite — one request per flow.
+#
+# Drives abnormal, malformed, and security-edge Nudm requests from runner acting
+# as the SBI CONSUMER/peer against a real Open5GS UDM. The cross-cutting
+# assertion is that the UDM reacts in a spec-correct way and STAYS UP — these
+# flows deliberately send things the UDM should REJECT with a ProblemDetails
+# (4xx) or simply TOLERATE without crashing, never things it should accept.
+#
+# Two terminal shapes appear:
+#   - `rejected`  : the request MUST be refused (404 unknown SUPI/DNN/sub,
+#                   400 malformed/missing-IE, 403 not-authorized, 405/406/415
+#                   method/content negotiation). success_when pins `rejected`.
+#   - `tolerated` : the UDM is allowed latitude (it MAY 4xx, MAY accept-and-
+#                   ignore, MAY 200) as long as it stays alive and a following
+#                   liveness probe succeeds. success_when pins `tolerated`.
+#
+# Every step is one request / one execution (repetitions: 1). stop_on_failure
+# is left explicitly false on every step: a misbehaviour on one probe must not
+# block discovering the others, and UDM liveness across the WHOLE run is the
+# real signal. There is no hard gate here — unlike the compliance suite, a
+# failed negative is itself a finding to be recorded, not a reason to abort.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite udm-security \
+#       -templates <templates-dir> -c config/open5gs-udm.yaml -trace
+#
+# ORDERING rationale (top -> bottom):
+#   Grouped by service so the report reads service-by-service (SDM, UEAU, UECM,
+#   PP/EE, then transport/SBI-layer probes). Within each group the
+#   read-only/stateless rejects come before anything that touches state. The
+#   PURE-TRANSPORT probes (unknown apiVersion, unsupported method, content
+#   negotiation, oversized body) run LAST: they exercise the HTTP/2 + routing
+#   layer rather than a specific Nudm operation, and the two oversized/Accept
+#   liveness probes deliberately push the server then re-check it's alive, so
+#   they belong at the end where a server wobble can't mask an earlier per-op
+#   finding. None of these flows register or write durable UDM state, so none
+#   leave a dirty context behind; ordering here is for report legibility and to
+#   keep the liveness probes last, not to avoid state poisoning.
+#
+# Known EXPECTED behaviour / runtime-risk against a real Open5GS UDM (used on a
+# live run to tell a genuine core gap from a flow bug):
+#   - sdm_subscribe_wrong_content_type / sbi_accept_not_acceptable: Open5GS may
+#     answer 415/406 OR may ignore the header and proceed — the wrong-content
+#     flow pins `rejected` (we expect a refusal) while the Accept flow pins
+#     `tolerated` (refusal OR success both acceptable). If the wrong-content
+#     flow ends up tolerated rather than rejected against this build, that is a
+#     content-negotiation laxity finding on the core, not a flow bug.
+#   - pp_update_unknown_ue / pp_update_malformed_patch / ee_* negatives: if the
+#     UDM's nudm-pp / nudm-ee surface is not implemented it may answer 404/501
+#     for ALL inputs, so these "negative" probes can pass for the wrong reason
+#     (endpoint absent, not input rejected). Cross-check with the matching
+#     positive flows in udm_compliance.yaml.
+#   - sbi_oversized_body_liveness / sdm_get_am_data_missing_plmnid /
+#     ueau_confirm_auth_replay: these assert LIVENESS (`tolerated`). They fail
+#     only if the UDM crashes, hangs, or the follow-up liveness GET stops
+#     answering — i.e. a real robustness defect, which is exactly what we want
+#     to catch.
+#   - sbi_unknown_api_version: Open5GS routes by path prefix and may answer 404
+#     for an unknown /v99 (correct) or, on some builds, fall through oddly;
+#     either way a non-crash 4xx satisfies `rejected`.
+#
+# First-run results (2026-06-05, Open5GS v2.7.x, runner as SBI consumer):
+# 8/24 pass — but the score UNDERSTATES it: all 8 passes are the steps that
+# ran BEFORE the UDM died, and they passed correctly (malformed-SUPI 400,
+# invalid-dataset 400, subscribe missing-callback/malformed-body/wrong-
+# content-type all 400, unsubscribe-unknown 404, ueau-unknown-supi 404).
+# HEADLINE FINDING (genuine core robustness DoS, not a flow bug): a malformed
+# Nudm_UEAuthentication GetAuthData request (the ueau_generate_auth_data_*
+# negatives — empty/malformed SUCI parameter) drives the real Open5GS UDM into
+# `ogs_kdf_kausf` -> `ogs_kdf_common: Assertion 'param[0].len' failed`
+# (lib/crypt/ogs-kdf.c:58) -> `Aborted (core dumped)`. The UDM process exits
+# and de-registers from the NRF. Reproduced on every run. Every step after the
+# crash (16 of them) fails with connection-refused against the dead UDM — those
+# are crash cascade, NOT flow bugs. Two PRE-crash negatives also fail as a core
+# behaviour finding, not a flow bug: sdm_get_am_data_unknown_supi and
+# sdm_get_sm_data_unknown_dnn return 200/data instead of 404 (Open5GS lenient
+# lookup), so they never reach `rejected`. Recommended: run this suite LAST and
+# expect to restart the UDM afterwards.
+
+kind: suite
+name: udm-security
+description: One-request-per-flow abnormal/malformed/security probes; assert correct rejection (or tolerance) and UDM liveness.
+steps:
+  # --- SDM negatives ------------------------------------------------------
+  - name: sdm_get_am_data_unknown_supi
+    flow: udm_sdm_get_am_data_unknown_supi
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sdm_get_am_data_malformed_supi
+    flow: udm_sdm_get_am_data_malformed_supi
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sdm_get_am_data_missing_plmnid
+    flow: udm_sdm_get_am_data_missing_plmnid
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  - name: sdm_get_sm_data_unknown_dnn
+    flow: udm_sdm_get_sm_data_unknown_dnn
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sdm_get_datasets_invalid_dataset_name
+    flow: udm_sdm_get_datasets_invalid_dataset_name
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sdm_subscribe_missing_callback
+    flow: udm_sdm_subscribe_missing_callback
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sdm_subscribe_malformed_body
+    flow: udm_sdm_subscribe_malformed_body
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sdm_subscribe_wrong_content_type
+    flow: udm_sdm_subscribe_wrong_content_type
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sdm_unsubscribe_unknown_subscription
+    flow: udm_sdm_unsubscribe_unknown_subscription
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- UEAU negatives -----------------------------------------------------
+  - name: ueau_generate_auth_data_unknown_supi
+    flow: udm_ueau_generate_auth_data_unknown_supi
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueau_generate_auth_data_missing_serving_network
+    flow: udm_ueau_generate_auth_data_missing_serving_network
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueau_generate_auth_data_serving_network_not_authorized
+    flow: udm_ueau_generate_auth_data_serving_network_not_authorized
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueau_generate_auth_data_malformed_suci
+    flow: udm_ueau_generate_auth_data_malformed_suci
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueau_confirm_auth_missing_fields
+    flow: udm_ueau_confirm_auth_missing_fields
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueau_confirm_auth_replay
+    flow: udm_ueau_confirm_auth_replay
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  # --- UECM negatives -----------------------------------------------------
+  - name: uecm_amf_3gpp_register_missing_guami
+    flow: udm_uecm_amf_3gpp_register_missing_guami
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: uecm_amf_3gpp_register_unknown_supi
+    flow: udm_uecm_amf_3gpp_register_unknown_supi
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: uecm_amf_3gpp_get_no_context
+    flow: udm_uecm_amf_3gpp_get_no_context
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: uecm_smf_register_unknown_supi
+    flow: udm_uecm_smf_register_unknown_supi
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: uecm_smf_dereg_unknown_session
+    flow: udm_uecm_smf_dereg_unknown_session
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- PP / EE negatives --------------------------------------------------
+  - name: pp_update_unknown_ue
+    flow: udm_pp_update_unknown_ue
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pp_update_malformed_patch
+    flow: udm_pp_update_malformed_patch
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ee_create_subscription_invalid_event_type
+    flow: udm_ee_create_subscription_invalid_event_type
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ee_delete_subscription_unknown
+    flow: udm_ee_delete_subscription_unknown
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- transport / SBI-layer probes (run last; oversized/Accept assert -----
+  #     liveness, so keep them at the end where they can't mask a per-op find)
+  - name: sbi_unsupported_method_on_resource
+    flow: udm_sbi_unsupported_method_on_resource
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sbi_unknown_api_version
+    flow: udm_sbi_unknown_api_version
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sbi_accept_not_acceptable
+    flow: udm_sbi_accept_not_acceptable
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  - name: sbi_oversized_body_liveness
+    flow: udm_sbi_oversized_body_liveness
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated

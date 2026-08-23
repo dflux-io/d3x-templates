@@ -1,0 +1,183 @@
+# Npcf_PolicyAuthorization — Delete app-session removes the AF PCC rule.
+# 3GPP TS 29.514 §4.2.5 (POST /app-sessions/{id}/delete → 204).
+#
+# Chain of the install flow, then POST .../delete, then GET the sm-policy:
+# the establishment default rule ("rule-default") survives, and the AF-derived
+# rule ("app-…") is GONE. Per E4 absence is asserted with `not_contains "app-"`
+# over the stringified pccRules subtree (no not_exists op needed; exact-shape
+# rigor stays in the Go tier). GET shape SmPolicyControl{context, policy} (E6).
+
+kind: flow
+name: npcf_policyauth_appsession_delete_removes_rule
+description: install app-session → delete → GET sm-policy shows default rule kept, AF rule gone
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_sm_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_sm_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_appsession
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-policyauthorization/v1/app-sessions",
+                "body": {
+                  "ascReqData": {
+                    "supi": "imsi-001010000000001",
+                    "dnn": "internet",
+                    "sliceInfo": {"sst": 1, "sd": "000001"},
+                    "notifUri": "http://127.0.0.1:1/af-unused",
+                    "suppFeat": "0",
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "20 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_appsession:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_delete
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: app_sess_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.app_sess_loc}}/delete",
+                "body": {}
+              }
+
+  wait_delete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_sm_get
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "{{ue.Params.sm_policy_loc}}"
+              }
+
+  wait_sm_get:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_cleanup
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          - type: check
+            field: sbi.body.policy.pccRules.rule-default
+            op: exists
+          # AF rule removed — the reserved "app-" prefix no longer appears.
+          - type: check
+            field: sbi.body.policy.pccRules
+            op: not_contains
+            expected: "app-"
+          # Suite-isolation cleanup (R6): release this (supi,dnn) association so
+          # any later policyauth flow binds unambiguously.
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/delete",
+                "body": {}
+              }
+
+  wait_cleanup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

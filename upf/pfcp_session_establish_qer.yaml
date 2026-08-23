@@ -1,0 +1,93 @@
+# PFCP Session Establishment carrying a QER (3GPP TS 29.244 §7.5.2 / §5.2.1).
+#
+# Variant of pfcp_session_establish.yaml that additionally installs one Create
+# QER (a QoS Enforcement Rule) alongside the uplink PDR+FAR. Used by the
+# upf_metrics suite's QER leg to prove the QER is actually programmed at
+# establishment time and is externally observable via /metrics
+# (upf_qers_active 0 → 1). The PDR references the QER via qer_id so the rule is
+# wired, not orphaned.
+#
+# Spec-correct success = a SessionEstablishmentResponse with Cause
+# "Request accepted" (TS 29.244 §8.2.1).
+
+kind: flow
+name: upf_pfcp_session_establish_qer
+description: SMF establishes a PFCP session with a QER against a real UPF (N4)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1},
+                    "qer_id": [{"value": 1}]
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  }
+                ],
+                "create_qer": [
+                  {
+                    "qer_id": {"value": 1},
+                    "gate_status": {"ul_gate": 0, "dl_gate": 0}
+                  }
+                ]
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: established
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

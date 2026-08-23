@@ -1,0 +1,253 @@
+# REG-465 — initial registration with a null-scheme SUCI is de-concealed and
+# authenticated.
+#
+# TS 33.501 §C.1 (retrieved, operative sentence verbatim):
+#
+#   "Each protection scheme is identified by a Protection Scheme Identifier. The
+#    Protection Scheme Identifiers are as follows: null-scheme 0x0; Profile <A>
+#    0x1; Profile <B> 0x2."
+#   "The size of the Scheme Output of the protection schemes is as follows:
+#    null-scheme — size of input, i.e., size of username used in case of NAI
+#    format or MSIN in case of IMSI."
+#
+# TS 33.501 §6.12.5 (retrieved, operative sentence verbatim):
+#
+#   "SIDF is responsible for de-concealing the SUPI from the SUCI. … The
+#    de-concealment shall take place at the UDM."
+#
+# TS 33.501 §6.12.2: "The SUbscription Concealed Identifier, called SUCI, is a
+# privacy preserving identifier containing the concealed SUPI."
+# TS 24.501 §9.11.3.4: "The purpose of the 5GS mobile identity information
+# element is to provide either the SUCI, the 5G-GUTI, the IMEI, the IMEISV, the
+# 5G-S-TMSI, the MAC address or the EUI-64."
+#
+# WHAT THE UE SENDS
+# -----------------
+# The runner's REGISTRATION REQUEST always carries a SUCI with protection scheme
+# identifier 0 and the MSIN as the scheme output verbatim — enrichers.go sets
+# IdentityType SUCI, ProtectionSchemeId 0. Measured TX, both cores, 2026-08-10:
+#     7e 00 41 71 00 0d 01 00 f1 10 00 00 00 00 00 00 00 40 03 …
+#              ^^ 5GS mobile identity, length 0x000d
+#                    ^^ type=SUCI/IMSI  ^^^^^^^^ MCC/MNC 001/01
+#                                ^^ ^^ routing indicator   ^^ scheme id 0 (null)
+# There is no `-flow` parameter that changes this, so the precondition of the row
+# is structural, not configured.
+#
+# HOW "DE-CONCEALED TO THE RIGHT SUBSCRIBER" IS PROVED, NOT ASSUMED
+# -----------------------------------------------------------------
+# Nothing on N2 ever shows the resolved SUPI, so the proof is cryptographic and
+# comes in two stages:
+#
+#  1. An AUTHENTICATION REQUEST arrives with RAND and AUTN. The AV can only be
+#     produced against a resolved SUPI, so the SIDF resolved SOMETHING. If it
+#     resolved nothing, the AMF's recourse is the identification procedure — so
+#     an IDENTITY REQUEST in place of the AUTHENTICATION REQUEST is a failure
+#     terminal here, not a detour.
+#
+#  2. The REGISTRATION ACCEPT's MAC verifies. KAMF is derived with the SUPI as a
+#     key-derivation input (TS 33.501 Annex A.7; d3x: DerivateKamf(key, snName,
+#     SQN, AK, supi)), and the UE derived its own KAMF from the SUPI it believes
+#     it has. A verified MAC is therefore proof that the network's de-concealed
+#     SUPI is bit-for-bit the one the UE concealed — a wrong de-concealment
+#     yields a different KAMF, a different KNASint, and a MAC mismatch. This is
+#     asserted on the REGISTRATION ACCEPT rather than on the SECURITY MODE
+#     COMMAND on purpose: tinycore sends the SMC plain (see REG-430), which
+#     would drag an unrelated defect into this row's verdict.
+#
+# Reaching the SECURITY MODE COMMAND at all is the third fact: it means the RES*
+# the UE computed from its own K/OPc was accepted, so the AV was generated for
+# this subscriber's key material and not merely for some subscriber.
+#
+# MEASURED (2026-08-10, this lab): PASS on tinycore and on open5gs.
+
+kind: flow
+name: registration_null_scheme_suci
+description: Initial registration with a null-scheme SUCI; assert it is de-concealed (no identity request) and authenticated to a REGISTRATION ACCEPT that verifies under the SUPI-derived context
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # "yields an AUTHENTICATION REQUEST"
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: nas.authentication_param_rand
+            op: ie_present
+          - type: check
+            field: nas.authentication_param_autn
+            op: ie_present
+          - type: check
+            field: nas.ngksi
+            op: ie_present
+          - type: check
+            field: nas.abba
+            op: ie_present
+          - type: send
+            message: AuthResponse
+      # The SIDF could not resolve the SUCI, so the AMF fell back to the
+      # identification procedure (TS 24.501 §5.4.3). That is the exact failure
+      # this row exists to detect — a lenient terminal here would let a core
+      # that cannot de-conceal a null-scheme SUCI show green.
+      - event: NASDownlinkTransport.IdentityRequest
+        target: failed
+      - event: NASDownlinkTransport.RegistrationReject
+        target: failed
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # Reaching here means the RES* derived from THIS subscriber's K/OPc was
+      # accepted: "on a correct RES*".
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+      # A rejected RES* means the AV was built for a different subscriber than
+      # the one whose key material the UE holds — i.e. the SUCI resolved to the
+      # wrong SUPI, or to none.
+      - event: NASDownlinkTransport.AuthenticationReject
+        target: failed
+      - event: NASDownlinkTransport.RegistrationReject
+        target: failed
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # "and, on a correct RES*, a REGISTRATION ACCEPT"
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          # Cryptographic proof of correct de-concealment: the MAC verifies
+          # under KNASint derived from a KAMF whose derivation input is the SUPI.
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+          # The deciphered bytes really are a REGISTRATION ACCEPT (0x42 = 66),
+          # not garbage that happened to verify.
+          - type: check
+            field: nas.header.message_type
+            op: equals
+            expected: 66
+          # The registration bound the de-concealed subscriber to a temporary
+          # identity: TS 24.501 §9.11.3.4 5GS mobile identity, type 2 = 5G-GUTI.
+          # From here on the subscriber is addressed by the GUTI rather than by
+          # the SUCI, which is the point of the whole procedure.
+          - type: check
+            field: nas.guti
+            op: ie_present
+          - type: check
+            field: nas.guti.identity_type
+            op: equals
+            expected: 2
+          - type: check
+            field: nas.guti.tmsi_5g
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+      - event: NASDownlinkTransport.RegistrationReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-465).
+#
+# REG-465 — A REGISTRATION REQUEST whose 5GS mobile identity is a SUCI with protection
+# scheme identifier 0 (null-scheme) yields an AUTHENTICATION REQUEST and, on a correct
+# RES*, a REGISTRATION ACCEPT.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The 11 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 11 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 11
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,75 @@
+# CONC-02 — 100 concurrent PUTs to the SAME UUID (Layer B burst).
+#
+# Every one of the N=100 burst UEs PUTs the SAME fixed client-chosen
+# nf-instance ID. runner has no invocation-time parameter injection (no $env,
+# no -param), so the shared ID must be a literal baked into the flow — see
+# the persistence flows for the same constraint. With every UE writing the
+# same key, the NRF is exercised on its read-modify-write path: the first
+# writer creates (201), the rest update (200), and there must be exactly
+# ONE profile at the end with a consistent body.
+#
+# Per-UE invariant checked here: the response is 2xx (200 OR 201 — which
+# one a given UE gets is racy, so we bound rather than equate) and the
+# echoed nfInstanceId equals the fixed UUID (body consistency). The
+# "exactly 1 profile" invariant is the runner's curl step.
+#
+# Layer A counterpart: TestConcurrency_CONC02_SameUUIDPuts. On sqlite this
+# passes today because SetMaxOpenConns(1) serializes writers; the bug it
+# guards is a lost / torn read-modify-write.
+
+kind: flow
+name: nrf_conc_register_same
+description: PUT a fixed shared UUID; burst N=100 for CONC-02.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterSame
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/0c2c0c2c-0c2c-4c2c-8c2c-0c2c0c2c0c2c",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-conc02-shared.local",
+                  "ipv4Addresses": ["10.0.2.2"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterSame_Answer
+        target: done
+        actions:
+          # 2xx, accepting either 201 (the one creator) or 200 (every
+          # other concurrent writer) — which one a UE sees is a race.
+          - type: check
+            field: rest.status
+            op: greater_or_equal
+            expected: 200
+          - type: check
+            field: rest.status
+            op: less_than
+            expected: 300
+          - type: check
+            field: rest.body.nfInstanceId
+            op: equals
+            expected: "0c2c0c2c-0c2c-4c2c-8c2c-0c2c0c2c0c2c"
+
+  done: {}
+  failed: {}

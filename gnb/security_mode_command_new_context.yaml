@@ -1,0 +1,248 @@
+# REG-430 — SECURITY MODE COMMAND is integrity protected, unciphered, and
+# resets the downlink NAS COUNT.
+#
+# TS 24.501 §5.4.2.2 (retrieved via matrix/scripts/spec-clause.py, operative
+# sentences verbatim):
+#
+#   "The AMF shall reset the downlink NAS COUNT counter and use it to integrity
+#    protect the initial SECURITY MODE COMMAND message if the security mode
+#    control procedure is initiated: a) to take into use the security context
+#    created after a successful execution of the 5G AKA based primary
+#    authentication and key agreement procedure …"
+#
+#   "The AMF shall send the SECURITY MODE COMMAND message unciphered, but shall
+#    integrity protect the message with the 5G NAS integrity key based on KAMF
+#    or mapped K'AMF indicated by the ngKSI included in the message. The AMF
+#    shall set the security header type of the message to 'integrity protected
+#    with new 5G NAS security context'."
+#
+# TS 24.501 §9.3: "Bits 1 to 4 of the second octet of every 5GMM message
+# contain the Security header type IE." Wire value 3 = "integrity protected
+# with new 5G NAS security context" (table 9.3.1).
+#
+# TS 33.501 §6.7.2 1b: "This message shall be integrity protected (but not
+# ciphered) with NAS integrity key based on the KAMF indicated by the ngKSI in
+# the NAS Security Mode Command message."
+#
+# WHY nas.security.* AND NOT nas.header.security_header_type
+# ----------------------------------------------------------
+# DecodeSecure strips the outer header and hands back the INNER plaintext
+# message, whose own header.security_header_type is therefore always the plain
+# enum. Asserting on it would pass against a core that sent the SMC entirely in
+# the clear — precisely the defect this row exists to catch. nas.security.* is
+# the OUTER header read off the wire (TS 24.501 §9.3 values, not the +1 internal
+# enum).
+#
+# MEASURED (2026-08-10, this lab):
+#   open5gs  — outer 7e 03 …, header_type=3, SN=0, ciphered=false, mac_verified=true  → PASS
+#   tinycore — outer 7e 00 5d …, header_type=0 (PLAIN)                                → FAIL
+# The tinycore failure is the intended product: it violates the §5.4.2.2
+# sentence quoted above. The assertion is written to the spec, not to the core.
+
+kind: flow
+name: security_mode_command_new_context
+description: Initial registration; assert the SECURITY MODE COMMAND outer security header is 3 (integrity protected, new 5G NAS security context), unciphered, DL NAS COUNT reset, MAC verified
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          # §5.4.2.2 a): the security context taken into use by the SMC is the
+          # one created by THIS 5G AKA run, so the run must actually happen.
+          - type: check
+            field: nas.authentication_param_rand
+            op: ie_present
+          - type: check
+            field: nas.authentication_param_autn
+            op: ie_present
+          - type: check
+            field: nas.abba
+            op: ie_present
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # --- TS 24.501 §5.4.2.2: security header type = "integrity protected
+          # --- with new 5G NAS security context" (wire value 3, §9.3 table 9.3.1)
+          - type: check
+            field: nas.security.header_type
+            op: equals
+            expected: 3
+          - type: check
+            field: nas.security.header_type_name
+            op: equals
+            expected: integrity_protected_new_context
+          - type: check
+            field: nas.security.new_context
+            op: equals
+            expected: true
+          # --- "shall send … unciphered, but shall integrity protect"
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.ciphered
+            op: equals
+            expected: false
+          # --- "shall reset the downlink NAS COUNT counter and use it to
+          # --- integrity protect the initial SECURITY MODE COMMAND"
+          # has_sequence_number first: it is false on a plain message, so a
+          # plain SMC can never masquerade as "sequence number 0".
+          - type: check
+            field: nas.security.has_sequence_number
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.sequence_number
+            op: equals
+            expected: 0
+          # --- TS 33.501 §6.7.2 1b / §6.4.5: the MAC verifies under KNASint
+          # --- derived from the KAMF of this authentication run. The UE derived
+          # --- KAMF independently from its own K/OPc, so a verified MAC is
+          # --- cryptographic proof both sides hold the same new context.
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+          # --- "a plaintext (unciphered) NAS payload": the inner SMC parsed
+          # --- without a decipher step, so its mandatory IEs are readable.
+          #
+          # `>= 1` and NOT `ie_present` for the algorithm half-octet (xp-255).
+          # SelectedNasSecurityAlgorithmsIntegrity is a non-pointer scalar enum
+          # whose ZERO value is the decoder's IA_NONE "IE was absent" sentinel;
+          # a real selection is 1..8 (wire nibble + 1). It used to carry
+          # `,omitempty`, so absence dropped the key and `ie_present` failed.
+          # xp-255 removed `,omitempty` from non-pointer fields, so the key is
+          # now always emitted and `ie_present` can never fail on it — which
+          # would silently void the READABILITY claim this check exists to
+          # make. `>= 1` still fails on a payload that did not parse as a
+          # plaintext SMC.
+          - type: check
+            field: nas.selected_nas_security_algorithms_integrity
+            op: greater_or_equal
+            expected: 1
+          # This one stays `ie_present`: ReplayedUeSecurityCapabilities is a
+          # POINTER field and keeps `,omitempty` under the xp-255 rule, so a
+          # missing IE is still a nil pointer, still an omitted key, and still
+          # a `<missing>` resolution that fails the check.
+          - type: check
+            field: nas.replayed_ue_security_capabilities
+            op: ie_present
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-430).
+#
+# REG-430 — The SECURITY MODE COMMAND has security header type 3 (0011, 'integrity
+# protected with new 5G NAS security context'), downlink NAS sequence number 0, a
+# plaintext (unciphered) NAS payload, and a MAC that verifies under KNASint derived from
+# the KAMF of this authentication run.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The 14 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 14 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 14
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

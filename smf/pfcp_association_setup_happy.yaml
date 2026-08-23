@@ -1,0 +1,46 @@
+# N4/PFCP — Association Setup happy path (compliance).
+# 3GPP TS 29.244 §6.2.6 / §7.4.4.
+#
+# runner plays the SMF (CP function) and drives a real Open5GS UPF over N4. It
+# sends a PFCPAssociationSetupRequest (NodeID + RecoveryTimeStamp auto-filled
+# from the binding) and the UPF replies with PFCPAssociationSetupResponse
+# carrying Cause=Request accepted. The pfcp.cause resolver lets us assert the
+# spec-correct success cause directly.
+kind: flow
+name: smf_pfcp_association_setup_happy
+description: SMF establishes a PFCP association with UPF — expect Cause Request accepted
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - associated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: smf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: associated
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.node_id
+            op: not_empty

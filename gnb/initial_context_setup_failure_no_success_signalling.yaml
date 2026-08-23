@@ -1,0 +1,351 @@
+# REG-483 — after an INITIAL CONTEXT SETUP FAILURE, the AMF must not carry on as
+# though the context had been set up.
+#
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE (xp-245 negative-probe audit).
+#
+# TS 38.413 §8.3.1.3 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim):
+#
+#   "If the NG-RAN node is not able to establish an NG UE context, it shall
+#    consider the procedure as failed and reply with the INITIAL CONTEXT SETUP
+#    FAILURE message."
+#
+#   "Upon reception of the INITIAL CONTEXT SETUP FAILURE message the AMF shall,
+#    for each PDU session indicated in the PDU Session ID IE, transfer
+#    transparently the PDU Session Resource Setup Unsuccessful Transfer IE to
+#    the SMF associated with the concerned PDU session and MAY CONSIDER THAT THE
+#    NAS PDU INCLUDED IN THE INITIAL CONTEXT SETUP REQUEST MESSAGE WAS NOT
+#    DELIVERED."
+#
+# TS 38.413 §8.3.1.2 is the contrast that gives the row its meaning: on SUCCESS
+# "the UE-associated logical NG-connection shall be established at reception of
+# the INITIAL CONTEXT SETUP REQUEST message" and the NG-RAN node passes the
+# NAS-PDU to the UE. The failure message says none of that happened.
+#
+# TS 33.501 §6.7.3.0 is why the failure is a security event and not only a
+# resource one: the AS security context the AMF asked the gNB to install — the
+# Security Key and the UE 5G security capabilities — was not installed. An AMF
+# that proceeds to send PDU session resource signalling for this UE is
+# provisioning user-plane resources onto a radio bearer with no AS security.
+#
+# THIS ROW IS THE OPPOSITE POLARITY TO REG-252
+# --------------------------------------------
+# initial_context_setup_failure_unsupported_security (REG-252) asserts that the
+# AMF REACTS — that it does not crash or hang. This row asserts what must NOT
+# follow, which no amount of reacting establishes. The two are complementary and
+# neither subsumes the other.
+#
+# WHAT IS ACTUALLY ON THE WIRE
+# ----------------------------
+# MEASURED (2026-08-11, this lab, `-trace`): the AMF's INITIAL CONTEXT SETUP
+# REQUEST arrives carrying a Security Key, the UE Security Capabilities and a
+# NAS-PDU holding the REGISTRATION ACCEPT (asserted below, so this row cannot
+# pass against a setup that never happened), and the gNB answers
+# NGAP_INITIAL_CONTEXT_SETUP_FAILURE instead of the RESPONSE — an
+# UnsuccessfulOutcome for procedure code 14 carrying a Cause IE.
+#
+# WHY SILENCE IS THE PASS, AND WHY IT WAS A BARE TIMER ANYWAY
+# -----------------------------------------------------------
+# §8.3.1.3 places no positive duty on the AMF: "may consider … was not
+# delivered" is a permission, not an obligation, and nothing in the clause
+# requires it to emit anything at all. The register's criterion agrees on the
+# substance — its pass is the ABSENCE, "no further downlink NAS or PDU session
+# resource signalling … as if setup had succeeded" — and then names
+# UEContextReleaseCommand or REGISTRATION REJECT as what one would EXPECT to
+# see, not as what is required. So silence is scored `rejected` alongside those
+# two explicit forms.
+#
+# Everything the clause FORBIDS is a message, and each is named below:
+#   PDU SESSION RESOURCE SETUP / MODIFY / RELEASE for this UE  -> tolerated
+#   a DL NAS TRANSPORT carrying a 5GSM payload                 -> tolerated
+#   a CONFIGURATION UPDATE COMMAND                             -> tolerated
+# each of which is the AMF treating the UE as though it had a context, a radio
+# bearer and an AS security context it demonstrably does not have.
+#
+# BUT THAT NEVER MADE THE PASS ADMISSIBLE, and the 50effc0 baseline shows why on
+# both cores that took it:
+#
+#   tinycore  "timed out in state=wait_reaction after 12.0s — terminal
+#             target=rejected". The absence is real, but the terminal rested on
+#             nothing: a conformant AMF that says nothing, a crashed one, a dead
+#             association and a message that never arrived are the same
+#             observation. lib/outcome.py DEFENCE 11 voided it. `inconclusive`.
+#   free5gc   RETRANSMITTED THE INITIAL CONTEXT SETUP REQUEST — rx count 2 for
+#             NGAP_INITIAL_CONTEXT_SETUP_REQUEST, and bus_audit.refused names it:
+#             {state: wait_reaction, event:
+#             InitialContextSetupRequest.RegistrationAccept, arrival_seq: 4}.
+#             That is the AMF exercising §8.3.1.3's "may consider that the NAS
+#             PDU … was not delivered" and trying again — the OPPOSITE of
+#             proceeding as if setup had succeeded, i.e. this row's pass, stated
+#             by the core. The flow named no transition for it, the bus dropped
+#             it, and the state timed out. `inconclusive` as well.
+#
+# ============================================================================================
+# THE DISCRIMINATOR: PROVE THE CHANNEL, THEN THE ABSENCE MEANS SOMETHING.
+# ============================================================================================
+#
+# This row's claim IS an absence — no UE-scoped success signalling — so there is
+# no "subsequent probe the AMF answers only from the state we assert": any
+# answer would have to be a UE-scoped message, and the row's whole point is that
+# none should come. What silence must be separated from is therefore not another
+# AMF state but the four inadmissible alternatives: a dead core, a dead
+# association, a message that never arrived, and an answer we could not name.
+# The last is now named (the retry, above). The first three are excluded by an
+# NG SETUP REQUEST on the same SCTP association, asserted on the mandatory IEs
+# of its response (TS 38.413 §9.2.6.2): if the AMF answers that, it was alive,
+# the association carries our messages, and the absence of UE-scoped signalling
+# is a real absence.
+#
+# This is the WEAKEST of the three kinds of discriminator — absence plus a
+# proven-live channel — and it is used here because for a row whose criterion is
+# an absence it is the strongest kind that exists. It is measured, not hoped
+# for: REG-802 sends an in-flow NG SETUP REQUEST on an established association
+# and passed on tinycore, Open5GS and free5GC in this baseline, 13 checks each.
+#
+# THE ONE COST, STATED. §8.7.1.1 has NG Setup "erase any existing application
+# level configuration data" and replace it, so the probe is not side-effect
+# free. It fires only AFTER the absence window has closed, only on the branch
+# where the flow was otherwise about to end on a bare timer, and only once every
+# UE-scoped assertion has had its full window — so nothing this row asserts can
+# be disturbed by it.
+#
+# WHAT THE LADDER STILL CANNOT SAY, AND IT IS NOT THIS FLOW'S DOING. `run`
+# derives the `rejected` fact by grepping runner.log for refusal strings, and
+# `InitialContextSetupFailure` is one of them — but runner.log records what WE
+# SEND too, and this flow sends exactly that. facts.json reports
+# `"rejected": true` for this row on all three cores as a result. lib/outcome.py
+# step 9 reads `rejected` + kind negative as `rejected-correctly`, a PASS, so
+# every terminal this flow can reach on a message classifies green, including
+# the `tolerated` arms that ARE the finding. The absence half of this row is now
+# soundly evidenced; the FINDING half cannot be published until that fact
+# distinguishes what the core sent from what we sent. Flagged, not worked
+# around — inventing a route to avoid it would only move the lie.
+#
+# ACCEPTANCE TEST (mandatory for a negative row) — MEASURED 2026-08-11:
+#   InitialContextSetupFailure (as authored) -> see the run report
+#   InitialContextSetupResponse instead (violation off) -> the setup SUCCEEDS,
+#     and the row is deliberately built so that this is visible: with the
+#     failure replaced by the response the flow goes on to send a PDU SESSION
+#     ESTABLISHMENT REQUEST and the PDU SESSION RESOURCE SETUP REQUEST that
+#     comes back lands on the `tolerated` arm. That proves the arm is live: the
+#     exact message that would score the finding after a FAILURE is one this
+#     lab can and does produce after a RESPONSE.
+
+kind: flow
+name: initial_context_setup_failure_no_success_signalling
+description: After INITIAL CONTEXT SETUP FAILURE, no downlink NAS or PDU session resource signalling may follow as if the setup had succeeded (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reaction
+        actions:
+          # THE PRECONDITION, ASSERTED. §8.3.1.3 is about refusing a setup that
+          # was actually attempted: the Security Key and the UE security
+          # capabilities are the AS security context §6.7.3.0 says the AMF is
+          # asking the gNB to install, and the NAS-PDU is the REGISTRATION
+          # ACCEPT the failure says was not delivered. Without them there would
+          # be nothing for the gNB to fail and this row would measure nothing.
+          - { type: check, field: security_key, op: ie_present }
+          - { type: check, field: ue_security_capabilities, op: ie_present }
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          # §8.3.1.3: "reply with the INITIAL CONTEXT SETUP FAILURE message".
+          - { type: send, message: InitialContextSetupFailure }
+  wait_reaction:
+    # THE ABSENCE WINDOW, AND IT NO LONGER DECIDES ANYTHING BY ITSELF. §8.3.1.3
+    # imposes no positive duty on the AMF, so an abandoned procedure emits
+    # nothing and that IS the substance of the pass — but silence on its own
+    # cannot be told apart from a core that was never there, so falling out of
+    # this window is the cue to prove the channel instead of the verdict.
+    on_timeout:
+      duration: 8s
+      target: probe_channel_alive
+      actions:
+        - { type: send, message: NGSetupRequest }
+    transitions:
+      # Provisioning user-plane resources onto a UE whose AS security context
+      # was never installed — the §6.7.3.0 consequence of ignoring the failure.
+      #
+      # TWO OF THESE THREE NAMES WERE DEAD (found 2026-08-13 by
+      # TestRxEventVocabCoversEveryTemplateEvent). The event resolver emits
+      # `PDUSessionModifyRequest` and `PDUSessionReleaseCommand`
+      # (event_resolver.go: ngapEventMap); the spec-shaped
+      # `PDUSessionResource…` spellings this branch used to carry are names
+      # nothing produces, so two thirds of the FINDING branch of a negative row
+      # could never fire — a core that did exactly what §6.7.3.0 forbids would
+      # have been refused by the bus and read as silent. Only
+      # `PDUSessionResourceSetupRequest` was right, because that one IS the
+      # mapped name.
+      - event:
+          or:
+            - PDUSessionResourceSetupRequest
+            - PDUSessionModifyRequest
+            - PDUSessionReleaseCommand
+        target: tolerated
+      # Downlink 5GMM/5GSM signalling that presumes a delivered REGISTRATION
+      # ACCEPT and a live radio bearer.
+      - event:
+          or:
+            - NASDownlinkTransport.DLNASTransport
+            - NASDownlinkTransport.ConfigurationUpdateCommand
+        target: tolerated
+      # The expected observations named by the criterion. Also correct, also
+      # stronger than §8.3.1.3 requires.
+      - event: UEContextReleaseCommand
+        target: rejected
+        actions: [{ type: send, message: UEContextReleaseComplete }]
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions: [{ type: check, field: nas.gmm_cause, op: ie_present }]
+      # THE RETRY IS THE PASS, STATED BY THE CORE. Re-sending the INITIAL CONTEXT
+      # SETUP REQUEST is §8.3.1.3's "may consider that the NAS PDU included in
+      # the INITIAL CONTEXT SETUP REQUEST message was not delivered" exercised —
+      # the AMF is treating the setup as NOT having succeeded, which is precisely
+      # what this row asserts. free5gc sent one and this flow used to drop it.
+      #
+      # Both spellings are needed: ResolveEventString emits the dotted form when
+      # the retry carries a decodable NAS PDU and the bare form when it does not,
+      # and EventDef.Matches compares the whole string.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - InitialContextSetupRequest
+        target: rejected
+        actions:
+          # The retry must still be the security context install this row is
+          # about, not an unrelated message that happens to share a procedure
+          # code.
+          - { type: check, field: security_key, op: ie_present }
+      - { event: ErrorIndication, target: rejected }
+  probe_channel_alive:
+    # Silence to an NG SETUP REQUEST is silence to a message §8.7.1.2 obliges the
+    # AMF to answer with either a RESPONSE or a FAILURE. At that point nothing
+    # about this row has been established — including whether the core was ever
+    # reached — so `unproven` is the verdict, and reached on this timer DEFENCE 11
+    # renders it `inconclusive` with no rule needing to know its name.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      # THE DISCRIMINATOR FIRING. No UE-scoped success signalling followed the
+      # INITIAL CONTEXT SETUP FAILURE, and the AMF is PROVED to have been alive
+      # and reachable over the whole window — so the absence is a real absence
+      # and the pass is earned rather than assumed. The three checks are the
+      # §9.2.6.2 mandatory IEs that are genuinely missing from the decoded view
+      # when omitted (the same set REG-802 asserts, minus Relative AMF Capacity,
+      # which is decoded into a non-pointer int32 and so is always "present" —
+      # see ng_setup_response_mandatory_ies.yaml).
+      - event: NGSetupResponse
+        target: rejected
+        actions:
+          - { type: check, field: amf_name, op: not_empty }
+          - { type: check, field: served_guami_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: plmn_support_list.length, op: greater_or_equal, expected: 1 }
+      # A forbidden message that arrived late is still forbidden: the verdict must
+      # not depend on which side of the window boundary the core's own timer falls.
+      - event:
+          or:
+            - PDUSessionResourceSetupRequest
+            - PDUSessionModifyRequest
+            - PDUSessionReleaseCommand
+            - NASDownlinkTransport.DLNASTransport
+            - NASDownlinkTransport.ConfigurationUpdateCommand
+        target: tolerated
+      # Late permitted reactions, same reasoning in the other direction.
+      - event: UEContextReleaseCommand
+        target: rejected
+        actions: [{ type: send, message: UEContextReleaseComplete }]
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - InitialContextSetupRequest
+        target: rejected
+        actions: [{ type: check, field: security_key, op: ie_present }]
+      # An NG SETUP FAILURE, or an ERROR INDICATION in answer to the NG SETUP
+      # REQUEST, proves the AMF is alive but not that the channel this row's
+      # absence was measured over was healthy — and nothing separates a refusal
+      # caused by this row from one the AMF would have given anyway.
+      - event:
+          or:
+            - NGSetupFailure
+            - ErrorIndication
+        target: unproven
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-483 (negative, expected_terminal: rejected) —
+# After the gNB answers INITIAL CONTEXT SETUP REQUEST with INITIAL CONTEXT SETUP
+# FAILURE, no further downlink NAS or PDU session resource signalling for that UE is
+# sent as if setup had succeeded; a UEContextReleaseCommand, a REGISTRATION REJECT or a
+# RETRIED INITIAL CONTEXT SETUP REQUEST within the budget is the expected observation.
+# Where the AMF says nothing for that UE, the absence is the pass ONLY once the channel
+# it was measured over has been proved alive — an NG SETUP REQUEST on the same SCTP
+# association draws an NG SETUP RESPONSE carrying the mandatory IEs of TS 38.413
+# §9.2.6.2. Absence with nothing behind it is inconclusive, not a pass.
+#
+# REG-483's criterion has two halves and both land on `rejected`: a
+# UEContextReleaseCommand, a REGISTRATION REJECT or a retried INITIAL CONTEXT SETUP
+# REQUEST is "the expected observation", and where the AMF says nothing the absence is
+# the pass ONLY once an NG SETUP REQUEST on the same association has drawn its RESPONSE
+# — which is precisely the probe_channel_alive branch that also targets `rejected`.
+# `tolerated` is the finding (downlink NAS or PDU-session signalling sent as if the
+# context setup had succeeded); `unproven` is the probe going unanswered, which the
+# criterion calls inconclusive in as many words.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

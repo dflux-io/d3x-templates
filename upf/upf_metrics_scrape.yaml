@@ -1,0 +1,53 @@
+# UPF metrics scrape (F-20) — the reusable Ⓜ assertion vehicle.
+#
+# GETs the standalone UPF's Prometheus /metrics endpoint and asserts the
+# response is 200 and carries the UPF gauge family. A follow-up REST flow
+# like this is how N4/N3/N6 sanity flows observe externally-visible UPF
+# state (session/association counts, datapath counters) that PFCP/GTP-U
+# check actions can't reach directly.
+#
+# protocol: rest, nf: external — a separate flow from the PFCP lifecycle
+# (runner flows are single-protocol; a pfcp flow cannot send a REST message).
+# Requires the `http1` REST binding option (the endpoint is HTTP/1.1).
+
+kind: flow
+name: upf_metrics_scrape
+description: GET the UPF /metrics endpoint and assert the gauge family is present (Ⓜ vehicle)
+category: functional
+type: client
+protocol: rest
+nf: external
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: ScrapeMetrics
+            peer: metrics
+            message_body: |
+              { "method": "GET", "url": "/metrics" }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: rest.ScrapeMetrics_Answer
+        target: completed
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "upf_sessions_active"

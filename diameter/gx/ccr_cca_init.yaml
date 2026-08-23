@@ -1,0 +1,57 @@
+# Gx CCR/CCA 4-step echo flow — INITIAL credit control.
+# Credit-Control-Request/Answer (RFC 4006 §3.1).
+# CC-Request-Type=INITIAL_REQUEST(1) marks session establishment.
+#
+# The MsgType the bus produces for CCR (command 272, request bit set) is
+# "CCR" (dictionary short = "CC" + "R"); the FSM matches on that name even
+# though the action that built it was named "CCRInit" — the action name
+# selects an enricher, the event name comes off the wire.
+
+kind: flow
+name: diameter_gx_ccr_cca_init
+description: Gx CCR/CCA INITIAL 4-step echo against edge
+category: functional
+type: client
+protocol: diameter
+nf: pgw
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ccr_echo
+        actions:
+          - type: send
+            message: CCRInit
+
+  wait_ccr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CCR
+        target: wait_cca_echo
+        actions:
+          - type: check
+            field: CC-Request-Type
+            op: equals
+            expected: 1
+          - type: send
+            message: CCA
+
+  wait_cca_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CCA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001

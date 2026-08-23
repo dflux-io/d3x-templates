@@ -1,0 +1,39 @@
+# SBI smoke — Nausf_UEAuthentication_Authenticate (client side).
+# Demonstrates a POST with a typed openapi/models request body.
+
+kind: flow
+name: sbi_nausf_authenticate_client
+description: Client POST against AUSF Nausf_UEAuthentication_Authenticate
+category: functional
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: completed

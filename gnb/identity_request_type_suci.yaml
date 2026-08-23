@@ -1,0 +1,174 @@
+# REG-469 — when the 5G-GUTI cannot be resolved, the IDENTITY REQUEST asks for
+# the SUCI specifically, and the SUCI supplied in answer is usable.
+#
+# TS 24.501 §5.4.3.2 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim):
+#
+#   "The AMF initiates the identification procedure by sending an IDENTITY
+#    REQUEST message to the UE and starting timer T3570. The IDENTITY REQUEST
+#    message SPECIFIES THE REQUESTED IDENTIFICATION PARAMETERS IN THE IDENTITY
+#    TYPE INFORMATION ELEMENT."
+#
+# TS 24.501 §5.4.3.3: the UE answers with an IDENTITY RESPONSE carrying the
+# identity the AMF asked for.
+#
+# TS 33.501 §6.12.4 is why the requested type must be SUCI and not SUPI: the
+# subscription permanent identifier is never sent unconcealed over the air, so
+# the only identity the network may solicit here is the concealed one.
+#
+# TS 24.501 §9.11.3.3 table 9.11.3.3.1: Identity type value 001 = "SUCI".
+# nas5g decodes the half-octet into NAS_IdentityType, whose SUCI constant is 1 —
+# the wire value, not an offset enum — so `nas.identity_type equals 1` is an
+# assertion about the octet on the wire.
+#
+# WHY THE VALUE CHECK IS THE POINT
+# --------------------------------
+# Two flows already send an unresolvable 5G-GUTI: registration_guti_unknown
+# scores "the AMF did not crash" (IDENTITY REQUEST *or* REGISTRATION REJECT),
+# and identity_request (REG-115) scores "the identification procedure advanced".
+# Neither looks at WHICH identity was requested, so both would pass against an
+# AMF that asked for an IMEI, a 5G-S-TMSI, or the SUPI in the clear. This row is
+# the one that reads the Identity type IE, which is the only thing §5.4.3.2
+# actually promises about the message.
+#
+# The second half of the criterion — "answering with a fresh SUCI yields an
+# AUTHENTICATION REQUEST" — is asserted too, and it is not a formality: an AMF
+# that asks for an identity it cannot then use leaves the UE exactly as stranded
+# as one that never asked. The AUTHENTICATION REQUEST is required to carry the
+# 5G AKA parameters, so "yields an authentication run" means a real one.
+#
+# MEASURED (2026-08-11, this lab):
+#   tinycore — IDENTITY REQUEST with identity_type = 1 (SUCI); the SUCI answer
+#              is accepted and an AUTHENTICATION REQUEST with RAND, AUTN and
+#              ABBA follows                                            -> PASS
+
+kind: flow
+name: identity_request_type_suci
+description: Registration with an unresolvable 5G-GUTI; assert the IDENTITY REQUEST asks for Identity type SUCI and that the SUCI supplied yields an AUTHENTICATION REQUEST
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - identity_resolved
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_identity_request
+        actions:
+          # A REGISTRATION REQUEST identified by a 5G-GUTI for which the core
+          # holds no context — the condition §5.4.3.2 names for invoking the
+          # identification procedure.
+          - type: send
+            message: InitialUEMessageGuti
+
+  wait_identity_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_authentication
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          # --- §5.4.3.2 "specifies the requested identification parameters in
+          # --- the Identity type information element"; §9.11.3.3 value 001 =
+          # --- SUCI. An IMEI (3), a 5G-S-TMSI (4) or an IMEISV (5) request all
+          # --- fail here, and so does an unset type (0).
+          - type: check
+            field: nas.identity_type
+            op: equals
+            expected: 1
+          # The identification procedure runs before any security context
+          # exists, so the request is plain. Asserted so that a core which
+          # somehow protected it — implying a context it cannot have — does not
+          # slip through as if this were an ordinary post-security exchange.
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: false
+          - type: send
+            message: IdentityResponse
+
+  wait_authentication:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: identity_resolved
+        actions:
+          # "yields an AUTHENTICATION REQUEST" — a real 5G AKA run, not a bare
+          # message: RAND and AUTN are the parameters the UE needs to answer,
+          # and their absence would mean the SUCI was not actually usable.
+          - type: check
+            field: nas.authentication_param_rand
+            op: ie_present
+          - type: check
+            field: nas.authentication_param_autn
+            op: ie_present
+          - type: check
+            field: nas.ngksi
+            op: ie_present
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-469).
+#
+# REG-469 — After a REGISTRATION REQUEST carrying a 5G-GUTI the core does not know, an
+# IDENTITY REQUEST with Identity type 'SUCI' is received; answering with a fresh SUCI
+# yields an AUTHENTICATION REQUEST.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `identity_resolved`
+    metric: final_state_counts.identity_resolved
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent (InitialUEMessageGuti)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NAS UPLINK TRANSPORT was sent (IdentityResponse)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: an IDENTITY REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.IdentityRequest
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

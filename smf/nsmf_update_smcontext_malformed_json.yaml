@@ -1,0 +1,53 @@
+# Nsmf_PDUSession_UpdateSMContext — malformed JSON body (negative/security).
+# 3GPP TS 29.502 §6.1.6; TS 29.500 §6.3.
+#
+# runner (AMF) POSTs a truncated, non-parseable JSON body to a modify endpoint via
+# raw_body. A spec-correct SMF MUST reject with 400 Bad Request and stay up.
+# (Aimed at a fabricated ref so the parse error dominates; even if the ref were
+# unknown the correct behaviour is still a clean 4xx, never a 5xx/crash.)
+kind: flow
+name: smf_nsmf_update_smcontext_malformed_json
+description: AMF Update SM context with truncated JSON — expect 4xx rejection
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts/deadbeef-0000-0000-0000-000000000000/modify",
+                "headers": {"Content-Type": "application/json"},
+                "raw_body": "{ \"upCnxState\": "
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

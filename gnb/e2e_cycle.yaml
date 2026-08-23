@@ -1,0 +1,346 @@
+# The whole life of a UE, in one flow: register, open a PDU session, pass real
+# user-plane traffic through it, release the session, deregister.
+#
+#   ./bin/d3x-run run-flow -flow e2e_cycle \
+#       -templates . \
+#       -c matrix/cores/tinycore/gnb-2gnb.yaml \
+#       -s matrix/e2e/subscribers-10.yaml \
+#       -repetitions 10 -rate 2 -timeout 90s
+#
+# WHAT THIS IS FOR, AND WHY IT IS NOT A REGISTER ROW.
+#
+# Every other gnb/ template isolates one procedure so a verdict names one
+# behaviour. This one deliberately does the opposite: it is a fleet exercise.
+# It answers "can N UEs, spread over the declared gNBs, each complete a full
+# session lifecycle against this core" — the question you ask before a demo, a
+# capacity run, or a core upgrade, and the one no single-procedure row asks.
+# It is bound to no REG-id and should not be: a failure here says "something in
+# the cycle broke", and the register rows are what then say WHICH thing.
+#
+# THE UEs SPREAD ACROSS gNBs BY THEMSELVES. Engine.createUE picks each UE's gNB
+# at random from the pool (`gnbCtxs[rand.Intn(len(gnbCtxs))]`), so declaring two
+# gNBs in the env config is the whole of the configuration. Expect a binomial
+# split, not an exact halving — 6 UEs over 2 gNBs lands 4/2 about as often as
+# 3/3, and neither is a fault.
+#
+# ONE GTP-U SOCKET SERVES ALL OF THEM. gNBs that answer on the same N3 address
+# share one executor (runner/runner/uplane_n3.go), so a two-gNB env needs one
+# host address, not two. Each UE's downlink TEID is allocated, not aliased from
+# its RAN-UE-NGAP-ID, which is what makes them distinguishable on that one
+# socket.
+#
+# TIMEOUTS ARE DELIBERATELY LOOSER THAN THE SINGLE-PROCEDURE TEMPLATES. Those
+# budget for one UE against an idle core. Here the tail UE of a paced fleet is
+# competing with everyone ahead of it, and a per-state timeout tuned for a
+# quiet core turns queueing into a false failure. Pace the fleet with `-rate`
+# rather than tightening these.
+
+kind: flow
+name: e2e_cycle
+description: Full UE lifecycle — register, PDU session, user-plane traffic, release, deregister
+detail: |
+  A single UE state machine covering the complete lifecycle:
+
+    1. Registration (TS 23.502 §4.2.2.2.2) — Initial UE Message, 5G-AKA
+       authentication, NAS security mode, Initial Context Setup, Registration
+       Complete.
+    2. PDU session establishment (TS 23.502 §4.3.2) — the session is accepted,
+       the core allocates a UE IP and an uplink F-TEID, and the gNB answers with
+       its own downlink TEID.
+    3. User-plane traffic — ICMP echo encapsulated in GTP-U over the established
+       N3 tunnel, for the configured duration.
+    4. UE-requested PDU session release (TS 24.501 §6.4.3) — release request,
+       release command, resource release response.
+    5. UE-initiated deregistration (TS 24.501 §5.5.2) — deregistration request,
+       then UE Context Release.
+
+  Composed from the states of registration, uplane_traffic, pdu_session_release
+  and deregistration, which remain the templates to reach for when isolating any
+  one of those procedures.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes, and free5GC does.
+            # This flow has four more uplink NAS messages to send, so it is not
+            # optional here.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          # Stamped now and echoed on the PDU session setup response below: the
+          # AMF-UE-NGAP-ID is the id the core knows this UE by for the whole
+          # cycle.
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 25s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_running
+        actions:
+          # The three things the user-plane leg cannot run without, asserted
+          # here rather than discovered as a nil inside uplane_start: the
+          # session id, the UPF's uplink TEID, and the UE address the core
+          # allocated.
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: uplane_start
+
+  uplane_running:
+    # Generous: the executor is shared, and this state also absorbs the
+    # configured traffic duration (gnb.uplane.duration in the env config).
+    on_timeout:
+      duration: 120s
+      target: failed
+    transitions:
+      - event: UplaneComplete
+        target: wait_release_command
+        actions:
+          # PKT_RX IS THE GATE. pkt_tx counts calls to send on an unconnected
+          # UDP socket — it says the generator ran, and nothing about whether
+          # anything on the far end exists. See uplane_traffic.yaml, which
+          # carries the full reasoning and the measurement behind it.
+          #
+          # Since per-UE accounting landed these are THIS UE's numbers rather
+          # than the executor's roll-up, so a fleet run cannot pass on one UE's
+          # packets standing in for another's.
+          - type: check
+            field: ue.UplaneReport
+            op: not_empty
+          - type: check
+            field: ue.UplaneReport.pkt_tx
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UplaneReport.pkt_rx
+            op: greater_than
+            expected: 0
+          - type: send
+            message: PDUSessionReleaseRequest
+
+  wait_release_command:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      # The NGAP PDU SESSION RESOURCE RELEASE COMMAND carries a DL NAS TRANSPORT
+      # wrapping the 5GSM PDU SESSION RELEASE COMMAND.
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: wait_dereg_accept
+        actions:
+          # N2: the command names the session we asked to release (§8.2.2.2).
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
+          # N1: the NAS-PDU IE is present and is a 5GSM release command for the
+          # same session. 211 = 0xD3 PDU SESSION RELEASE COMMAND.
+          - { type: check, field: nas.payload_container.n1_sm_message.header.message_type, op: equals, expected: 211 }
+          - { type: check, field: nas.payload_container.n1_sm_message.header.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
+          - type: send
+            message: PDUSessionResourceReleaseResponse
+          - type: send
+            message: DeregistrationRequest
+
+  # Two orderings are both conformant and both are in the field: Open5GS sends
+  # DEREGISTRATION ACCEPT and then the UE Context Release, while others skip the
+  # accept and go straight to resource cleanup. Accepting either here is what
+  # lets one template run against every core (deregistration.yaml does the same).
+  wait_dereg_accept:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release
+      - event: UEContextReleaseCommand
+        target: completed
+        actions:
+          - type: check
+            field: ran_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: UEContextReleaseComplete
+
+  # Reached only when the AMF acknowledged first. The timeout target is
+  # `completed`, not `failed`: the accept is the UE-visible end of the
+  # deregistration procedure, and an AMF that never follows with the context
+  # release has not failed the UE's cycle.
+  wait_release:
+    on_timeout:
+      duration: 20s
+      target: completed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: completed
+        actions:
+          - type: check
+            field: ran_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: UEContextReleaseComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL. One route to `completed` is a timer (the absence window), so the
+  # message assertions below are what separate "reached it" from "waited it out".
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 6
+  - name: one PDU SESSION RESOURCE RELEASE RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
+    op: equals
+    value: 1
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RELEASE COMMAND arrived (the NAS message inside the NGAP PDU SESSION RELEASE COMMAND)
+    metric: rx_events.PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # Several routes reach `completed` with different numbers of checks
+  # (14..15); 14 is the shortest one, so it is the floor that still proves
+  # an assertion was made on the messages this run saw.
+  - name: at least 14 declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 14
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

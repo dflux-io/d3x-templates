@@ -1,0 +1,80 @@
+# PFCP Session Establishment with an invalid PDR (dangling FAR reference)
+# (3GPP TS 29.244 §7.5.2 / §8.2.1 / §7.6).
+#
+# Security/negative: the Create PDR references FAR ID 99, but NO matching
+# Create FAR is supplied (dangling rule reference). A spec-correct UPF must
+# REJECT and install nothing, returning Cause "Rule creation/modification
+# Failure" (TS 29.244 §8.2.1, value 73) — or "Mandatory IE incorrect" (69)
+# depending on validation order. The check accepts the primary 73 outcome;
+# the on_timeout/tolerated fallback covers a UPF that drops instead.
+#
+# Spec-correct success = a SessionEstablishmentResponse whose Cause indicates
+# rule-creation failure.
+
+kind: flow
+name: upf_pfcp_session_establish_invalid_pdr
+description: Session Establishment with a dangling FAR reference; UPF must reject
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          # PDR points at FAR id 99 which is never created -> dangling ref.
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 99}
+                  }
+                ]
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: tolerated
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Rule creation/modification Failure"

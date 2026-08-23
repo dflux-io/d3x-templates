@@ -1,0 +1,143 @@
+# Npcf_SMPolicyControl — Create SM Policy, dynamic decision (compliance).
+# 3GPP TS 29.512 §4.2.2 (POST /npcf-smpolicycontrol/v1/sm-policies → 201 +
+# Location + SmPolicyDecision).
+#
+# Drives the SMF role: POST an SmPolicyContextData for the seeded subscriber
+# imsi-001010000000001 on dnn=internet, slice {sst:1,sd:"000001"} (the
+# dpf/seed.go positive case: SessionAmbr 200/400 Mbps, SmPolicySnssaiData
+# provisions "01000001"). Asserts the decision is the *dynamic* surface A1
+# computes from sm-data — not the old hardcoded default.
+#
+# Contract pins (seam S1, post-A1):
+#   sessRules["sess-rule-default"].authSessAmbr.{uplink,downlink} = seed strings
+#   sessRules["sess-rule-default"].authDefQos.{5qi:9, arp.priorityLevel}
+#   pccRules["rule-default"], qosDecs["qos-default"].5qi = 9
+# Create/update responses carry the BARE SmPolicyDecision (no policy. prefix).
+
+kind: flow
+name: npcf_smpolicy_create_dynamic_ok
+description: POST sm-policies for a provisioned subscriber → 201 + dynamic SmPolicyDecision
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_cleanup
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: check
+            field: sbi.headers.Location
+            op: not_empty
+          # Dynamic-decision pins (seam S1) — exact map keys are the contract.
+          - type: check
+            field: sbi.body.sessRules.sess-rule-default.authSessAmbr.uplink
+            op: equals
+            expected: "200 Mbps"
+          - type: check
+            field: sbi.body.sessRules.sess-rule-default.authSessAmbr.downlink
+            op: equals
+            expected: "400 Mbps"
+          - type: check
+            field: sbi.body.sessRules.sess-rule-default.authDefQos.5qi
+            op: equals
+            expected: 9
+          - type: check
+            field: sbi.body.sessRules.sess-rule-default.authDefQos.arp.priorityLevel
+            op: exists
+          - type: check
+            field: sbi.body.pccRules.rule-default
+            op: exists
+          - type: check
+            field: sbi.body.qosDecs.qos-default.5qi
+            op: equals
+            expected: 9
+          # PCF-3 charging + gating decisions: the default rule references a
+          # ChargingData (rating group + offline) and a TrafficControlData
+          # (flowStatus ENABLED), and both decision maps are populated.
+          - type: check
+            field: sbi.body.pccRules.rule-default.refChgData
+            op: exists
+          - type: check
+            field: sbi.body.pccRules.rule-default.refTcData
+            op: exists
+          - type: check
+            field: sbi.body.chgDecs.chg-default.ratingGroup
+            op: equals
+            expected: 1
+          - type: check
+            field: sbi.body.chgDecs.chg-default.offline
+            op: equals
+            expected: true
+          - type: check
+            field: sbi.body.traffContDecs.tc-default.flowStatus
+            op: equals
+            expected: "ENABLED"
+          # Suite-isolation cleanup: release this (supi,dnn) association so a
+          # later N5 app-session install finds exactly ONE binding (ruling R6 —
+          # ambiguous (supi,dnn) → 500 PDU_SESSION_NOT_AVAILABLE). The smPolicyId
+          # comes verbatim from the create Location header; keeps the flow
+          # self-contained and idempotent.
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/delete",
+                "body": {}
+              }
+
+  wait_cleanup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

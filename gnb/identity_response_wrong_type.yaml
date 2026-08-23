@@ -1,0 +1,68 @@
+# IdentityResponse returning a NON-requested identity type
+# (3GPP TS 24.501 §5.4.3 — identity procedure).
+#
+# Waits for an AMF-initiated IDENTITY REQUEST (which asks for the SUCI) and
+# answers with a 5G-S-TMSI instead (respond_identity_type=5g_s_tmsi SendParam),
+# modelling a UE returning the wrong identity type. A correct AMF detects the
+# mismatch and re-requests / rejects.
+#
+# TRIGGER DEPENDENCY: like identity_request, the AMF only sends IDENTITY REQUEST
+# when it cannot resolve the SUCI; a provisioned subscriber does not trigger it,
+# so this flow is NOT in a suite and reaches `not_triggered` in the bare lab. Run
+# standalone against an AMF that will issue an IDENTITY REQUEST.
+kind: flow
+name: identity_response_wrong_type
+description: Answer an AMF IDENTITY REQUEST with a wrong (5G-S-TMSI) identity type (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - identity_mismatch_sent
+  - not_triggered
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_identity_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+  wait_identity_request:
+    on_timeout: { duration: 15s, target: not_triggered }
+    transitions:
+      - event: NASDownlinkTransport.IdentityRequest
+        target: identity_mismatch_sent
+        actions:
+          - type: send
+            message: IdentityResponse
+            params:
+              respond_identity_type: 5g_s_tmsi
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# NO `final_checks` BLOCK, AND THE REASON IS NOT LAZINESS.
+#
+# REG-470 (abnormal, expected_terminal: null) — "After an IDENTITY RESPONSE carrying a
+# PEI where a SUCI was requested, no REGISTRATION ACCEPT is sent; a repeated IDENTITY
+# REQUEST, a REGISTRATION REJECT or a context release is observed."
+#
+# THIS FSM CANNOT OBSERVE ANY OF THAT. `identity_mismatch_sent` is entered at the moment
+# the wrong-type IDENTITY RESPONSE goes OUT — the flow terminates on the send and never
+# waits for the AMF's reaction, so the three messages the criterion requires, and the
+# REGISTRATION ACCEPT it forbids, all arrive (or do not) after the run is over. The other
+# terminal, `not_triggered`, is the 15 s timer: the AMF never asked for an identity at
+# all, which the file's own header says is what happens in the bare lab.
+#
+# Both terminals are therefore statements about what the gNB did, not about what the core
+# did. Pinning either would report a verdict on a claim this flow never tested, and every
+# path through it evaluates ZERO checks, so there is nothing else to assert either.
+#
+# TWO THINGS ARE NEEDED, IN THIS ORDER, AND BOTH ARE FSM CHANGES:
+#   1. a wait state after the IDENTITY RESPONSE with transitions for IdentityRequest,
+#      RegistrationReject, UEContextReleaseCommand and both RegistrationAccept forms, plus
+#      a liveness probe so that silence is `unproven` rather than a pass;
+#   2. the stimulus reconciled with the criterion — the register says PEI, the flow sends
+#      `respond_identity_type: 5g_s_tmsi`.

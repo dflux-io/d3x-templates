@@ -1,0 +1,163 @@
+# Paging retransmission: register, go CM-IDLE, withhold the ServiceRequest
+# (3GPP TS 38.413 §8.6.1 — AMF paging repetition / T3513 behaviour).
+#
+# Under test: after the UE goes CM-IDLE the AMF pages it (requires an external
+# mobile-terminated trigger — DL data or an AMF API call). Instead of answering
+# with a ServiceRequest, the gNB stays silent; a correct AMF retransmits Paging
+# per its paging strategy / T3513 rather than giving up after one attempt.
+#
+# NOTE: like `paging_response`, this flow needs an EXTERNAL paging trigger and is
+# therefore NOT part of an automated suite (in the bare lab no DL data arrives,
+# so Paging never fires and the flow times out at `not_paged`). Run it standalone
+# while injecting MT traffic toward the UE.
+#
+# Terminals are all non-failure (informative): `paged_repeated` (>=2 Paging seen,
+# the positive result), `paged_once` (exactly one Paging, no repeat within the
+# window), `not_paged` (no Paging — no external trigger). `failed` only on a
+# transport error.
+
+kind: flow
+name: paging_no_response_retransmission
+description: Go CM-IDLE, withhold ServiceRequest, observe whether the AMF retransmits Paging (YAML)
+detail: |
+  Registers a UE, transitions to CM-IDLE via gNB-initiated UE context release,
+  then waits for AMF Paging WITHOUT answering (3GPP TS 38.413 §8.6.1). Observes
+  whether the AMF retransmits Paging: `paged_repeated` if a second Paging arrives,
+  `paged_once` if only one is seen within the window, `not_paged` if none arrives
+  (no external MT trigger in the lab). All three are informative non-failure
+  terminals; only a transport error is `failed`. Requires an external paging
+  trigger, so it is intended for standalone runs, not suites.
+category: stability
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - paged_repeated
+  - paged_once
+  - not_paged
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: UEContextReleaseRequest
+
+  wait_release_cmd:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_paging
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+
+  wait_paging:
+    # No external MT trigger -> no Paging -> not_paged (informative, not a fail).
+    on_timeout:
+      duration: 30s
+      target: not_paged
+    transitions:
+      # Deliberately do NOT answer with a ServiceRequest; wait for a repeat.
+      - event: Paging
+        target: wait_paging_repeat
+
+  wait_paging_repeat:
+    # One Paging seen, none repeated within the window.
+    on_timeout:
+      duration: 15s
+      target: paged_once
+    transitions:
+      # AMF retransmitted Paging -> the positive result.
+      - event: Paging
+        target: paged_repeated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-232 (abnormal, expected_terminal: null) — At least
+# a second PAGING for the same UE is received on N2 after the first goes unanswered, or
+# the AMF's paging strategy is otherwise visible as more than one attempt
+#
+# REG-232 declares `expected_terminal: null`, but its criterion picks one without
+# ambiguity: "At least a second PAGING for the same UE is received on N2 after the first
+# goes unanswered". `paged_once` is the 15 s timer after a single attempt — the
+# behaviour the row exists to catch ("the AMF must not simply drop the pending downlink
+# data on the first miss") — and `not_paged` is no paging at all.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `paged_repeated` — the terminal this row claims
+    metric: final_state_counts.paged_repeated
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

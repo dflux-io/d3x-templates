@@ -1,0 +1,301 @@
+# REG-457 — a live non-null NAS integrity algorithm is never downgraded to
+# 5G-IA0 because the UE suddenly claims to support nothing else.
+#
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE (xp-245 negative-probe audit).
+#
+# TS 33.501 §6.4.3.2 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim — the last sentence is this row, entire):
+#
+#   "NAS integrity shall stay activated until the 5G security context is deleted
+#    in either the UE or the AMF. IT SHALL NOT BE POSSIBLE TO CHANGE FROM
+#    NON-NULL INTEGRITY PROTECTION ALGORITHM TO NULL INTEGRITY PROTECTION."
+#
+# TS 24.501 §4.4.4.1: "The use of 'null integrity protection algorithm' 5G-IA0
+# (see subclause 9.11.3.34) in the current 5G NAS security context is only
+# allowed: a) for an unauthenticated UE for which establishment of emergency
+# services is allowed; b) for a W-AGF acting on behalf of an FN-RG; c) for a
+# W-AGF acting on behalf of an N5GC device; and d) for a 5G-RG acting on behalf
+# of an AUN3 device."
+#
+# None of the four applies here: the UE is authenticated (the flow runs a full
+# 5G AKA before the probe), the registration is not for emergency services, and
+# the UE is a plain 3GPP-access UE, not a W-AGF or a 5G-RG.
+#
+# THE PROBE, AND WHY IT MUST BE ON AN EXISTING CONTEXT
+# ----------------------------------------------------
+# A UE that advertises only the null algorithms in an INITIAL registration is a
+# different row — smc_null_integrity_rejected_nonemergency — and a different
+# clause: there is no non-null algorithm to change FROM, so §6.4.3.2's last
+# sentence has nothing to say and the question is §4.4.4.1's list alone. This
+# row is about the CHANGE. So it registers normally first, activating
+# 128-NIA1/2/3 (asserted below, not assumed), releases the connection, and only
+# then sends a mobility REGISTRATION REQUEST on the SAME native context — real
+# 5G-GUTI, integrity protected with the live keys, §4.4.6-conformant — whose UE
+# security capability IE advertises 5G-EA0 and 5G-IA0 and nothing else.
+#
+# Everything else about that message is byte-identical in construction to the
+# ordinary RegistrationUpdate: same GUTI components echoed back as the AMF
+# issued them, same EncodeSecureInitial wrapper, same 5G-S-TMSI on the NGAP
+# envelope. The ONLY deviation is the capability set, so a refusal can only be
+# about the capability set.
+#
+# WHAT IS ACTUALLY ON THE WIRE
+# ----------------------------
+# MEASURED (2026-08-11, this lab, `-trace`): the first registration's
+# InitialUEMessage carries `2e 04 ff ff ff ff` (every algorithm bit), and the
+# probe's carries the same IE reduced to `2e 02 80 80`:
+#
+#     2e 02 80 80
+#     ^^ IEI 0x2E = UE security capability
+#        ^^ length 2 — the E-UTRA octets are gone
+#           ^^ 5GS encryption octet 0x80 = EA0 only
+#              ^^ 5GS integrity octet 0x80 = IA0 only
+#
+# and the message itself is `7e 01 <MAC×4> <SN> …` — security header type 1,
+# integrity protected with the context this row is trying to get downgraded, so
+# the AMF can verify it and knows exactly which context is in play.
+#
+# TERMINALS
+#   a SECURITY MODE COMMAND selecting 5G-IA0 -> the change §6.4.3.2 says shall
+#     not be possible has just been made. The FSM has no value-guarded
+#     transitions, so this outcome is recorded as a FAILED CONTENT ASSERTION —
+#     `nas.selected_nas_security_algorithms_integrity greater_or_equal 2
+#     (actual=1)`, 1 being 5G-IA0 — which run.sh scores `wrong-response` and
+#     writes to failed_checks.txt with the value. The register should treat a
+#     failed check on THIS field in THIS flow as the security finding.
+#   a SECURITY MODE COMMAND keeping a non-null algorithm, an
+#     AUTHENTICATION REQUEST, a REGISTRATION REJECT, a
+#     UEContextReleaseCommand, or a REGISTRATION ACCEPT on the existing
+#     context with no new SMC at all                              -> rejected
+#     (the criterion's own three permitted answers: "the core rejects,
+#     re-authenticates or keeps the non-null algorithm")
+#   silence                                                       -> unproven
+#     No SECURITY MODE COMMAND selecting 5G-IA0 was produced, which is the
+#     criterion's primary requirement, and the AMF is under no obligation to
+#     answer a registration it declines to progress — SO THE ROW USED TO SCORE
+#     THIS AS THE PASS, ON THE TIMEOUT TARGET. That is inadmissible and the timer
+#     route is gone (xp-279).
+#
+#     A TIMER IS NOT EVIDENCE FOR ANY TERMINAL, in either direction. This row
+#     passes on all three cores today and every one of them reached `rejected` ON
+#     A MESSAGE (terminal_via_timeout is empty for tinycore, Open5GS and free5GC
+#     alike in the 50effc0 baseline), so the timer route was scoring nothing —
+#     it was simply waiting to manufacture an unearned pass the first time a core
+#     went quiet, exactly as it did on REG-438 and REG-452. Silence now lands on
+#     `unproven`, and reached on a timer DEFENCE 11 renders that `inconclusive`
+#     with no rule needing to know its name.
+#
+#     WHAT WOULD TURN THAT SILENCE INTO AN EARNED PASS, if a core ever goes quiet
+#     here: an association-liveness probe of the shape
+#     initial_context_setup_failure_no_success_signalling now uses — an NG SETUP
+#     REQUEST after the window, asserted on the mandatory IEs of its response, to
+#     exclude a dead core and a lost message. It is deliberately NOT added
+#     speculatively: all three of the criterion's permitted answers are messages,
+#     all three cores send one, and a probe with no core to exercise it is a
+#     branch nothing has ever run.
+#
+# ACCEPTANCE TEST (mandatory for a negative row) — MEASURED 2026-08-11, and it
+# is more than a terminal flip: it isolates the cause of the refusal.
+#
+#   null_security_caps: true  (as authored, `2e 02 80 80`)
+#     -> rejected. tinycore answers the update with an AUTHENTICATION REQUEST,
+#        and after the fresh 5G AKA run answers the registration itself with a
+#        REGISTRATION REJECT. It refuses to proceed at all rather than selecting
+#        5G-IA0 — the strongest of the criterion's three permitted answers.
+#
+#   null_security_caps: false (violation off, `2e 02 f0 f0` — the same message,
+#   the same GUTI, the same context, full 5GS algorithm set)
+#     -> rejected. tinycore re-authenticates identically and then sends a
+#        SECURITY MODE COMMAND selecting integrity algorithm 3 = 128-NIA2.
+#
+# Same flow, same UE, same everything except the two capability octets: with
+# them the procedure completes on a non-null algorithm, without them it is
+# refused. So tinycore's refusal is demonstrably ABOUT the capability set, and
+# the `wrong-response`/5G-IA0 arm is reachable — the check that would report the
+# downgrade fires with a real value (actual=3) on the very same transition.
+
+kind: flow
+name: no_null_integrity_downgrade_on_existing_context
+description: After a registration that activated a non-null NAS integrity algorithm, a second registration on the same context advertising only NIA0 must not produce a SECURITY MODE COMMAND selecting 5G-IA0 (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+# `tolerated` is gone from this list and nothing is lost: NO transition ever targeted it. The
+# downgrade this row hunts is recorded as a FAILED CONTENT ASSERTION on
+# nas.selected_nas_security_algorithms_integrity (see the TERMINALS note above), which run.sh
+# scores `wrong-response` with the algorithm value in failed_checks.txt. A declared terminal that
+# no edge reaches reads as a route that exists and does not.
+final_states: [rejected, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          # §4.4.4.1 a) is the only one of the four 5G-IA0 exemptions that could
+          # plausibly be claimed here, and it is for an UNAUTHENTICATED UE. A
+          # real 5G AKA run closes it.
+          - { type: check, field: nas.authentication_param_rand, op: ie_present }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # THE "FROM" OF "CHANGE FROM NON-NULL TO NULL", ASSERTED.
+          # nas5g's NAS_IntegrityAlgorithm is the wire nibble + 1: IA_NONE=0 is
+          # the decoder's "IE absent" sentinel, IA_NIA0=1 is 5G-IA0, and
+          # 2/3/4 are 128-NIA1/2/3. `>= 2` is therefore "a non-null algorithm
+          # was selected", and it fails both on an absent IE and on 5G-IA0.
+          # Without this the row could "pass" against a core that never had a
+          # non-null algorithm to downgrade.
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          # The 5G-GUTI out of this REGISTRATION ACCEPT is what the probe
+          # identifies itself with; without it there is no "same context".
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # THE PROBE. null_security_caps:false is the acceptance-test switch.
+          - { type: send, message: RegistrationUpdateNullCaps, params: { null_security_caps: true } }
+  wait_reaction:
+    # Silence is not the pass — see the TERMINALS note in the header. The three answers the
+    # criterion permits ("the core rejects, re-authenticates or keeps the non-null algorithm") are
+    # all messages and all three are named below.
+    on_timeout: { duration: 12s, target: unproven }
+    transitions:
+      # A second SECURITY MODE COMMAND arrived. WHICH algorithm it selected is
+      # the whole row, and it is read here rather than in a separate state
+      # because the FSM has no value-guarded transitions: a check that PASSES
+      # carries the flow to `rejected` (a non-null algorithm was kept in force),
+      # and a check that FAILS ends the flow with the failed assertion recorded
+      # verbatim —
+      #     nas.selected_nas_security_algorithms_integrity greater_or_equal 2
+      #     (actual=1)
+      # actual=1 being 5G-IA0 exactly. That is the downgrade, named in the
+      # scoring output, and it is scored `wrong-response` rather than
+      # `tolerated`: the register may want to map this flow's failed-check
+      # outcome onto the security finding, which is why the value is asserted
+      # with an op whose failure message states the algorithm.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          # nas5g's NAS_IntegrityAlgorithm is the wire nibble + 1: 0 = "IE
+          # absent" sentinel, 1 = 5G-IA0, 2/3/4 = 128-NIA1/2/3.
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+      # "the core … re-authenticates". Conformant, and the row follows it
+      # through rather than stopping here: a fresh 5G AKA run is only an answer
+      # to the bidding-down attempt if the security mode control procedure that
+      # comes out of it still selects a non-null algorithm. Terminating on the
+      # AUTHENTICATION REQUEST would assert that the AMF asked a question.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_reauth_security_mode
+        actions: [{ type: send, message: AuthResponse }]
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+      # Accepting the update on the EXISTING context without running a new
+      # security mode control procedure at all is "keeps the non-null
+      # algorithm" in its purest form: nothing was changed.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: rejected
+  wait_reauth_security_mode:
+    # The re-authentication leg. §4.4.4.1's exemption a) is for an
+    # UNAUTHENTICATED UE, and this UE has now authenticated twice, so 5G-IA0 is
+    # no more available on the new context than on the old one.
+    #
+    # Silence AFTER the AMF has answered the AUTHENTICATION RESPONSE with nothing
+    # is still silence, and still not the pass: the same timer route lived here
+    # too, and it would have manufactured the same unearned green.
+    on_timeout: { duration: 12s, target: unproven }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.AuthenticationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: rejected
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-457 (negative, expected_terminal: rejected) —
+# After a registration that activated 128-NIA1 or 128-NIA2, a second registration on the
+# same context advertising only NIA0 does not produce a SECURITY MODE COMMAND selecting
+# 5G-IA0; the core rejects, re-authenticates or keeps the non-null algorithm — and one
+# of those three answers is OBSERVED. All three are messages, so silence is not the pass
+# — it cannot be told apart from a crashed core, a dead association or a message that
+# never arrived.
+#
+# REG-457 permits three answers — "the core rejects, re-authenticates or keeps the non-
+# null algorithm" — and all three are messages, all three target `rejected`. The
+# criterion adds "and one of those three answers is OBSERVED ... silence is not the
+# pass", which is the `unproven` timer. The downgrade this row hunts is not a terminal
+# at all: it is the failure of the nas.selected_nas_security_algorithms_integrity check
+# on the SECURITY MODE COMMAND, so `checks_failed equals 0` is the assertion that
+# carries it.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,52 @@
+# Nnrf_Bootstrapping service suite — smoke + strict response shape.
+#
+# Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.1):
+#   BSTR-01  get                            smoke
+#   BSTR-03  response_shape_strict          UUID + Nnrf_* keys + /v1 hrefs
+#
+# BSTR-02 IS NOT HERE, AND WHERE IT WENT IS THE POINT (xp-228).
+#
+# This suite's own header used to open with "Verification requires the NRF to
+# be running with -oauth2 so BSTR-02 can prove that bootstrap stays 200 while
+# NFM gates with 401" — an accurate statement that also guaranteed the suite
+# could never be wired into the nrf-smoke phase, which launches a plain NRF.
+# So it was wired into nothing, and BSTR-01 and BSTR-03 went unrun along with
+# it. A suite that documents why it cannot be gated is a suite that will not be
+# gated, and this is precisely how nrf_sub's broken SUB-02 assertion survived
+# since the monorepo import.
+#
+# BSTR-02 now runs where an `-oauth2` NRF actually exists: runner/scripts/
+# nrf-oauth-enforced.sh, which is the `nrf-oauth-enf` phase of sanity-all.sh and
+# already stands up exactly that NRF for OAUTH-ENF-01. What is left here is
+# mode-agnostic (the bootstrap body is identical in both modes; only
+# oauth2Required values flip), so this suite runs in the nrf-smoke phase and
+# BSTR-02 runs in the phase that can support it. Nothing lost, nothing orphaned.
+
+kind: suite
+name: nrf_bstr
+description: Nnrf_Bootstrapping — smoke + public-access invariant + strict shape.
+
+steps:
+  - name: get_bootstrapping
+    flow: nrf_bstr_get
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: response_shape_strict
+    flow: nrf_bstr_response_shape_strict
+    repetitions: 1
+    stop_on_failure: true
+
+final_checks:
+  - name: all_flows_succeeded
+    metric: flows_succeeded
+    op: equals
+    value: 2
+  - name: no_failed_flows
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no_failed_checks
+    metric: checks_failed
+    op: equals
+    value: 0

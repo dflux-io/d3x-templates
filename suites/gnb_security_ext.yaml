@@ -1,0 +1,62 @@
+# gNB ↔ AMF extended security / robustness suite — scenario-plan additions.
+#
+# Companion to gnb_security.yaml: a second wave of abnormal / malformed /
+# security-edge probes (NGAP + NAS, gNB-side) against a real 5G core. Kept in a
+# separate suite so the original gnb_security set stays stable. Same doctrine:
+# the cross-cutting assertion is that the AMF reacts in a spec-correct way
+# (reject / discard / tolerate) and STAYS UP — these flows deliberately send
+# things the network must refuse, never crash.
+#
+# Ordering matters (shared IMSI / association). Probes that complete a clean
+# registration before misbehaving run FIRST; the auth/SMC-tamper flows that
+# leave the AMF in a half-authenticated state run LAST so they don't poison a
+# following step. The cleanup finalizer always runs.
+#
+# success_when is omitted on every probe: each has several spec-valid terminals
+# (reject vs tolerate vs handled), so the engine default — any non-"failed"
+# terminal passes — is the right pass condition; AMF liveness across the whole
+# run is the real signal.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite gnb-security-ext \
+#       -templates <templates-dir> -c config/open5gs-gnb.yaml \
+#       -s config/subscribers.yaml -trace
+
+kind: suite
+name: gnb-security-ext
+description: Second-wave one-UE-per-flow abnormal/malformed/security probes; assert correct rejection and AMF liveness.
+steps:
+  # --- association- / registration-level probes (clean before misbehaving) ---
+  - { name: ng_setup_missing_supported_ta, flow: ng_setup_missing_supported_ta, repetitions: 1, timeout: 20s, stop_on_failure: false }
+  - { name: pdu_session_release_unknown, flow: pdu_session_release_for_unknown_session, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: ue_context_release_request_bad_id, flow: ue_context_release_request_unknown_amf_ue_ngap_id, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: uplink_nas_after_release_stale_ids, flow: uplink_nas_after_context_release_stale_ids, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: n2_handover_stale_amf_id, flow: n2_handover_required_stale_amf_ue_ngap_id, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: xn_path_switch_unknown_source_amf, flow: xn_path_switch_failure_unknown_source_amf_id, repetitions: 1, timeout: 40s, stop_on_failure: false }
+  - { name: xn_path_switch_unknown_pdu, flow: xn_path_switch_unknown_pdu_session, repetitions: 1, timeout: 40s, stop_on_failure: false }
+  # NOTE: the service_request_* variants (signalling/emergency/high_priority/
+  # uplink_data_status) are validated standalone but kept out of this suite —
+  # their CM-IDLE→reconnect step is flaky after many prior cycles on the shared
+  # association.
+
+  # --- NAS COUNT replay / backwards-count (secured, post-registration) -------
+  - { name: registration_replay_old_security_context, flow: registration_replay_old_security_context, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: smc_replay_stale_count, flow: smc_replay_stale_count, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: post_smc_backwards_count, flow: post_smc_backwards_count_uplink_nas, repetitions: 1, timeout: 30s, stop_on_failure: false }
+
+  # --- auth / SMC tamper: leave the AMF in a half-state -> run LAST -----------
+  - { name: auth_response_wrong_res_star, flow: auth_response_wrong_res_star, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: malformed_auth_response, flow: malformed_auth_response_mid_procedure, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: smc_wrong_mac, flow: smc_wrong_mac_rejected, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: smc_complete_unciphered, flow: smc_complete_unciphered_when_cipher_selected, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: smc_null_integrity, flow: smc_null_integrity_rejected_nonemergency, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: uplink_nas_before_security, flow: uplink_nas_before_security_activation, repetitions: 1, timeout: 30s, stop_on_failure: false }
+
+  # --- cleanup (always runs) -------------------------------------------------
+  - name: cleanup
+    flow: deregistration_after_release
+    repetitions: 1
+    timeout: 30s
+    always_run: true
+    success_when:
+      at_least_one_final_state: clean

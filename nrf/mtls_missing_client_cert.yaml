@@ -1,0 +1,94 @@
+# MTLS-06 — missing client cert when the server requires one. See
+# d3x-core docs/nrf/sanity-tests.md §4.7.7 (MTLS-06).
+#
+# NRF launched `-tls-client-auth require`. The client (peer nrf-tls)
+# trusts the server CA but presents NO client cert, so the server aborts
+# the handshake. Catches a server wrongly set to "request" (optional)
+# when it should be "require".
+#
+# WHAT THIS ASSERTS, AND WHY IT IS SHAPED THIS WAY
+# The property under test is "the server REFUSED the handshake". It is NOT
+# "the client saw the string `certificate required`". Which error the client
+# observes is inherently nondeterministic: the server writes a TLS alert and
+# then tears the connection down, so the client races between reading the
+# alert and hitting a transport error on its own in-flight write. The same
+# correct server rejection has been observed client-side as
+# `remote error: tls: certificate required`, as `write: broken pipe`, and as
+# `http2: client conn could not be established` — three renderings of one
+# outcome. Asserting on one of them made this test flake on a CORRECT result,
+# which trains everyone to re-run rather than investigate. (xp-168 #1.)
+#
+# So the two branches out of `getting` are the actual binary:
+#   Error  -> the handshake was refused. Accept the SET of client-visible
+#             refusal renderings; explicitly EXCLUDE the errors that mean the
+#             harness is broken rather than the server refusing (connection
+#             refused / no such host), so a dead NRF cannot pass this test.
+#   Answer -> the handshake SUCCEEDED and the NRF served a request from an
+#             uncertified client. That is the regression this test exists to
+#             catch, so it fails unconditionally.
+#
+# NOTE this reasoning is specific to MTLS-06/07. MTLS-02/03/04 assert on the
+# CLIENT's own certificate verification, which the client completes locally
+# before any teardown race exists — their literal `contains` assertions are
+# deterministic and are deliberately left alone.
+#
+# The negative control (server set to `request` instead of `require`, this
+# flow expected to FAIL) is run as MTLS-06N by scripts/nrf-mtls.sh.
+
+kind: flow
+name: nrf_mtls_missing_client_cert
+description: No client cert under ClientAuth=require → handshake rejected (MTLS-06).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: getting
+        actions:
+          - type: send
+            message: GetBstr
+            peer: nrf-tls
+            message_body: |
+              {"method": "GET", "url": "/nnrf-bstr/v1/bootstrapping"}
+
+  getting:
+    transitions:
+      # The server refused the handshake. Any of these renderings is a pass.
+      - event: Error
+        target: done
+        actions:
+          - type: check
+            field: ue.LastError.Cause
+            op: regex
+            expected: "(?i)(certificate required|bad certificate|handshake failure|certificate unknown|broken pipe|connection reset|client conn could not be established|unexpected EOF|use of closed network connection|EOF)"
+          # A refusal is not the same thing as never having reached the NRF.
+          # Without these two the test would pass against a server that never
+          # started — the wave-1 disease in miniature.
+          - type: check
+            field: ue.LastError.Cause
+            op: not_contains
+            expected: "connection refused"
+          - type: check
+            field: ue.LastError.Cause
+            op: not_contains
+            expected: "no such host"
+
+      # An HTTP answer means the handshake COMPLETED without a client cert:
+      # the server is on ClientAuth=request (or none) when it must be
+      # `require`. Unconditionally fail — `equals 0` can never hold for a real
+      # HTTP status, and naming the check documents why we are here.
+      - event: rest.GetBstr_Answer
+        target: failed
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 0
+
+  done: {}
+  failed: {}

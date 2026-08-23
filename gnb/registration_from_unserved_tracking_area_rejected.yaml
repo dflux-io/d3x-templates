@@ -1,0 +1,243 @@
+# REG-124 — a registration from a tracking area outside the served TA list.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 24.501 §5.5.1.2.5 (Initial registration not accepted by the network) —
+#   the network's whole duty: "If the initial registration request cannot be
+#   accepted by the network, the AMF shall send a REGISTRATION REJECT message to
+#   the UE including an appropriate 5GMM cause value."
+#
+#   TS 24.501 §A.2 — what the expected causes mean, verbatim:
+#     "#12 Tracking area not allowed — This 5GMM cause is sent to the UE if it
+#      requests service ... in a tracking area where the HPLMN or SNPN
+#      determines that the UE, by subscription, is not allowed to operate."
+#     "#13 Roaming not allowed in this tracking area — ... in a tracking area of
+#      a PLMN or SNPN which by subscription offers roaming to that UE but not in
+#      that tracking area."
+#     "#15 No suitable cells in tracking area — ... in a tracking area where the
+#      UE, by subscription, is not allowed to operate, but when it should find
+#      another allowed tracking area in the same PLMN".
+#
+#   TS 38.413 §9.2.5.1 — the User Location Information IE of the INITIAL UE
+#   MESSAGE is where the gNB reports the TAI the UE is camped in.
+#
+# WHAT THE CLAUSE SUPPORTS AND WHAT IT DOES NOT. §5.5.1.2.5 mandates only "an
+# appropriate 5GMM cause value"; Annex A.2 defines what #12/#13/#15 mean but
+# does not oblige any of them for this trigger. The register's criterion pins
+# the set {12, 13, 15}, which is a reasonable reading — those three are the
+# tracking-area causes and nothing else in Annex A fits — so this flow asserts
+# that set. It is recorded here that the SET, not any single value, is the most
+# the clause will carry. FLAGGED FOR THE REGISTER OWNER: the criterion is one
+# notch stronger than §5.5.1.2.5 alone, in the same way REG-118's was before it
+# was relaxed.
+#
+# THE DEVIATION IS ON THE WIRE, IN BOTH PLACES A RECEIVER READS IT.
+#   1. The gNB re-runs NG SETUP advertising a Supported TA List containing ONLY
+#      TAC 2 (`NGSetupRequestAdvertisedTAs`, tacs: "2"). §8.7.1 treats a
+#      repeated NG SETUP REQUEST on an established association as a
+#      configuration re-setup, so this is how a gNB says "I now serve TAC 2".
+#      The matrix's tinycore is configured for TAC 1 (dmf -tac 000001,
+#      MATRIX_TAC=1 in versions.env), so TAC 2 is outside its served list.
+#   2. The INITIAL UE MESSAGE reports the UE camped in TAI 001-01-000002
+#      (`InitialUEMessageAtTac`, uli_tac: 2). Its PLMN and NR CGI are untouched:
+#      same operator, same cell identity, different tracking area, so the row
+#      isolates exactly one variable.
+#
+# BOTH HALVES ARE NEEDED. An AMF that only reads the NG SETUP TA list would see
+# nothing wrong in a ULI it never checks, and an AMF that only reads the ULI
+# would see a gNB whose advertised list still says TAC 1 — either way the probe
+# would be half-deviated and a green cell would mean nothing. The ULI half is
+# pinned on the wire by TestInitialUEMessageAtTac_TacIsOnTheWire
+# (runner/runner/enrichers_wave3_probes_test.go), which fails if the TAC falls
+# back to the gNB's configured 1.
+#
+# WHY THE NG SETUP HALF HAS ITS OWN TERMINAL. An AMF that refuses the re-setup
+# with NG SETUP FAILURE has enforced the tracking-area boundary — at the
+# interface layer rather than at N1 — and that is a DIFFERENT answer from the
+# one this row asks about, not a harness fault. It lands on
+# `ng_setup_refused_unserved_tac` so the trace records it as the distinct
+# behaviour it is, and the register owner can decide what it is worth.
+#
+# NOT A BARE TIMER: `rejected` is reached by a message arriving. Silence is
+# `failed` — §5.5.1.2.5 is a "shall send", and a device that hears nothing keeps
+# retrying in a tracking area it may not use.
+#
+# MANDATORY CONTROL (the row must be able to report the other terminal): run the
+# identical flow with the gNB's real TAC 1 in both places. See the MEASURED note.
+#
+# MEASURED AGAINST tinycore 2026-08-11 (git-8523d93): terminal
+# `registered_in_unserved_tac`. The AMF accepted the NG SETUP re-advertising
+# TAC 2 with an NG SETUP RESPONSE, then authenticated and REGISTERED a UE
+# reported as camped in TAI 001-01-000002 — a tracking area it is not
+# configured to serve (dmf -tac 000001, MATRIX_TAC=1).
+#
+# THE DEVIATION IS ON THE WIRE, from the run's own trace:
+#   NG SETUP REQUEST  supported_ta_list: [ { tac: 2, broadcast_plmn_list:
+#                     [ { plmn 001/01, slices [sst 1] } ] } ]
+#   INITIAL UE MESSAGE, User Location Information IE (0x0079):
+#     ... 00 79 00 0f 40 | 00 f1 10 00 00 00 00 10 | 00 f1 10 00 00 02 ...
+#                          ^ NR CGI, PLMN 001/01     ^ TAI, PLMN 001/01, TAC
+#                                                      000002
+#   The conformant value for this gNB is TAC 000001; the three TAI octets on the
+#   wire are 00 00 02. Pinned independently by
+#   TestInitialUEMessageAtTac_TacIsOnTheWire.
+#
+# THE ROW IS TRIVIALLY AT THIS TERMINAL ON THIS CORE, AND THAT IS RECORDED
+# RATHER THAN COUNTED AS COVERAGE. Control run 2026-08-11 with the gNB's REAL
+# TAC 1 in both places (tacs "1", uli_tac 1): the SAME terminal,
+# `registered_in_unserved_tac`, by the same path. tinycore performs no
+# tracking-area check at any layer, so its two terminals are not distinguished
+# by this core and a reader must not take the red cell as evidence that the
+# probe discriminates HERE. What the probe does establish is that the deviation
+# reached the AMF (bytes above) and drew no reaction — which is the finding, and
+# is the same shape as the already-recorded "accepts NG SETUP from any PLMN".
+
+kind: flow
+name: registration_from_unserved_tracking_area_rejected
+description: gNB re-advertises TAC 2 and reports the UE camped there, then registers — expect REGISTRATION REJECT with 5GMM cause #12, #13 or #15 (YAML)
+detail: |
+  Negative registration probe for mobility restriction. The gNB re-runs NG Setup
+  advertising a Supported TA List containing only TAC 2 — a tracking area the
+  AMF under test is not configured to serve — and then sends an INITIAL UE
+  MESSAGE whose User Location Information reports the UE camped in that same
+  TAI (TS 38.413 §9.2.5.1).
+
+  TS 24.501 §5.5.1.2.5 requires a REGISTRATION REJECT with an appropriate 5GMM
+  cause; Annex A.2 supplies the tracking-area causes #12, #13 and #15. The flow
+  asserts one of those three.
+
+  A REGISTRATION ACCEPT means the core served a UE from a tracking area it does
+  not serve — the finding this row exists to make — and lands on
+  `registered_in_unserved_tac`.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - registered_in_unserved_tac
+  - ng_setup_refused_unserved_tac
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ng_setup_answer
+        actions:
+          # Step 1 — the gNB declares it serves TAC 2 and nothing else.
+          # The transport already ran an ordinary NG Setup (TAC 1) at
+          # association open; §8.7.1 makes this a configuration re-setup.
+          - type: send
+            message: NGSetupRequestAdvertisedTAs
+            params:
+              tacs: "2"
+              slice_ssts: "1"
+
+  wait_ng_setup_answer:
+    on_timeout: { duration: 8s, target: failed }
+    transitions:
+      - event: NGSetupResponse
+        target: wait_registration_answer
+        actions:
+          # The AMF ACCEPTED a gNB declaring it serves only TAC 2. Asserted so
+          # the row always fires at least one check on every path — a flow that
+          # reaches a terminal having evaluated nothing is indistinguishable in
+          # a summary from one that asserted its criterion, which is the failure
+          # mode this whole register exists to avoid. `amf_name` is mandatory in
+          # an NG SETUP RESPONSE (TS 38.413 §9.2.6.2), so this is also a real
+          # statement about the response and not a placeholder.
+          - { type: check, field: amf_name, op: not_empty }
+          # Step 2 — the UE registers, reported as camped in TAI 001-01-000002.
+          - type: send
+            message: InitialUEMessageAtTac
+            params:
+              uli_tac: 2
+      # The AMF enforced the boundary at the interface layer instead. A
+      # different answer, recorded as such.
+      - event: NGSetupFailure
+        target: ng_setup_refused_unserved_tac
+        actions:
+          - { type: check, field: cause, op: not_empty }
+
+  wait_registration_answer:
+    # §5.5.1.2.5 is a "shall send"; nothing at all is a failure of that duty.
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # THE ROW. Annex A.2's tracking-area causes.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          # `ie_present` first: an ABSENT cause IE must be reported as absent,
+          # not as a set-membership miss against <missing>.
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [12, 13, 15] }
+
+      # The core served a UE from a tracking area it does not serve. The 5G-GUTI
+      # check fires on this FAILURE path on purpose: it is the evidence that a
+      # real registration completed — a genuinely admitted subscriber with an
+      # assigned temporary identity — rather than some half-answer the trace
+      # would leave a reader to interpret.
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered_in_unserved_tac
+        actions:
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: registered_in_unserved_tac
+        actions:
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+
+      # The AMF proceeding with authentication has already decided to serve this
+      # UE from TAC 2 — the boundary was not enforced. Answered so the procedure
+      # reaches its real conclusion, which is what the two terminals above read.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_registration_answer
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_registration_answer
+        actions:
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_registration_answer
+        actions:
+          - { type: send, message: IdentityResponse }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-124 (negative, expected_terminal: rejected) — A
+# NAS RegistrationReject with nas.gmm_cause in {12, 13, 15} is received when the gNB
+# reports a TAC outside the configured served TA list
+#
+# REG-124: "A NAS RegistrationReject with nas.gmm_cause in {12, 13, 15} is received when
+# the gNB reports a TAC outside the configured served TA list."
+# `registered_in_unserved_tac` is the finding. `ng_setup_refused_unserved_tac` is the
+# AMF refusing the NG SETUP for the unserved TAC — defensible behaviour in itself, but
+# it means the registration this row is about was never attempted, so it is not this
+# row's pass either.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

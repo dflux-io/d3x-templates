@@ -1,0 +1,284 @@
+# AMF-initiated UE Context Release after a completed transaction
+# (3GPP TS 38.413 §8.3.3).
+#
+# Clause, operative sentences (retrieved with matrix/scripts/spec-clause.py):
+#
+#   §8.3.3.1 "The purpose of the UE Context Release procedure is to enable the AMF to order the
+#            release of the UE-associated logical NG-connection due to various reasons, e.g.,
+#            COMPLETION OF A TRANSACTION between the UE and the 5GC ..."
+#
+#   §8.3.3.2 "The AMF initiates the procedure by sending the UE CONTEXT RELEASE COMMAND message
+#            to the NG-RAN node."
+#            "The UE CONTEXT RELEASE COMMAND message shall contain both the AMF UE NGAP ID IE
+#            and the RAN UE NGAP ID IE if available, otherwise the message shall contain the AMF
+#            UE NGAP ID IE."
+#            "Upon reception of the UE CONTEXT RELEASE COMMAND message, the NG-RAN node shall
+#            release all related signalling and user data transport resources and reply with the
+#            UE CONTEXT RELEASE COMPLETE message."
+#
+# THE TRIGGER IS A COMPLETED TRANSACTION, NOT A gNB REQUEST. This flow must exercise the
+# AMF-INITIATED release (§8.3.3), which is a different procedure from the gNB-initiated release
+# REQUEST (§8.3.2, covered by ue_context_release_request_gnb_initiated / REG-246). The gNB
+# therefore sends NO UEContextReleaseRequest here. The transaction chosen is a UE-initiated
+# de-registration, because TS 24.501 §5.5.2.2.2 makes its completion mandatory and datable —
+# "the AMF shall send a DEREGISTRATION ACCEPT message to the UE, if the De-registration type IE
+# does not indicate 'switch off'" — and TS 23.502 §4.2.6 makes the AN Release that follows it the
+# AMF-initiated variant. Waiting instead for the AMF to release an idle-but-registered UE would
+# make this row a test of each core's inactivity timer, which no clause fixes.
+#
+# Assertions (REG-245 pass_criterion: "UEContextReleaseCommand received on N2 containing the AMF
+# UE NGAP ID; after UEContextReleaseComplete is sent, no further AMF messages arrive on those
+# identifiers"):
+#   1. UE CONTEXT RELEASE COMMAND arrives inside the budget (on_timeout → failed).
+#   2. It carries the AMF UE NGAP ID — the §8.3.3.2 "shall" — and the value equals the one the
+#      AMF assigned on this connection, extracted from the AUTHENTICATION REQUEST many messages
+#      earlier. Different messages on both sides of the comparison; neither is re-read from the
+#      message under test. Note the AMF UE NGAP ID plays no part in the runner's inbound demux
+#      (ngap.rx.demux keys on the RAN UE NGAP ID alone), so nothing but the AMF's own conduct can
+#      make this check green.
+#   3. It also carries the RAN UE NGAP ID ("if available" — it is: the connection is up), equal
+#      to the one this gNB allocated and put in the INITIAL UE MESSAGE.
+#   4. We reply UE CONTEXT RELEASE COMPLETE, then hold the association open for an absence window
+#      and fail on any further UE-associated message from the AMF.
+#
+# ABOUT THE ABSENCE WINDOW AND ITS on_timeout. Every other on_timeout in this flow targets
+# `failed`. `wait_no_further_messages` is the one exception and it is deliberate: the row's second
+# criterion is itself an absence ("no further AMF messages arrive on those identifiers"), and an
+# absence can only be observed by waiting. This is NOT the lenient "the AMF said nothing so call
+# it a pass" pattern this batch exists to remove — the flow can only ENTER this state by having
+# already received and asserted a real UE CONTEXT RELEASE COMMAND. The window is 6s against the
+# row's absent_after_s: 5.
+#
+# The window's transition list is ENUMERATED because the FSM has no wildcard event
+# (fsm.EventDef.Matches is exact string equality after the protocol prefix is stripped). Every
+# event named below is UE-associated and therefore, by construction of ngap.rx.demux, arrives on
+# OUR AP IDs — which is exactly the scope the criterion names. Paging is deliberately absent: it
+# is non-UE-associated and the demux broadcasts it to every UE on the gNB, so a paging meant for
+# another row's subscriber would otherwise red this one.
+
+kind: flow
+name: ue_context_release_amf_initiated
+description: AMF-initiated UE Context Release after a completed transaction; assert the Release Command AP IDs and that nothing follows (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # What WE allocate and put in the INITIAL UE MESSAGE (TS 38.413
+          # §8.6.1.2), captured before any downlink exists to read it back from.
+          - type: extract
+            field: ue.RanUeNgapId
+            store: sent_ran_ue_ngap_id
+          - type: send
+            message: InitialUEMessage
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_command
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # The transaction whose COMPLETION §8.3.3.1 names as a release reason.
+          - type: send
+            message: DeregistrationRequest
+
+  wait_release_command:
+    on_timeout:
+      duration: 12s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_no_further_messages
+        actions:
+          # §8.3.3.2: "shall contain both the AMF UE NGAP ID IE and the RAN UE
+          # NGAP ID IE if available". Both are read out of the UE NGAP IDs IE
+          # group of the command and compared with what was seen / sent earlier.
+          - type: check
+            field: ue_context_release_command_ies.0.ue_ngap_ids.amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          - type: check
+            field: ue_context_release_command_ies.0.ue_ngap_ids.ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.sent_ran_ue_ngap_id}}"
+          # "the NG-RAN node shall ... reply with the UE CONTEXT RELEASE
+          # COMPLETE message."
+          - type: send
+            message: UEContextReleaseComplete
+      # The de-registration answer (TS 24.501 §5.5.2.2.2) and Open5GS's GUTI
+      # reallocation may arrive first; both are part of the transaction that is
+      # completing, not "further messages after the release". Named so they are
+      # handled rather than silently refused by the FSM.
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release_command
+      # ABSORBED, NOT ANSWERED. A CONFIGURATION UPDATE COMPLETE landing after
+      # the AMF has released the context draws an NGAP ERROR INDICATION for
+      # stale AP IDs (TS 38.413 §10.6), which `wait_no_further_messages` would
+      # then score as an AMF message that should not have arrived — a red cell
+      # caused by our own stray uplink. Naming the event without answering it
+      # keeps it out of the "refused by FSM" audit and out of the window.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_command
+
+  # The absence window. See the header for why this on_timeout is the one that
+  # may target a success terminal.
+  wait_no_further_messages:
+    on_timeout:
+      duration: 6s
+      target: released
+    transitions:
+      - event:
+          or:
+            - UEContextReleaseCommand
+            - UEContextModificationRequest
+            - InitialContextSetupRequest
+            - InitialContextSetupRequest.RegistrationAccept
+            - InitialContextSetupRequest.ServiceAccept
+            - PDUSessionResourceSetupRequest
+            - PDUSessionReleaseCommand
+            - PDUSessionModifyRequest
+            - ErrorIndication
+            - NASDownlinkTransport
+            - NASDownlinkTransport.AuthenticationRequest
+            - NASDownlinkTransport.SecurityModeCommand
+            - NASDownlinkTransport.IdentityRequest
+            - NASDownlinkTransport.RegistrationAccept
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.ServiceAccept
+            - NASDownlinkTransport.ServiceReject
+            - NASDownlinkTransport.ConfigurationUpdateCommand
+            - NASDownlinkTransport.DeregistrationRequest
+            - NASDownlinkTransport.DeregistrationAccept
+            - NASDownlinkTransport.DLNASTransport
+            - NASDownlinkTransport.5GMMStatus
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-245).
+#
+# REG-245 — UEContextReleaseCommand received on N2 containing the AMF UE NGAP ID; after
+# UEContextReleaseComplete is sent, no further AMF messages arrive on those identifiers
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL, AND WHAT IT DOES NOT PROVE ON ITS OWN. Every path to `released` in
+  # this flow ends on a TIMER — the absence window is the point of the row — so this pin
+  # says "the flow got as far as the window and nothing knocked it out", and the message
+  # assertions below are what say the run happened at all.
+  - name: the flow reached `released`
+    metric: final_state_counts.released
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

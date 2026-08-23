@@ -1,0 +1,285 @@
+# REG-564 — when nothing can be switched, say so, per session.
+#
+# TS 38.413 §8.4.4.3: "If the 5GC fails to switch the downlink termination point
+# of the NG-U transport bearer towards a new termination point for all PDU
+# session resources, the AMF shall send the PATH SWITCH REQUEST FAILURE message
+# to the NG-RAN node. The NG-RAN node shall release the corresponding QoS flows
+# and regard the PDU session(s) indicated in the PDU Session Resource Released
+# List IE included in the PATH SWITCH REQUEST FAILURE message as being
+# released. The appropriate cause value for each PDU session released is
+# included in the Path Switch Request Unsuccessful Transfer IE contained in the
+# PATH SWITCH REQUEST FAILURE message."
+#
+# THE VIOLATION IS ON THE WIRE: the request names PDU session 9, an id this UE
+# never established (it established exactly one, id 1 — the check on
+# ue.PduSessionId above the send proves which). Nothing about the message is
+# malformed; the 5GC simply has no session to switch, which is the §8.4.4.3
+# precondition exactly. Set session_id back to {{ue.PduSessionId}} and the same
+# flow reaches the acknowledge instead — the control that proves the row tests
+# the failure lane.
+#
+# THE ROW ASSERTS THE PER-SESSION CAUSE, not merely that a failure came back.
+# "Rather than an acknowledgement or silence" is the register's wording, and a
+# failure carrying an empty released list would satisfy that wording while
+# telling the NG-RAN node nothing about which session to release or why.
+#
+# THE REQUEST LEAVES ON THE TARGET ASSOCIATION, AND THAT IS THE WHOLE POINT.
+# An Xn path switch is by definition sent by the TARGET NG-RAN node after the
+# UE has already moved to it over the air (TS 38.413 §8.4.4, TS 23.502
+# §4.9.1.2) — the 5GC hears nothing until the request arrives on the target's
+# own association. The predecessor of these rows sent PATH SWITCH REQUEST on
+# the association the UE was already on; a conformant AMF answers that by
+# refusing to switch a path to where the UE already is, and the refusal was
+# scored as core behaviour when it was the harness's. So the send carries
+# `xn_move: true`, which relocates the UE's RAN leg to the peer gNB with NO
+# NG-C signalling at all (a fresh RAN-UE-NGAP-ID allocated there, the
+# AMF-UE-NGAP-ID untouched because it is the identity that spans both legs) —
+# which is exactly what an Xn handover looks like from the core's side.
+#
+# NEEDS TWO gNBs (register preconditions.gnbs: 2). With one, there is no peer
+# to move to and the send fails outright rather than measuring anything.
+
+kind: flow
+name: xn_path_switch_failure_no_switchable_session
+description: Xn path switch for a PDU session the UE never established; assert PATH SWITCH REQUEST FAILURE with a PDU Session Resource Released List and a per-session cause
+detail: |
+  Registration, one PDU session, then an Xn path switch sent from the peer gNB
+  the UE moved to — but for PDU session 9, which this UE never established.
+
+  Asserts a PATH SWITCH REQUEST FAILURE comes back on the target association,
+  carrying a PDU Session Resource Released List that names that session and a
+  per-session Path Switch Request Unsuccessful Transfer (the per-session
+  cause), rather than an acknowledgement or silence.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - path_switch_failed_per_session
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_path_switch_response
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: PathSwitchRequest
+            params:
+              xn_move: true
+              session_id: 9
+
+  wait_path_switch_response:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # --- TS 38.413 §8.4.4.3, the row's criterion ---
+      - event: PathSwitchRequestFailure
+        target: path_switch_failed_per_session
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          - type: check
+            field: ue.RxGnb
+            op: equals
+            expected: "{{ue.Params.xn_target_gnb}}"
+          - type: check
+            field: pdu_session_released_list
+            op: ie_present
+          - type: check
+            field: pdu_session_released_list.length
+            op: greater_or_equal
+            expected: 1
+          - type: check
+            field: pdu_session_released_list.0.pdu_session_id
+            op: equals
+            expected: 9
+          # The per-session cause lives in the Path Switch Request Unsuccessful
+          # Transfer, one per released session (§8.4.4.3). ie_present FIRST so
+          # an absent transfer is named as absent rather than sliding through a
+          # comparison on nothing.
+          - type: check
+            field: pdu_session_released_list.0.path_switch_request_fail_transfer_encoded
+            op: ie_present
+      # The AMF switched a session the UE does not have.
+      - event: PathSwitchRequestAcknowledge
+        target: failed
+      - event: ErrorIndication
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-564).
+#
+# REG-564 — PathSwitchRequestFailure is received on the target association with a PDU
+# Session Resource Released List and a per-session cause, rather than an acknowledgement
+# or silence.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `path_switch_failed_per_session`
+    metric: final_state_counts.path_switch_failed_per_session
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PATH SWITCH REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_PATH_SWITCH_REQUEST
+    op: equals
+    value: 1
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PATH SWITCH REQUEST FAILURE arrived
+    metric: rx_events.PathSwitchRequestFailure
+    op: greater_or_equal
+    value: 1
+  # The 13 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 13 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 13
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

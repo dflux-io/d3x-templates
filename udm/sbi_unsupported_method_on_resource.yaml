@@ -1,0 +1,47 @@
+# Wrong HTTP method on a read-only resource — security/negative.
+# 3GPP TS 29.500 §6.x; RFC 7231 405 Method Not Allowed.
+# POST to /{supi}/am-data (a GET-only resource) — UDM must reject with 405 (or
+# 4xx) and stay live. Uses SBI_Request arbitrary method — unlocked by the new
+# generic SBI message (the typed SDM enricher is GET-only).
+
+kind: flow
+name: udm_sbi_unsupported_method_on_resource
+description: POST to the GET-only am-data resource is rejected with 405/4xx
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/am-data",
+                "body": {"x": 1}
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399

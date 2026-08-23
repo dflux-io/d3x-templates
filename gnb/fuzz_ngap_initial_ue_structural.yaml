@@ -1,0 +1,140 @@
+# NGAP structure-aware fuzz driver — W2-F2.
+#
+# registration_simple with a `fuzz:` block on InitialUEMessage. The message
+# carries the NAS Registration Request in its NasPdu, and Registration Request
+# is on the AMF's pre-security allow-list — so everything fuzzed here reaches
+# the AMF's NGAP/NAS decode path with NO credentials of any kind. This is the
+# remote-pre-auth surface wave 1 established as the highest-value target.
+#
+# STRATEGIES (set `strategy:`):
+#   nest        replace the NasPdu with a depth-`depth` nested Registration
+#               Request container chain. This is the xp-164 lever: nas5g.Decode
+#               re-enters itself once per level with NO depth cap and a per-level
+#               cost linear in the remaining bytes — quadratic total, ~300x
+#               amplification at 64 KB, unauthenticated. Codec-level proof is in
+#               TestStructuralNGAPTypedPathRoundTrips (a 27-byte InitialUEMessage
+#               becomes a 200-level chain that re-decodes as valid NGAP); this
+#               driver delivers it over the wire.
+#   field       corrupt one scalar field of the NGAP message, re-encode via APER
+#   ie-drop     drop one present NGAP IE
+#   ie-dup      duplicate one repeated NGAP IE
+#   downgrade   strip the NAS security header (state-illegal). Only meaningful
+#               once the flow reaches a message the UE would normally protect —
+#               InitialUEMessage's Registration Request is already plaintext, so
+#               downgrade skips here; use it on a post-auth UplinkNASTransport.
+#   unknown-ie  inject a protocol IE id no NGAP release assigns (60000), with a
+#               criticality drawn from all three values. This is the xp-172
+#               lever: TS 38.413 §10.3.4 makes the receiver's obligation depend
+#               on that criticality — reject must stop the procedure with an
+#               Error Indication carrying criticality diagnostics, notify must
+#               continue AND report, ignore must be silent. Drawing all three
+#               matters: a campaign that only sent reject could not tell a
+#               conformant AMF from one that refuses everything it does not
+#               recognise.
+#   ie-reorder  shuffle the top-level protocol IE list. NGAP does not mandate IE
+#               order on the wire, so a receiver that depends on it is wrong.
+#
+# WAS DEFERRED, NOW POSSIBLE. W2-F2 could not build these two: NGAP is APER, so
+# an IE cannot be spliced in by byte arithmetic the way a PFCP TLV can — every
+# length determinant upstream has to be recomputed — and ngap5g's per-message
+# encoders are unexported and each hard-codes its own IE set. ngap5g.SplitPDU /
+# BuildPDU (proto/ngap5g/criticality.go) decompose a PDU into raw IEs and
+# recompose it with every determinant recomputed by the same writer the real
+# encoders use, so a mutator can now emit an IE no implementation has ever seen.
+#
+# REQUIRES THE DOCKER LAB. NGAP is SCTP, which darwin has no kernel support for,
+# so the runner must run as the gNB INSIDE the lab (deploy/lab, e2e-gnb-run.sh);
+# the AMF's panic site is d3x_recovered_panics_total{site="amf_n2"}.
+#
+#   d3x-run run-flow -flow fuzz_ngap_initial_ue_structural \
+#     -templates . -c <lab-amf.yaml> -gen-subscriber \
+#     -fuzz-metrics-url http://<amf>:<port>/metrics \
+#     -fuzz-known-good registration_simple
+
+kind: flow
+name: fuzz_ngap_initial_ue_structural
+description: Structure-aware fuzz of the NAS-bearing InitialUEMessage against a live AMF (N2)
+category: robustness
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - released
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [InitialUEMessage]
+  strategy: nest
+  depth: 512
+  rate: 1.0
+  budget: 200
+  # ORACLE: the panic counter is primary here, armed via
+  # `-fuzz-metrics-url http://<amf>:8081/metrics` (d3x_recovered_panics_total
+  # {site="amf_n2"}). It is the only oracle that fits a -gen-subscriber campaign
+  # against a REAL AMF: the runner is the gNB with SYNTHETIC UEs, so no
+  # known-good NAS flow authenticates — a state-corruption replay would fail on
+  # auth, not on corruption (W2-F3 measured this against the lab AMF).
+  #
+  # The state-corruption (known-good) oracle is OPT-IN and needs REAL
+  # subscribers, because the replayed flow must actually complete a registration:
+  #   -fuzz-known-good registration -s <lab-subscribers.yaml> -fuzz-known-good-every 60
+  # Use the full `registration` flow (auth → SMC → accept), NOT
+  # registration_simple — that one only answers a STUB AMF's release and never
+  # reaches a terminal pass against a real AMF, so it reports a false failure.
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_release
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 3,
+                "ue_context_request": 1
+              }
+
+  wait_release:
+    # A mutated InitialUEMessage that the AMF drops is not a failure by itself —
+    # dropping an undecodable PDU is correct. The oracle (panic counters +
+    # known-good replay) is what judges the AMF's health; this state is the
+    # liveness floor.
+    on_timeout:
+      duration: 10s
+      target: survived
+    transitions:
+      - event: UEContextReleaseCommand
+        target: released
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# NO `final_checks` BLOCK, AND THE REASON IS NOT LAZINESS.
+#
+# REG-149 and REG-888 (both robustness, both expected_terminal: null) ask the same thing
+# in the same shape: "After the malformed message, a subsequent well-formed registration
+# on the same association still reaches RegistrationAccept" / "a known-good registration
+# replayed on the same association still completes within its normal budget."
+#
+# THE FOLLOW-UP REGISTRATION IS THE WHOLE CRITERION, AND THIS FLOW NEVER SENDS ONE. It
+# sends the malformed INITIAL UE MESSAGE and then waits: `released` if a
+# UEContextReleaseCommand comes back, `survived` if the 10 s timer fires. Both are
+# conformant reactions to a malformed PDU — TS 38.413 §10 permits a reject, an error
+# indication or a discard — so neither terminal can be pinned, and the observation that
+# would separate "the AMF absorbed it and kept serving" from "the AMF died quietly" is the
+# registration that is missing. Every path also evaluates ZERO checks.
+#
+# WHAT WOULD CLOSE IT: after the absence window, a second registration on the same
+# association, with `survived` reachable only from its REGISTRATION ACCEPT and a third
+# terminal for the probe going unanswered. That is the pattern
+# error_indication_non_ue_associated_after_setup already uses.

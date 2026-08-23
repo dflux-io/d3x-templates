@@ -1,0 +1,333 @@
+# REG-454 — a REGISTRATION REQUEST protected with a security context the AMF no
+# longer holds forces re-authentication; it never gets a bare REGISTRATION
+# ACCEPT.
+#
+# TS 24.501 §4.4.4.3 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim):
+#
+#   "If a REGISTRATION REQUEST message for mobility and periodic registration
+#    update fails the integrity check and the UE provided EPS NAS message
+#    container IE which was successfully verified by the source MME, the AMF may
+#    create a mapped 5G NAS security context …; OTHERWISE IF THE UE HAS ONLY A
+#    NON-EMERGENCY PDU SESSION ESTABLISHED, THE AMF SHALL INITIATE A PRIMARY
+#    AUTHENTICATION AND KEY AGREEMENT PROCEDURE TO CREATE A NEW NATIVE 5G NAS
+#    SECURITY CONTEXT. Additionally, the AMF shall initiate a security mode
+#    control procedure, and include the Additional 5G security information IE
+#    with the RINMR bit set to 'Retransmission of the initial NAS message
+#    requested' in the SECURITY MODE COMMAND message as specified in subclause
+#    5.4.2.2."
+#
+# The mapped-context branch is excluded by construction: this UE is 5G SA only,
+# it never had an MME, and the REGISTRATION REQUEST carries no EPS NAS message
+# container IE. So the "otherwise" branch is the one that applies.
+#
+# TS 33.501 §6.4.6 and §6.8.1.1.2.3 are the same requirement from the security
+# side: a context the network does not hold cannot be taken into use, and a new
+# native context can only come from a primary authentication run.
+#
+# THE PROBE: BOTH DEVIATIONS, AND WHY NEITHER ALONE WOULD DO
+# ----------------------------------------------------------
+# The register's criterion is "a REGISTRATION REQUEST protected with a STALE
+# ngKSI AND a STALE MAC", and the pairing is load-bearing:
+#   - a stale ngKSI with a VALID MAC is a message the AMF can still verify once
+#     it looks past the identifier, so a core that ignores ngKSI entirely would
+#     accept it and the row would be measuring the wrong thing;
+#   - a bad MAC under the CURRENT ngKSI is ordinary corruption, and §4.4.4.3
+#     has a different sentence for that.
+# Together they say "I hold a context you do not", which is the row's title.
+#
+# WHAT IS ACTUALLY ON THE WIRE
+# ----------------------------
+# MEASURED (2026-08-11, this lab, `-trace`), the probe's InitialUEMessage NAS:
+#
+#     7e 01 <MAC×4 inverted> <SN> | 7e 00 41 42 …
+#     ^EPD ^hdr=1 integrity-protected initial NAS message
+#                                  ^^^^^^^^ inner plaintext REGISTRATION REQUEST
+#                                           ^^ octet 4: low nibble 2 = mobility
+#                                              updating, HIGH NIBBLE 4 =
+#                                              ngKSI 4 — a key set the AMF never
+#                                              allocated (it allocated 0)
+#
+# and the MAC octets are the byte-for-byte XOR-0xFF complement of the ones
+# EncodeSecureInitial computed, so the integrity check cannot pass under any
+# context either side holds. Both deviations are on the wire; neither is
+# inferred from the YAML.
+#
+# TERMINALS
+#   an AUTHENTICATION REQUEST (or an IDENTITY REQUEST on the way to one, or an
+#     outright refusal, or a release)                 -> rejected
+#     §4.4.4.3's "shall initiate a primary authentication and key agreement
+#     procedure" is satisfied by the AUTHENTICATION REQUEST; the others are
+#     refusals, and none of them registers the UE off an unverifiable context.
+#   nothing at all, AND the AMF is then shown to be alive and still
+#     authenticating this subscriber                   -> discarded_no_reauth
+#     Safe — the UE was not registered — but not what the clause requires
+#     either: "shall initiate a primary authentication" is not satisfied by
+#     silence, and the register's criterion is phrased positively ("an
+#     AUTHENTICATION REQUEST IS RECEIVED before any REGISTRATION ACCEPT"). It
+#     gets its own terminal rather than being folded into the pass, which would
+#     hide a real deviation, or into `tolerated`, which would report a core that
+#     accepted nothing as having accepted a forged context — the most expensive
+#     wrong answer this harness can produce (terminals.yaml).
+#   nothing at all, and nothing answers a fresh
+#     registration either                              -> unproven
+#
+# ============================================================================================
+# `discarded_no_reauth` WAS REACHED BY A TIMER, AND A TIMER IS NOT EVIDENCE FOR ANY TERMINAL.
+# ============================================================================================
+#
+# Measured on the 50effc0 baseline: tinycore reached `discarded_no_reauth` with
+# terminal_via_timeout {"discarded_no_reauth": 1}, so lib/outcome.py DEFENCE 11 voided the
+# verdict and the cell read `inconclusive`. The discard itself is real and the log quoted below
+# proves it — but the TERMINAL rested on nothing, because a silent discard, a crashed AMF, a dead
+# association, a lost message and an answer our FSM names no transition for are the same
+# observation. Open5GS and free5GC reached `rejected` on an AUTHENTICATION REQUEST and passed;
+# the difference between the cells was not conformance but whether the core said something.
+#
+# THE DISCRIMINATOR: ASK WHETHER THE AMF IS STILL AUTHENTICATING THIS SUBSCRIBER. After the
+# absence window the flow reallocates the RAN-UE-NGAP-ID and sends a fresh INITIAL UE MESSAGE
+# carrying the SUCI, and asserts the AUTHENTICATION REQUEST that TS 24.501 §5.4.1.3 obliges the
+# AMF to run for a subscriber it holds no verifiable context for. That separates exactly the two
+# readings the row could not tell apart: "the stale-MAC registration was discarded and the AMF is
+# still serving this association" from "the association is gone". It is measured, not hoped for —
+# a fresh SUCI registration draws an AUTHENTICATION REQUEST from all three cores, in this very
+# flow's `wait_auth_request` state, every run.
+#
+# It also keeps the DEVIATION reportable. `discarded_no_reauth` is not the row's expected
+# terminal, so a core that lands there is telling us it left a UE whose context the network lost
+# with no signal that it must re-authenticate — and that finding is now backed by a message
+# instead of being thrown away as `inconclusive`.
+#   a REGISTRATION ACCEPT with no AUTHENTICATION REQUEST before it
+#                                                     -> tolerated
+#     The AMF registered a UE on a security context it cannot verify and never
+#     re-established. That is the finding, and it is a message: the criterion
+#     says so in as many words — "an accept without an intervening
+#     authentication is a failure".
+#
+#   A SECURITY MODE COMMAND arriving with no authentication first does NOT end
+#   the flow: it is answered and the wait continues, so that an accept reached
+#   through it still lands on `tolerated`. §4.4.4.3 puts the security mode
+#   control procedure AFTER the authentication ("Additionally"), and a core that
+#   skips straight to it has skipped the sentence this row asserts — but the
+#   criterion makes the ACCEPT the failure, so the accept is what is scored.
+#
+# MEASURED (2026-08-11, this lab) — tinycore reaches `discarded_no_reauth`.
+# It detected the forgery and said so, for this exact frame:
+#
+#   "uplink NAS integrity check failed — message discarded"
+#   error: "nas: MAC mismatch: received 149e531f, expected eb61ace0"
+#   supi:  imsi-001010000000454
+#
+# 0x14 = ~0xEB, 0x9E = ~0x61, 0x53 = ~0xAC, 0x1F = ~0xE0 — the exact XOR-0xFF
+# complement, so the corruption is on the wire and the AMF found it. What it
+# then did is discard the message and send NOTHING: no authentication, no
+# identity request, no reject. §4.4.4.3 says "the AMF SHALL INITIATE a primary
+# authentication and key agreement procedure to create a new native 5G NAS
+# security context". Nothing was accepted, so this is not the security finding
+# the row hunts — but a UE whose context the network has lost is left with no
+# signal that it must re-authenticate, and will retry forever with a context
+# that can never verify. FINDING, of the same class as REG-455's missing
+# SERVICE REJECT #9.
+#
+# ACCEPTANCE TEST (mandatory for a negative row) — MEASURED 2026-08-11:
+#   bad_mac: true, stale_ngksi: 4 (as authored) -> discarded_no_reauth
+#   the same flow with the wait_reaction AUTHENTICATION REQUEST transition
+#     temporarily removed, so the run follows the AKA and the security mode
+#     control procedure through to the end -> tolerated, on the
+#     InitialContextSetupRequest.RegistrationAccept arm. The arm that scores the
+#     finding is live; the pass above is silence-of-that-arm, not a dead branch.
+
+kind: flow
+name: registration_stale_context_forces_reauthentication
+description: A mobility REGISTRATION REQUEST claiming a stale ngKSI with a MAC that cannot verify must draw an AUTHENTICATION REQUEST, never a bare REGISTRATION ACCEPT (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, discarded_no_reauth, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # The context this row will later claim to have LOST has to exist
+          # first, and it has to be a real one: ngKSI 0 with a non-null
+          # integrity algorithm.
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          # The 5G-GUTI the probe identifies itself with — without it the AMF
+          # could not find any context and would refuse the message for a reason
+          # that has nothing to do with the stale one it claims.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # THE PROBE. bad_mac:false is the acceptance-test switch.
+          - type: send
+            message: RegistrationUpdateStaleContext
+            params: { stale_ngksi: 4, bad_mac: true }
+  wait_reaction:
+    # THE ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. Silence accepts
+    # nothing, but it is not the clause's answer either — and on its own it is
+    # not even evidence that the AMF was there. Falling out of the window is the
+    # cue to go and ask.
+    on_timeout:
+      duration: 8s
+      target: probe_association_still_serving
+      actions:
+        # THE DISCRIMINATOR. A fresh RAN-UE-NGAP-ID and a fresh INITIAL UE
+        # MESSAGE carrying the SUCI. §5.4.1.3 obliges the AMF to authenticate a
+        # subscriber it holds no verifiable context for, so an answer here says
+        # the AMF is alive, our messages arrive, and it does run primary
+        # authentication — i.e. what happened to the stale registration was a
+        # DISCARD and not an outage.
+        - { type: ngap_realloc }
+        - { type: send, message: InitialUEMessage }
+    transitions:
+      # §4.4.4.3: "the AMF shall initiate a primary authentication and key
+      # agreement procedure to create a new native 5G NAS security context".
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      # On the way to authenticating, or refusing outright — none of these
+      # registers the UE.
+      - { event: NASDownlinkTransport.IdentityRequest, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.AuthenticationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+      # A security mode control procedure with no authentication before it is
+      # not itself the failure this row scores, so the flow answers it and keeps
+      # waiting for the accept.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_reaction
+        actions: [{ type: send, message: SecurityModeComplete }]
+      # THE FINDING: registered off a context the AMF cannot verify, with no
+      # intervening authentication.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+  probe_association_still_serving:
+    # Silence to a fresh SUCI registration is silence to the one message every
+    # AMF in this corpus answers within milliseconds. It separates nothing, so it
+    # scores `unproven` rather than crediting the core with a discard it may
+    # never have performed.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      # THE DISCRIMINATOR FIRING. The stale-MAC registration drew nothing — the
+      # §4.4.4.3 deviation this terminal records — but the AMF is alive, reached,
+      # and still runs a primary authentication for this subscriber. RAND is
+      # mandatory in AUTHENTICATION REQUEST (TS 24.501 §8.2.1), so the branch
+      # asserts on the message that fired it.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: discarded_no_reauth
+        actions:
+          - { type: check, field: nas.authentication_param_rand, op: ie_present }
+      # An identity procedure on the way to authenticating, or an outright
+      # refusal of the fresh registration: alive, reached, and nothing accepted
+      # off the stale context either.
+      - event:
+          or:
+            - NASDownlinkTransport.IdentityRequest
+            - NASDownlinkTransport.AuthenticationReject
+            - UEContextReleaseCommand
+        target: discarded_no_reauth
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: discarded_no_reauth
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      # A REGISTRATION ACCEPT for a bare SUCI registration with no
+      # authentication whatsoever is a superset of this row's finding — the AMF
+      # registers UEs it has not authenticated — so it is scored as the finding.
+      # No check: a gate on the branch whose target is the finding is a way for
+      # the finding to vanish into `wrong-response`.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+      - { event: ErrorIndication, target: unproven }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-454 (negative, expected_terminal: rejected) —
+# After a REGISTRATION REQUEST protected with a stale ngKSI and a stale MAC, an
+# AUTHENTICATION REQUEST is received before any REGISTRATION ACCEPT; an accept without
+# an intervening authentication is a failure. Where NOTHING comes back, that is a
+# deviation from ''shall initiate a primary authentication'' rather than the pass, and
+# it is recorded only once the AMF has been shown ON THE WIRE to be alive and still
+# authenticating this subscriber — a fresh INITIAL UE MESSAGE carrying the SUCI, on a
+# reallocated RAN-UE-NGAP-ID over the same association, draws an AUTHENTICATION REQUEST.
+# Silence with nothing behind it separates a discard from a dead association not at all,
+# and is reported as neither.
+#
+# REG-454: "an AUTHENTICATION REQUEST is received before any REGISTRATION ACCEPT; an
+# accept without an intervening authentication is a failure" — the accept branches are
+# `tolerated`, and every wait_reaction message branch is `rejected`.
+# `discarded_no_reauth` is the criterion's separately-recorded case (nothing came back,
+# but the fresh INITIAL UE MESSAGE proved the AMF alive and still authenticating);
+# `unproven` is that probe going unanswered.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

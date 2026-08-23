@@ -1,0 +1,45 @@
+# Nudm_SDM GetDataSets with an invalid dataset-names enum value — security/negative.
+# 3GPP TS 29.503 §6.1.6.3.x; TS 29.500 INVALID_QUERY_PARAM.
+# UDM must reject a dataset-name outside the DataSetName enum with 400 and stay live.
+
+kind: flow
+name: udm_sdm_get_datasets_invalid_dataset_name
+description: GET datasets with an out-of-enum dataset-names is rejected with 400
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v2/imsi-001010000000001",
+                "query": {"dataset-names": "NOT_A_DATASET"}
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 400

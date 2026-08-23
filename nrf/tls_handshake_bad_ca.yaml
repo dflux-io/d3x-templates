@@ -1,0 +1,43 @@
+# MTLS-02 — untrusted CA correctly rejected. See d3x-core
+# docs/nrf/sanity-tests.md §4.7.7 (MTLS-02).
+#
+# Client trusts only a FOREIGN CA (peer nrf-foreignca →
+# ca_file=foreign-ca.crt), so the good server cert chains to an unknown
+# authority. No HTTP response — the TLS handshake fails and the transport
+# error is delivered to the FSM as an `Error` event; we assert its cause.
+
+kind: flow
+name: nrf_tls_handshake_bad_ca
+description: Foreign-CA client rejects the server cert → x509 unknown authority (MTLS-02).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: getting
+        actions:
+          - type: send
+            message: GetBstr
+            peer: nrf-foreignca
+            message_body: |
+              {"method": "GET", "url": "/nnrf-bstr/v1/bootstrapping"}
+
+  getting:
+    transitions:
+      # No response — the handshake fails and the transport error arrives
+      # as the synthetic `Error` event (ue.LastError carries the cause).
+      - event: Error
+        target: done
+        actions:
+          - type: check
+            field: ue.LastError.Cause
+            op: contains
+            expected: "certificate signed by unknown authority"
+
+  done: {}
+  failed: {}

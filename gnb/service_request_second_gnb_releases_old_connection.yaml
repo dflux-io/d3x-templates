@@ -1,0 +1,308 @@
+# REG-250 — a new NAS signalling connection via a second gNB must cost the UE
+# its old one.
+#
+# NEEDS TWO gNBs. The register row declares `preconditions.gnbs: 2`; the run
+# must use matrix/cores/tinycore/gnb-2gnb.yaml. With one gNB the sender refuses
+# to build the message at all rather than sending it over the same association,
+# because a "second gNB" probe that runs on the first gNB is indistinguishable
+# from an ordinary service request and would score every core green.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 23.501 §5.3.3.3.2 (NAS signalling connection establishment) — verbatim,
+#   and one of the plainest "shall"s in the family: "If the NAS signalling
+#   connection is to be established via an NG-RAN node, but the AMF detects that
+#   this UE has already established a NAS signalling connection via old NG-RAN
+#   node, the AMF shall release the old established NAS signalling connection by
+#   triggering AN Release Procedure."
+#
+#   TS 23.502 §4.2.6 (AN Release) — what that procedure is: "This procedure is
+#   used to release the logical NG-AP signalling connection for the UE between
+#   the (R)AN and the AMF and the associated N3 User Plane connections and (R)AN
+#   signalling connection between the UE and the (R)AN and the associated (R)AN
+#   resources."
+#
+#   TS 38.413 §8.6.1.2 — a RAN-UE-NGAP-ID is unique WITHIN ONE NG-RAN node, so
+#   the connection on the second gNB carries an id from that node's own space.
+#
+# THE SCENARIO IS RADIO-LINK FAILURE, NOT HANDOVER. The UE gives up on the cell
+# it registered through and comes back via another one; the source gNB never
+# asks for a handover and may be unreachable. Nothing in the handover machinery
+# applies — in particular the runner's `handover_swap` action cannot produce
+# this state, because it consumes a bridge recorded by a target gNB's auto-reply
+# to a HANDOVER REQUEST, and no HANDOVER REQUEST is ever sent here. The move is
+# done by the sender (`ServiceRequestViaSecondGnb`,
+# runner/runner/enrichers_ngap_second_gnb.go).
+#
+# WHAT MAKES THE ROW OBSERVABLE, AND THE DEFECT THAT WOULD HAVE HIDDEN IT.
+# The UE CONTEXT RELEASE COMMAND the AMF owes arrives ON THE OLD ASSOCIATION,
+# addressed to the OLD RAN-UE-NGAP-ID. The sender therefore KEEPS the source
+# gNB's (RAN-UE-NGAP-ID → ContextID) binding when it moves the UE; without that
+# the RX demux drops the command as `unknown_ue` before any flow sees it, and
+# this row would report silence from a core that had answered correctly. That
+# failure mode is not hypothetical — it is recorded in the runner's own
+# `keep_source_binding` comment (execNgapHandoverSwap, action_executor.go),
+# where it was paid for once already.
+#
+# WHAT IS ASSERTED
+#   1. the FIRST connection really existed — a completed registration on gNB A
+#      with an allocated 5G-GUTI (the sender refuses to run without one);
+#   2. THE ROW, part one: a UE CONTEXT RELEASE COMMAND arrives, and it arrives
+#      ON THE FIRST gNB's association — `ue.RxGnb equals {{ue.Params.old_gnb}}`,
+#      compared against the gNB the sender recorded rather than against a
+#      literal, because which of the two gNBs a UE lands on is random
+#      (Engine.createUE picks one at random from the pool);
+#   3. THE ROW, part two: it names the OLD connection — the RAN-UE-NGAP-ID of
+#      the release command equals the one the UE held on the first gNB. NOTE
+#      that this id is NOT on its own a discriminator between the two legs:
+#      TS 38.413 §8.6.1.2 scopes a RAN-UE-NGAP-ID to one NG-RAN node, so two
+#      gNBs may legitimately both allocate 1, and in practice they often do.
+#      Check 2 is what identifies the association; check 3 is what says the
+#      command names a connection this UE actually held there, rather than some
+#      other id the AMF happened to send on that leg. The pair is the
+#      criterion's "for the old AP IDs";
+#   4. THE ROW, part three: the service request on the SECOND gNB completes —
+#      a SERVICE ACCEPT arrives. The clause says the AMF releases the old
+#      connection while establishing the new one, so a core that killed both
+#      has not done what §5.3.3.3.2 asks.
+#
+# CHECKS 2 AND 4 TOGETHER are what stop this row from being satisfied by any
+# release for any reason. A core that simply tore the UE down would fail check 4
+# (no SERVICE ACCEPT), and a release sent on the NEW leg fails check 2. Check 3
+# adds that the id is one this UE actually held; as noted above it cannot carry
+# the leg distinction on its own.
+#
+# ORDER IS NOT ASSERTED, on purpose. §5.3.3.3.2 does not order the release
+# against the accept, and the two arrive on different SCTP associations where
+# neither the network nor this runner guarantees an interleaving. Both states
+# below therefore accept either message and converge, so an arrival order that
+# the clause does not fix cannot decide the verdict.
+#
+# NOT A BARE TIMER: every terminal but `failed` is reached by messages arriving.
+#
+# MEASURED AGAINST tinycore 2026-08-11 (git-8523d93), gnb-2gnb.yaml: terminal
+# `failed`. The UE registered on GNBSRC, moved to GNBTGT and its SERVICE REQUEST
+# there was ACCEPTED (`InitialContextSetupRequest.ServiceAccept`) — but NO UE
+# CONTEXT RELEASE COMMAND arrived on either association within the 12s budget.
+# TS 23.501 §5.3.3.3.2's "the AMF shall release the old established NAS
+# signalling connection" is not met: tinycore leaves the old connection live.
+#
+# IT IS NOT THE DEMUX. The run's own bus counters read `dropped pre-dispatch: 0`
+# and `dispatched and refused: 0`, so nothing arrived and was discarded — the
+# core sent nothing. The AMF's log for this SUPI ends at "UECM: AMF registered
+# for UE with UDM" with no release of any kind.
+#
+# ACCEPTANCE TEST — THE ASSERTIONS READ LIVE VALUES AND A RELEASE IS OBSERVABLE
+# AFTER THE MOVE. Run 2026-08-11 with a UE CONTEXT RELEASE REQUEST added on the
+# new leg after the accept, and the two checks re-aimed at the NEW gNB: the
+# command came back and matched —
+#     [PASS] ue.RxGnb equals GNBTGT (actual=GNBTGT)
+#     [PASS] ran_ue_ngap_id equals 1 (actual=1)
+# terminal `old_connection_released`. So the move works, a UE CONTEXT RELEASE
+# COMMAND for this UE is delivered and matched after it, and both comparisons
+# resolve against the params the sender stamped. The silence on the OLD leg in
+# the real run is therefore the core's answer.
+
+kind: flow
+name: service_request_second_gnb_releases_old_connection
+description: Register on gNB A, then present a SERVICE REQUEST on gNB B — expect a UEContextReleaseCommand on A's association for A's RAN-UE-NGAP-ID while the service request on B completes (YAML)
+detail: |
+  Two-gNB connection-management probe. A UE registers through gNB A and is
+  assigned a 5G-GUTI. It then reappears on gNB B — as after a radio-link
+  failure, with no handover — presenting the same 5G-S-TMSI in a SERVICE
+  REQUEST over B's association with a fresh RAN-UE-NGAP-ID.
+
+  TS 23.501 §5.3.3.3.2 obliges the AMF to release the old NAS signalling
+  connection by triggering the AN Release procedure. The flow asserts that a
+  UE CONTEXT RELEASE COMMAND arrives on gNB A's association naming gNB A's
+  RAN-UE-NGAP-ID, and that the service request on gNB B is nevertheless
+  accepted.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - old_connection_released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # The FOR bit: this UE has further uplink NAS pending after
+          # registration (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_or_second
+        actions:
+          # The 5G-GUTI allocated here is the identity the second connection
+          # presents; without it the sender refuses to build its message.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # THE PROBE. The UE reappears on the OTHER gNB. The sender records
+          # the gNB and RAN-UE-NGAP-ID it is leaving on ue.Params.old_gnb /
+          # ue.Params.old_ran_ue_id, and keeps the source binding so the
+          # release command below can be demuxed.
+          - type: send
+            message: ServiceRequestViaSecondGnb
+            params:
+              # ENUM SVC_TYPE_SIGNALLING=1 — the same value the positive
+              # `service_request` row sends, so the only variable is the
+              # association the request arrives on.
+              service_type: 1
+
+  # The release on the old leg and the accept on the new leg arrive on two
+  # different associations in an order the clause does not fix, so each of the
+  # two states below accepts whichever comes first.
+  wait_first_or_second:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_accept
+        actions:
+          # PART ONE — on the FIRST gNB's association.
+          - { type: check, field: ue.RxGnb, op: equals, expected: '{{ue.Params.old_gnb}}' }
+          # PART TWO — naming the OLD connection's RAN-UE-NGAP-ID.
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.Params.old_ran_ue_id}}' }
+          - { type: send, message: UEContextReleaseComplete }
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceAccept
+            - InitialContextSetupRequest.ServiceAccept
+        target: wait_release_command
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+      # A reject means the UE never got its new connection; the release, if any,
+      # would then be an ordinary teardown and not the §5.3.3.3.2 one.
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceReject
+            - InitialContextSetupRequest.ServiceReject
+        target: failed
+
+  # The release arrived first; the accept on the new leg is still owed.
+  wait_service_accept:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceAccept
+            - InitialContextSetupRequest.ServiceAccept
+        target: old_connection_released
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceReject
+            - InitialContextSetupRequest.ServiceReject
+        target: failed
+
+  # The accept arrived first; the release on the old leg is still owed.
+  wait_release_command:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: old_connection_released
+        actions:
+          - { type: check, field: ue.RxGnb, op: equals, expected: '{{ue.Params.old_gnb}}' }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.Params.old_ran_ue_id}}' }
+          - { type: send, message: UEContextReleaseComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-250).
+#
+# REG-250 — UEContextReleaseCommand received on the FIRST gNB's NG association for the
+# old AP IDs, while the service request on the second gNB completes
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `old_connection_released`
+    metric: final_state_counts.old_connection_released
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: two INITIAL CONTEXT SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 2
+  - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, ServiceRequestViaSecondGnb)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

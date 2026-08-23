@@ -1,0 +1,143 @@
+# SBI sustained-rate load — Nudm_SDM_GetSubscriptionData.
+#
+# THE FIRST TEMPLATE IN THE CORPUS THAT ASSERTS A LOAD THRESHOLD. Everything it
+# needs already existed in the runner and had never been driven from a template:
+# the workload scheduler (`Workload{Rate,Duration,Repetitions}`,
+# runner/runner/engine.go), the HDR histograms behind the percentile keys
+# (runner/runner/metrics.go), and `final_checks` as the place a flow states its
+# claim. This file uses all three.
+#
+# One flow start = one Nudm SDM Get and its answer. Drive it at a rate:
+#
+#   ./bin/d3x-run run-flow -flow load_nudm_sdm_get \
+#       -templates . -c runner/config/lab-sbi.yaml \
+#       -gen-subscriber -rate 200 -repetitions 2000 -timeout 60s
+#
+# A flow template cannot declare its own workload — `rate` / `duration` /
+# `repetitions` are properties of the RUN, set by the `-rate` / `-repetitions`
+# CLI flags or by a suite step (`SuiteStep.Rate`, runner/runner/fsm/suite.go).
+# `suites/sbi_load_baseline.yaml` is the suite that pairs this
+# flow with a workload; run that if you want the numbers below to mean what the
+# comments say they mean.
+#
+# WHAT ANSWERS IT. It needs a UDM that answers /nudm-sdm/v2/{supi}/am-data. The
+# shipped `runner/config/lab-sbi.yaml` closes the loop inside one runner process
+# — `sbi_nudm_sdm_get_server` binds 127.0.0.1:18443 and the client dials it —
+# so the flow is runnable on any host with no core, no lab and no network. Point
+# `sbi-out.base_url` at a real UDM to load that instead; the thresholds then need
+# re-deriving, and the comments below say from what.
+
+kind: flow
+name: load_nudm_sdm_get
+description: Sustained-rate SBI load — Nudm SDM Get, with latency and success thresholds
+detail: |
+  Each UE performs one Nudm_SDM_GetSubscriptionData and asserts the answer was a
+  200 before reaching `completed`. Run at a rate over a duration, the aggregate
+  is a throughput/latency characterisation of whatever answered.
+
+  The status check is not decoration. `success_rate` counts UEs that ended in a
+  non-failed terminal state, and the FSM transitions on the ANSWER — a 500 is an
+  answer. Without the per-step check a UDM returning nothing but errors would
+  report success_rate 100 and a flattering latency, because failing fast is fast.
+category: load
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nudm_SDM_GetSubscriptionData
+            # Names the CLIENT binding to dial. Without it the send resolves to
+            # nf "" and every flow fails at the transport before a byte moves —
+            # which, note, still produces a flattering p95, because a flow that
+            # fails immediately is a fast flow. That is why the success checks
+            # above the latency check are not optional.
+            peer: udm-peer
+
+  wait_response:
+    # 2s. Deliberately far below the default 30s run timeout so a stalled
+    # request is recorded as one failed flow rather than sitting in flight
+    # until the whole run times out — under load the difference is between
+    # "0.4% of requests stalled" and "the run produced no verdict at all".
+    # It also has to sit ABOVE the p95 threshold asserted below, or the
+    # threshold would be unreachable: every sample slow enough to breach it
+    # would already have been timed out and never recorded.
+    on_timeout:
+      duration: 2s
+      target: failed
+    transitions:
+      - event: sbi.Nudm_SDM_GetSubscriptionData_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+
+final_checks:
+  # ---- correctness first. A load run that lost flows is not a fast run. ----
+  - name: every flow that started completed successfully
+    metric: success_rate
+    op: greater_or_equal
+    value: 100
+  # WHY 100 AND NOT 99. There is no lossy link here: the shipped config is
+  # loopback inside one process, and even against a real UDM this is a lab on a
+  # wired network. No rate of failure is justifiable, so none is budgeted — a
+  # single lost flow should turn this red and make somebody explain it. If you
+  # point this flow at something across a WAN, lower it AND write down what the
+  # new number is a budget for; `greater_or_equal 99` with no stated reason is
+  # a number that only says "we did not want to look".
+  - name: no flow timed out
+    metric: flows_timed_out
+    op: equals
+    value: 0
+  - name: the answer was a 200 on every flow
+    metric: checks_failed
+    op: equals
+    value: 0
+  - name: and the status check actually ran on every flow
+    # checks_total counts `check` ACTIONS executed. One per flow, so this is
+    # equal to flows_completed. The floor stops the assertion above passing
+    # vacuously if the check action is ever deleted from the transition.
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+
+  # ---- then the latency claim ----
+  #
+  # DERIVATION (2026-08-19, this worktree at e444839, loopback config
+  # lab-sbi.yaml driven by suites/sbi_load_baseline.yaml — 1,999 flow starts at
+  # 200/s for 10s, on one dev host with a sibling agent's runner also on the
+  # CPU): p50_latency_ms 0.7, p95_latency_ms 1.05, p99_latency_ms 1.6, max 4.
+  # A second run at the same workload gave p95 0.90. See the PR for both.
+  #
+  # 50ms is that observation with roughly 50x head-room, and the head-room is
+  # doing the real work here — it is NOT a claim that the SBI path takes 50ms.
+  # Three things it has to absorb, none of which is a defect:
+  #   - a shared CI box or a laptop under thermal load — the measurement above
+  #     was taken with a sibling agent's runner also on the CPU;
+  #   - a real UDM with a database behind it rather than a canned 200;
+  #   - Go GC pauses at the tail of a several-thousand-flow run.
+  # What it will NOT absorb is a regression of a different order: a lock
+  # convoy, a retry loop, a connection pool that serialised, a per-request TLS
+  # handshake. Those move the p95 by 100x, not by 2x, and that is the class of
+  # break this line is a tripwire for.
+  #
+  # THIS IS A TRIPWIRE, NOT A BASELINE. Do not read a pass as evidence the
+  # target is fast. When 2-3 runs against a given target are on record, fork a
+  # per-target threshold from the observed p95 plus a small margin, and say in
+  # the file which runs it came from.
+  - name: p95 flow latency stayed inside the lab head-room bound
+    metric: p95_latency_ms
+    op: less_than
+    value: 50

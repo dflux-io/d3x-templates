@@ -1,0 +1,95 @@
+# SBI wire-fuzz driver — W2-F1.
+#
+# ausf/ueauth_5g_aka_initiate_success.yaml with a `fuzz:` block and relaxed
+# assertions. Fuzzes the JSON request body of
+# POST /nausf-auth/v1/ue-authentications against a live AUSF.
+#
+# WHAT "WIRE-LEVEL" MEANS FOR SBI — READ THIS BEFORE COPYING THE PATTERN
+# For PFCP/NGAP/Diameter, TxFrame.Encoded IS the datagram. For SBI it is NOT:
+# sbi.tx.encode marshals an internal *SBIRequestEnvelope (method, path, query,
+# headers, body) that the HTTP adaptor unmarshals in order to BUILD the
+# request. So the mutate stage does not touch Encoded for SBI — it mutates the
+# envelope's BODY and re-marshals around it. Result: a well-formed envelope
+# carrying a malformed body, i.e. a real HTTP request with corrupt JSON, which
+# is what actually crosses the network. (Mutating the envelope wholesale would
+# only break the runner's own adaptor and never reach the AUSF at all.)
+#
+# CONSEQUENCE FOR EXPECTED YIELD — state it up front rather than discover it
+# The surface a byte-level mutation reaches here is the JSON parser and the
+# request-validation layer in front of the handler. That is a SHALLOW surface:
+# most bitflips produce a 400 and stop. This driver is the mechanism proof, not
+# a productive campaign. The productive SBI work is W2-F2's structure-aware
+# mutators (valid JSON, illegal VALUES — out-of-range enums, oversized strings,
+# a SUCI whose scheme output does not match its scheme id) and the
+# state-illegal family. A high skipped=empty_payload or a flat run of 400s is
+# a SIGNAL that this surface is saturated, not a clean bill of health.
+#
+# ORACLE
+#   survived  the AUSF answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400 on a corrupt body is CORRECT.
+# Asserting 201 here would turn every successful rejection into a red run and
+# make the driver useless. Classify the status DISTRIBUTION out of band
+# instead — a spread of 400/403/404 that matches how each mutation corrupted
+# the body is the real evidence, and a 2xx on a body whose security-relevant
+# fields were corrupted is the finding to hunt for.
+#
+# Stronger rungs, same hierarchy as the PFCP driver: scrape
+# d3x_recovered_panics_total first, then GET /ready (W2-4: cached ~2s,
+# consults dependencies — never /health). On darwin, a 503 from an NF whose
+# N2/SCTP listener matters is the probe being honest, not a finding.
+#
+#   d3x-run run-flow -flow fuzz_ausf_ueauth_body \
+#     -templates . -c <dpf-lab.yaml> -gen-subscriber -trace
+
+kind: flow
+name: fuzz_ausf_ueauth_body
+description: Wire-level fuzz of the Nausf_UEAuthentication request body against a live AUSF
+category: robustness
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [Nausf_UEAuthentication_Authenticate]
+  strategy: bitflip
+  rate: 1.0
+  budget: 500
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            peer: ausf
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 201, 400, 403, 500 — means the NF
+    # parsed, decided and replied, which is what F1 asserts.
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: survived
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

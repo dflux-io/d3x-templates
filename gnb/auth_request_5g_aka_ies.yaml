@@ -1,0 +1,166 @@
+# REG-400 — 5G-AKA (not EAP) authentication is initiated for a SUCI-identified
+# initial registration, and the AUTHENTICATION REQUEST carries ngKSI + ABBA.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py, not recalled):
+#
+#   TS 24.501 §5.4.1.3.1 — "The network initiates the 5G AKA based primary
+#   authentication and key agreement procedure by sending an AUTHENTICATION
+#   REQUEST message to the UE without the EAP message IE. The network shall
+#   include the ngKSI and the ABBA in AUTHENTICATION REQUEST message."
+#
+#   TS 24.501 §5.4.1.3.2 — "The network initiates the 5G AKA based primary
+#   authentication and key agreement procedure by sending an AUTHENTICATION
+#   REQUEST message to the UE and starting the timer T3560 … The AUTHENTICATION
+#   REQUEST message shall contain the parameters necessary to calculate the
+#   authentication response … This message shall include the ngKSI … This
+#   message shall also include the ABBA parameter. In this release of
+#   specification, the network shall set the length of ABBA IE to 2 and the
+#   ABBA contents to be 2 octets in length with value 0000H as described in
+#   subclause 9.11.3.10."
+#
+# (The row also cites TS 33.501 §6.1.2. That clause covers the SEAF→AUSF
+# Nausf_UEAuthentication_Authenticate request and contains no sentence about
+# the contents of the N1 AUTHENTICATION REQUEST, so it is not cited here.)
+#
+# ---------------------------------------------------------------------------
+# How "no EAP message IE" is asserted — read before editing
+# ---------------------------------------------------------------------------
+# The runner has no "absent" operator. Absence is `equals: null`, which also
+# passes when the FIELD NAME is wrong (an unresolvable path is treated as
+# vacuously satisfied). So the eap_message check below is paired with
+# `ie_present` assertions on THREE sibling IEs of the same decoded message
+# (ngksi, authentication_param_rand, authentication_param_autn) that are
+# measured present on both cores. If the decode ever stopped populating this
+# message — the failure mode that would make `equals: null` meaningless — those
+# siblings go missing and the flow fails instead of passing quietly.
+# Field names are the decoded JSON of nas5g.NAS_AuthenticationRequest
+# (proto/nas5g/messages_5gmm.go): ngksi, abba, authentication_param_rand,
+# authentication_param_autn, eap_message.
+#
+# The flow deliberately stops at the challenge: REG-400 is about the AMF
+# initiating 5G-AKA, and answering it is REG-401's subject.
+#
+# MEASURED (2026-08-10, this lab, both cores):
+#   ngksi        present, decodes to {tsc: 1} = native security context.
+#                NOT asserted: nas.ngksi.nas_key_set_id — both cores allocate
+#                key set id 0 on a first challenge, and 0 is dropped by the
+#                `omitempty` JSON tag, so that path does not resolve and only
+#                `equals: null` would pass on it. tsc is the subfield that does
+#                resolve, so it is the one that proves the IE really decoded.
+#   abba         value 2 octets 0000H  → base64 "AAA=" in the decoded JSON
+#   rand / autn  present
+#   eap_message  absent  → 5G-AKA was selected, not EAP-AKA'
+
+kind: flow
+name: auth_request_5g_aka_ies
+description: SUCI initial registration; assert the AUTHENTICATION REQUEST carries ngKSI and a 2-octet 0000H ABBA and no EAP message IE (5G-AKA, not EAP)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - challenged
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # The Registration Request built by EnrichInitialUEMessage carries a
+          # SUCI (the UE has no 5G-GUTI), which is what makes this the
+          # SUCI-identified initial registration REG-400 describes.
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    # Row budget timeout_s: 15. A core that never challenges fails the row.
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # The event name itself carries half the criterion: the challenge must
+      # arrive as a DownlinkNASTransport (N1 over N2), decoded as an
+      # AUTHENTICATION REQUEST.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: challenged
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          # --- §5.4.1.3.1 "shall include the ngKSI and the ABBA"
+          - { type: check, field: nas.ngksi, op: ie_present }
+          # §5.4.1.3.1: the ngKSI identifies "the KAMF and the partial NATIVE
+          # security context that is created if the authentication is
+          # successful" — TSC must therefore say native. Decoder enum
+          # (proto/nas5g/enums.go): 0 none, 1 native, 2 mapped.
+          - { type: check, field: nas.ngksi.tsc, op: equals, expected: 1 }
+          - { type: check, field: nas.abba, op: ie_present }
+          # --- §5.4.1.3.2 "length of ABBA IE to 2 and the ABBA contents to be
+          # --- 2 octets in length with value 0000H". []byte marshals to
+          # --- base64 in the decoded JSON, so the 2 octets 00 00 are the
+          # --- 4-character "AAA=" — that string pins BOTH the length and the
+          # --- value. Anything else (wrong length, non-zero content) fails.
+          - { type: check, field: nas.abba.value, op: equals, expected: "AAA=" }
+          # --- §5.4.1.3.2 "shall contain the parameters necessary to calculate
+          # --- the authentication response": RAND and AUTN. Also the positive
+          # --- siblings that guard the absence assertion below.
+          - { type: check, field: nas.authentication_param_rand, op: ie_present }
+          - { type: check, field: nas.authentication_param_autn, op: ie_present }
+          # --- §5.4.1.3.1 "without the EAP message IE" — an EAP message here
+          # --- would mean EAP-AKA' was selected, not 5G-AKA.
+          - { type: check, field: nas.eap_message, op: equals, expected: null }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-400).
+#
+# REG-400 — A DownlinkNASTransport carrying AUTHENTICATION REQUEST is received on N1
+# within the budget; the message contains an ngKSI IE and an ABBA IE and no EAP message
+# IE (i.e. 5G-AKA, not EAP, was selected).
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `challenged`
+    metric: final_state_counts.challenged
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  # The eight `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all eight declared checks ran
+    metric: checks_total
+    op: equals
+    value: 8
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

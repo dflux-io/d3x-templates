@@ -1,0 +1,298 @@
+# REG-521 — a target's algorithm complaint is not a licence to re-key.
+#
+# TS 38.413 §8.4.2.4: "If the supported algorithms for encryption defined in
+# the Encryption Algorithms IE in the UE Security Capabilities IE, plus the
+# mandated support of EEA0 and NEA0 in all UEs (TS 33.501), do not match any
+# allowed algorithms defined in the configured list of allowed encryption
+# algorithms in the NG-RAN node, the target NG-RAN node shall reject the
+# procedure using the HANDOVER FAILURE message." §8.4.1.3 then requires a
+# HANDOVER PREPARATION FAILURE to the source.
+#
+# WHAT MUST NOT HAPPEN. The refusal says nothing about the SOURCE cell's
+# security, which is already established and working. An AMF that responds by
+# running a NAS SECURITY MODE COMMAND, or a UE CONTEXT MODIFICATION carrying a
+# new Security Key / UE Security Capabilities, has let a target's local
+# configuration re-open a negotiated context — the downgrade surface this row
+# watches. Both are separate terminals so the trace names which one fired.
+#
+# THIS FLOW OWNS THE TARGET SIDE. Declaring a `HandoverRequest` transition
+# suppresses the runner's fire-and-forget target auto-reply and hands the
+# decoded HANDOVER REQUEST to this flow, which then answers as the target
+# NG-RAN node — on the TARGET association (`peer:`), because that is who a
+# HANDOVER REQUEST ACKNOWLEDGE / HANDOVER FAILURE is from (TS 38.413 §8.4.2).
+# A reply on the source leg would arrive on the association the AMF already
+# has the UE on, and a conformant AMF ignoring it would score as a defect.
+#
+# NEEDS TWO gNBs (register preconditions.gnbs: 2). With one gNB the HANDOVER
+# REQUIRED names a target the AMF has never seen and the row measures "unknown
+# target" instead of handover.
+
+kind: flow
+name: n2_handover_failure_unsupported_encryption
+description: N2 handover refused for unsupported encryption algorithms; assert the source keeps its AS security and its session, with no re-keying
+detail: |
+  Registration, one PDU session, HANDOVER REQUIRED. The flow acts as the
+  target NG-RAN node and refuses with cause radioNetwork /
+  encryption-and-or-integrity-protection-algorithms-not-supported.
+
+  It asserts the AMF answers HANDOVER PREPARATION FAILURE on the source
+  association with a Cause IE; that NO NAS SECURITY MODE COMMAND and NO UE
+  CONTEXT MODIFICATION REQUEST follows on either association (either one lands
+  on the `security_renegotiated` terminal); and that the UE's session on the
+  source is still there, by releasing it over the source leg.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - source_intact
+  - security_renegotiated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_handover_request
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: HandoverRequired
+
+  wait_handover_request:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: HandoverRequest
+        target: wait_prep_failure
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # THE VIOLATION IS ON THE WIRE, and it is a refusal rather than a
+          # malformed frame: the target NG-RAN node answers HANDOVER FAILURE
+          # with cause radioNetwork/encryption-and-or-integrity-protection-algorithms-not-supported (value 30
+          # in the CauseRadioNetwork enumeration, TS 38.413 §9.3.1.2) instead of
+          # the acknowledge the AMF is waiting for. Swap this send for a
+          # HandoverRequestAcknowledge and the flow reaches the handover instead
+          # — that is the control that proves the row is testing the refusal.
+          - type: send
+            message: HandoverFailure
+            peer: "{{ue.Params.target_gnb_name}}"
+            params:
+              cause_reason: 30
+
+  wait_prep_failure:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # --- TS 38.413 §8.4.1.3: "If the 5GC or the target side is not able to
+      # --- accept any of the PDU session resources or a failure occurs during
+      # --- the Handover Preparation, the AMF sends the HANDOVER PREPARATION
+      # --- FAILURE message with an appropriate cause value to the source
+      # --- NG-RAN node."
+      - event: HandoverPreparationFailure
+        target: wait_source_alive
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # Addressed to the SOURCE leg — the UE never moved.
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          - type: check
+            field: cause
+            op: ie_present
+          - type: check
+            field: cause.cause
+            op: equals
+            expected: 0
+          - type: send
+            message: PDUSessionReleaseRequest
+      # The AMF commanded the handover anyway. That is the failure this row
+      # names: the target refused and the source was told to move regardless.
+      - event: HandoverCommand
+        target: failed
+      # TS 38.413 §8.4.2.4 rejections must not become a reason to re-key. A
+      # NAS SECURITY MODE COMMAND or a UE CONTEXT MODIFICATION arriving here is
+      # the AMF renegotiating AS/NAS security off the back of a target's
+      # algorithm complaint, which is the downgrade this row exists to catch.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: security_renegotiated
+      - event: UEContextModificationRequest
+        target: security_renegotiated
+
+  # POSITIVE ACCEPTANCE OBSERVABLE, not a bare timer. "The UE's existing user
+  # plane on the source still carries a ping to N6" is the register's wording;
+  # this deployment runs its UPF with `-datapath stub` (matrix/cores/tinycore
+  # compose.yml) and carries no user plane at all, so an ICMP echo cannot
+  # decide anything here — it would be red for the datapath, never for the
+  # handover. What IS decidable on this SUT is that the session survived the
+  # failed preparation on the source leg: an uplink NAS PDU SESSION RELEASE
+  # REQUEST for it comes back as a PDU SESSION RELEASE COMMAND naming that same
+  # session, on the SOURCE association. A session the core had torn down when
+  # the handover failed could not answer that.
+  wait_source_alive:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: source_intact
+        actions:
+          - type: check
+            field: pdu_session_resource_to_release_list.length
+            op: greater_or_equal
+            expected: 1
+          - type: check
+            field: pdu_session_resource_to_release_list.0.pdu_session_id
+            op: equals
+            expected: "{{ue.PduSessionId}}"
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          - type: send
+            message: PDUSessionResourceReleaseResponse
+      # TS 38.413 §8.4.2.4 rejections must not become a reason to re-key. A
+      # NAS SECURITY MODE COMMAND or a UE CONTEXT MODIFICATION arriving here is
+      # the AMF renegotiating AS/NAS security off the back of a target's
+      # algorithm complaint, which is the downgrade this row exists to catch.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: security_renegotiated
+      - event: UEContextModificationRequest
+        target: security_renegotiated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-521 (negative, expected_terminal: source_intact) —
+# HandoverPreparationFailure is received on the source association; no NAS Security Mode
+# Command and no UE Context Modification changing the AS security algorithm is observed
+# on either association; the source user plane still reaches N6.
+#
+# REG-521: HandoverPreparationFailure on the source association, no NAS Security Mode
+# Command and no UE Context Modification changing the AS security algorithm, and the
+# source user plane still reaching N6. `security_renegotiated` is exactly the forbidden
+# renegotiation — the AMF relaxing the UE's security to make the handover succeed — and
+# is the finding this row exists to catch.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `source_intact` — the terminal this row claims
+    metric: final_state_counts.source_intact
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 15
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

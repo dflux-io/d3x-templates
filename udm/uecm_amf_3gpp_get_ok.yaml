@@ -1,0 +1,77 @@
+# Nudm_UECM AMF 3GPP-access Get (register-then-get) — compliance (multi-step).
+# 3GPP TS 29.503 §6.2.3.4 (GET /nudm-uecm/v1/{ueId}/registrations/amf-3gpp-access).
+# PUT to establish the registration precondition, then GET it back. Both legs
+# via SBI_Request — unlocked by the new generic SBI message.
+
+kind: flow
+name: udm_uecm_amf_3gpp_get_ok
+description: PUT amf-3gpp-access registration then GET returns 200 with the stored registration
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_register
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudm-uecm/v1/imsi-001010000000001/registrations/amf-3gpp-access",
+                "body": {
+                  "amfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "deregCallbackUri": "http://127.0.0.1:7777/dereg",
+                  "guami": {
+                    "plmnId": {"mcc": "001", "mnc": "01"},
+                    "amfId": "020040"
+                  },
+                  "ratType": "NR"
+                }
+              }
+
+  wait_register:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_get
+        actions:
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-uecm/v1/imsi-001010000000001/registrations/amf-3gpp-access"
+              }
+
+  wait_get:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          - type: check
+            field: sbi.body.amfInstanceId
+            op: exists

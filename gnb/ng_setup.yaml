@@ -1,0 +1,107 @@
+# NG Setup procedure (3GPP TS 38.413 §8.7.1).
+#
+# REG-801. Clause: TS 38.413 §8.7.1.2 (Successful Operation) —
+#   "The NG-RAN node initiates the procedure by sending an NG SETUP REQUEST
+#    message including the appropriate data to the AMF. The AMF responds with
+#    an NG SETUP RESPONSE message including the appropriate data."
+# AMF Name is a mandatory IE of that response (§9.2.6.2), so a response
+# carrying an empty AMF Name is not a conformant answer. Budget: the row
+# allows 10s; the wait state below allows 5s and lands on `failed`.
+#
+# YAML mirror of the built-in `ng_setup` flow defined in
+# runner/flows/gnb/flow_ngsetup.go. Run with:
+#
+#   ./bin/d3x-run run -flow template/gnb/ng_setup.yaml \
+#       -c config/lab.yaml -s config/subscribers.yaml -trace
+#
+# Non-UE-associated procedure: UEs running this flow are registered with
+# RanUeNgapId=0 in the worker pool.
+
+kind: flow
+name: ng_setup
+description: NG Setup — establish NGAP signalling connection between gNB and AMF (YAML)
+detail: |
+  Performs the NG Setup procedure (3GPP TS 38.413 §8.7.1), the first NGAP message
+  exchange on any new SCTP association between a gNB and an AMF. The gNB sends an
+  NGSetupRequest containing its global identity, supported tracking areas (TACs),
+  PLMN list, paging DRX, and supported slices. The AMF responds with an
+  NGSetupResponse containing its name, served GUAMIs, relative capacity, and PLMN
+  support list — or an NGSetupFailure with a cause code if the gNB is rejected.
+
+  This is a non-UE-associated procedure (no RAN-UE-NGAP-ID). It must succeed before
+  any UE-associated signalling can take place on the connection. In production, NG
+  Setup failure typically indicates misconfigured TACs, PLMN mismatch, or AMF
+  capacity issues.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ng_setup_response
+        actions:
+          - type: send
+            message: NGSetupRequest
+
+  wait_ng_setup_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: NGSetupResponse
+        target: completed
+        actions:
+          - type: check
+            field: amf_name
+            op: not_empty
+
+      # An NGSetupFailure is the AMF refusing the association. Without this
+      # transition the event simply fails to match and the state stalls to the
+      # 5s timeout — same verdict, but the message log would not say why.
+      - event: NGSetupFailure
+        target: failed
+
+# END-OF-FLOW ASSERTIONS. `final_states` above lists `completed` AND `failed`
+# because both are ways this flow can END; it does not say which one it CLAIMS.
+# That is what this block is for, and it is why `verdict` is not just "reached a
+# declared final state".
+#
+# The counts below are exact because both messages are one-for-one in
+# TS 38.413 §8.7.1: one request from the gNB, one answer from the AMF. Our own
+# TX count is fully under the flow's control; the RX count is the AMF's, and is
+# pinned exactly here only because §8.7.1.2 obliges exactly one response per
+# request. NOT MEASURED AGAINST A CORE in this change — the numbers are derived
+# from the FSM and the clause, and the first live run against tinycore /
+# open5gs / free5gc is what confirms them.
+final_checks:
+  - name: the association was set up
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: exactly one NG SETUP REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_NG_SETUP_REQUEST
+    op: equals
+    value: 1
+  - name: exactly one NG SETUP RESPONSE was received
+    metric: msg_types.rx.ngap.NGAP_NG_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # The amf_name check above only runs on the NGSetupResponse transition, so
+  # this is how the flow says "the assertion I declare actually ran". Without
+  # it, a run that reached `completed` some other way would evaluate nothing
+  # and still look identical in every other field.
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and it passed
+    metric: checks_failed
+    op: equals
+    value: 0

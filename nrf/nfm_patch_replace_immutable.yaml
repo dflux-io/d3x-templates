@@ -1,0 +1,101 @@
+# NFM-12 — PATCH attempting to replace nfInstanceId → 400 (immutable).
+#
+# nfInstanceId is the resource key; allowing it to change via PATCH
+# would either succeed (data corruption — the resource now disagrees
+# with its URL) or be a no-op (silent ignore — equally wrong because
+# the caller thinks they updated it). Must be an explicit 400.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-12.
+
+kind: flow
+name: nrf_nfm_patch_replace_immutable
+description: PATCH replace /nfInstanceId → 400 (immutable identity field).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-immutable-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: patching_immutable
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: PatchImmutable
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [
+                  {"op": "replace", "path": "/nfInstanceId", "value": "00000000-0000-0000-0000-000000000000"}
+                ]
+              }
+
+  patching_immutable:
+    transitions:
+      - event: rest.PatchImmutable_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

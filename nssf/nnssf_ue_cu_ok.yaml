@@ -1,0 +1,63 @@
+# Nnssf_NSSelection — UE Configuration Update mode slice selection. TS 29.531
+# §6.1.3.2 (GET /network-slice-information, nf-type + slice-info-request-for-ue-cu
+# → 200 AuthorizedNetworkSliceInfo). slice-info-request-for-ue-cu is a JSON
+# object passed as a query value (runner url-encodes it). Asserts the allowed
+# list (not merely configuredNssai) carries the requested+subscribed+configured
+# slice (sd 000001). Inline subscribedNssai keeps the step hermetic without UDR.
+kind: flow
+name: nnssf_ue_cu_ok
+description: GET network-slice-information (ue-cu) -> 200 allowedNssaiList grants 000001
+category: functional
+type: client
+protocol: sbi
+nf: nssf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_select
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: nssf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nnssf-nsselection/v1/network-slice-information",
+                "query": {
+                  "nf-type": "AMF",
+                  "slice-info-request-for-ue-cu": "{\"requestedNssai\":[{\"sst\":1,\"sd\":\"000001\"}],\"subscribedNssai\":[{\"subscribedSnssai\":{\"sst\":1,\"sd\":\"000001\"}}]}"
+                }
+              }
+
+  wait_select:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # Fail if the producer only echoes configuredNssai (which also
+          # contains 000001) without authorizing under allowedNssaiList.
+          - type: check
+            field: sbi.body.allowedNssaiList
+            op: exists
+          - type: check
+            field: sbi.body.allowedNssaiList
+            op: contains
+            expected: "000001"
+          - type: check
+            field: sbi.body.allowedNssaiList.0.allowedSnssaiList.0.allowedSnssai.sd
+            op: equals
+            expected: "000001"

@@ -1,0 +1,241 @@
+# NEGATIVE — REGISTRATION REQUEST carrying an information element whose IEI is
+# assigned to nothing: the AMF must skip it or reject it, and must never hang
+# (register row REG-121).
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §7.6.1 "IEIs unknown in the message" — "The UE shall ignore all
+#   IEs with an IEI unknown in a message which are not encoded as
+#   'comprehension required' (see 3GPP TS 24.007 [11]). The network shall take
+#   the same approach."
+#
+#   TS 24.501 §5.5.1.2.8 b) "Protocol error" — "If the REGISTRATION REQUEST
+#   message is received with a protocol error, the AMF shall return a
+#   REGISTRATION REJECT message with one of the following 5GMM cause values:
+#   #96 invalid mandatory information; #99 information element non-existent or
+#   not implemented; #100 conditional IE error; or #111 protocol error,
+#   unspecified."
+#
+#   TS 24.501 §7.5.1 — the same list applies when the message contains "an IE
+#   with an IEI unknown in the message, but encoded as 'comprehension
+#   required'".
+#
+# WHY BOTH OUTCOMES ARE CONFORMANT, AND WHY THIS ROW IS HONEST ABOUT THAT.
+# Which of the two applies turns entirely on whether an unassigned IEI counts as
+# "comprehension required", and that is defined in TS 24.007, which is NOT in
+# the pinned corpus (matrix/specs/ has 23.501, 23.502, 23.503, 23.540, 24.011,
+# 24.501, 24.526, 29.244, 29.281, 33.501, 38.413, 38.415 — no 24.007). Under
+# N13 "retrieved, never recalled" this harness therefore must not assert which
+# branch is required. Both are pass terminals, exactly as the register row's
+# criterion already says: "#99 … or the unknown IE is skipped and the
+# registration proceeds — but never a hang or a crash".
+#
+# THAT IS STILL A REAL ASSERTION, because of what is EXCLUDED: a reject with an
+# unrelated 5GMM cause (the cause check fails the flow outright), an AMF that
+# answers nothing at all, and an AMF that stops serving. The last two have their
+# own terminals below.
+#
+# THE PROBE IS SURGICAL, AND IT IS ON THE WIRE. negAppendUnknownIE
+# (runner/runner/enrichers_negative.go) appends `1f 02 de ad` — a syntactically
+# valid TLV — to an otherwise intact REGISTRATION REQUEST. 0x1F is assigned to
+# no IE in TS 24.501 Table 8.2.6.1.1 (that table uses 10, 16, 17, 18, 1A, 25,
+# 28, 29, 2A, 2B, 2E, 2F, 30, 32, 35, 3B, 3C, 3F, 40, 41, 42, 48, 50, 51, 52,
+# 53, 56, 60, 67, 6A, 6E, 70, 71, 72, 74, 77, 7B plus the half-octet forms) and
+# to nothing in this decoder's own registrationRequestOptional table either, so
+# neither end can mistake it for something it knows. Everything before it is
+# byte-identical to a registration that works, which is the point: a core that
+# reacts is reacting to the unknown IE and to nothing else.
+#
+# Measured on tinycore 2026-08-11 from -trace, the NAS PDU inside INITIAL UE
+# MESSAGE ended `… 2e 02 f0 f0 1f 02 de ad` — the appended TLV is genuinely
+# there, after an intact UE security capability IE.
+#
+# THE SKIP-AND-PROCEED BRANCH IS DRIVEN TO COMPLETION, NOT STOPPED AT THE FIRST
+# REACTION. "The registration proceeds" is asserted by actually proceeding:
+# AUTHENTICATION REQUEST -> SECURITY MODE COMMAND -> INITIAL CONTEXT SETUP
+# REQUEST carrying a REGISTRATION ACCEPT. Terminating on the AUTHENTICATION
+# REQUEST would have scored "the AMF said something" as a pass, which is the
+# mistake `mobility_registration_updating` had to be rewritten to stop making.
+#
+# SILENCE IS NOT A PASS, AND IT IS NOT A CRASH EITHER. §7.6.1's answer to an
+# unknown IE is to IGNORE THE IE — not to ignore the message — so an AMF that
+# emits nothing has done neither branch. Rather than terminate on a bare timer,
+# the window's expiry runs a LIVENESS PROBE (fresh RAN UE NGAP ID, ordinary
+# well-formed SUCI registration) so the trace can say whether the AMF was
+# ignoring one message or was gone.
+#
+# TERMINALS.
+#   unknown_ie_handled     EITHER conformant branch: the IE was skipped and the
+#                          registration ran to REGISTRATION ACCEPT (§7.6.1), or
+#                          a REGISTRATION REJECT / 5GMM STATUS came back with an
+#                          enumerated protocol-error cause (§5.5.1.2.8 b),
+#                          §7.5.1). ONE terminal on purpose — see below.
+#   no_reaction_but_alive  neither, but the AMF still serves a clean
+#                          registration: a gap, not a crash.
+#   failed                 the clean registration was not served either — the
+#                          AMF hung or died on the probe. This is the "never a
+#                          hang or a crash" half of the criterion.
+#
+# WHY THE TWO CONFORMANT BRANCHES SHARE ONE TERMINAL. matrix/register/terminals.yaml
+# maps a row to exactly ONE expected terminal and `run` asserts
+# final_state_counts[expected_terminal] >= 1; that file's own header records
+# that "where a spec permits several conformant answers, the row needs a SET of
+# acceptable terminals, which this file's one-terminal-per-flow shape cannot
+# express". Splitting `proceeded` from `rejected` here would therefore make the
+# row unbindable: whichever one were named, the other conformant core would
+# score red. The two branches keep their own CHECKS (the reject branch asserts
+# the 5GMM cause, the proceed branch asserts a REGISTRATION ACCEPT carrying a
+# Security Key) and the event log records which path ran, so nothing is lost
+# except a distinction the register cannot currently carry.
+#
+# MEASURED AGAINST tinycore 2026-08-11: terminal `unknown_ie_handled`, reached
+# by the §7.6.1 skip-and-proceed path — AUTHENTICATION REQUEST, SECURITY MODE
+# COMMAND, then a REGISTRATION ACCEPT with a Security Key. Conformant. Note that
+# SECURITY MODE COMPLETE replayed the probe PDU (unknown IE included) in its NAS
+# message container per §4.4.6, and tinycore accepted that too.
+#
+# CONTROL — the probe removed. The same flow with `message: InitialUEMessage` in
+# place of the malformed send (scratchpad only, not committed) reached the same
+# terminal by the identical path. That is the honest reading of the green here:
+# tinycore's behaviour with the unknown IE is INDISTINGUISHABLE from a clean
+# registration, which is exactly what "the network shall ignore it" looks like.
+# It is NOT evidence that the reject branch works — on this core that branch
+# cannot be provoked at all. A core that treats an unassigned IEI as
+# comprehension required is what would exercise it.
+kind: flow
+name: registration_unknown_ie
+description: NEGATIVE — REGISTRATION REQUEST with an unassigned IEI appended; assert the AMF skips it or rejects with a protocol-error cause, and never hangs (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - unknown_ie_handled
+  - no_reaction_but_alive
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reaction
+        actions:
+          - type: send
+            message: MalformedRegistrationRequest
+            params: { mode: unknown_ie }
+
+  wait_reaction:
+    on_timeout:
+      duration: 10s
+      target: prove_amf_alive_after_silence
+      actions:
+        - { type: ngap_realloc }
+        - { type: send, message: InitialUEMessage }
+    transitions:
+      # §7.6.1 branch — the IE was ignored. Answer and keep going: the branch is
+      # only established by the procedure actually completing.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_reaction
+        actions:
+          - { type: send, message: IdentityResponse }
+      # §5.5.1.2.8 b) / §7.5.1 branch — the IE was treated as comprehension
+      # required. The cause must be from the protocol-error set; #99 is its
+      # semantically right member for an unknown IE.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: unknown_ie_handled
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [96, 99, 100, 111] }
+      - event: NASDownlinkTransport.5GMMStatus
+        target: unknown_ie_handled
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [96, 99, 100, 111] }
+
+  wait_security_mode:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      # The AMF may still change its mind once it can protect the answer.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: unknown_ie_handled
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [96, 99, 100, 111] }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: unknown_ie_handled
+        actions:
+          # "the registration proceeds" — asserted by the accept itself, with a
+          # Security Key, i.e. a real context setup and not just a message of
+          # the right type.
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: unknown_ie_handled
+        actions:
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationReject
+        target: unknown_ie_handled
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [96, 99, 100, 111] }
+
+  # "never a hang or a crash" — the positive acceptance observable for the
+  # silence path.
+  prove_amf_alive_after_silence:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: no_reaction_but_alive
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-121 (negative, expected_terminal:
+# unknown_ie_handled) — A NAS RegistrationReject with nas.gmm_cause == 99 is received,
+# or the unknown IE is skipped and the registration proceeds — but never a hang or a
+# crash
+#
+# REG-121: "A NAS RegistrationReject with nas.gmm_cause == 99 is received, or the
+# unknown IE is skipped and the registration proceeds — but never a hang or a crash."
+# Both permitted answers reach `unknown_ie_handled`. `no_reaction_but_alive` is the
+# hang, separated from an outage by the liveness probe.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `unknown_ie_handled` — the terminal this row claims
+    metric: final_state_counts.unknown_ie_handled
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 2
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

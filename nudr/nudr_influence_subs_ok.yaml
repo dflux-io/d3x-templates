@@ -1,0 +1,95 @@
+# Nudr_DataRepository application-data/influenceData — subs-to-notify
+# (SBI round-trip). 3GPP TS 29.519 §5.x: POST
+# /nudr-dr/v2/application-data/influenceData/subs-to-notify → 201 Created +
+# Location (a TrafficInfluSub the SMF registers to be POSTed a
+# TrafficInfluDataNotif on every influenceData create/update/delete); DELETE
+# /subs-to-notify/{subscriptionId} → 204.
+#
+# SCOPE: SBI surface ONLY — the subscription create/delete round-trip. The
+# actual TrafficInfluDataNotif fan-out to a subscriber's notificationUri is the
+# influence→SMF leg (cross-protocol, docker-lab) and stays Go-gated; here we
+# only assert the subscription resource is minted (201 + Location) and removed
+# (204). The notificationUri is a sink we never drive.
+#
+# Drives the UDR role against the seeded dpf (peer: udr). The {subscriptionId}
+# for the DELETE comes verbatim from the create Location header.
+
+kind: flow
+name: nudr_influence_subs_ok
+description: POST subs-to-notify (201+Location) → DELETE (204) — Nudr influenceData subscription round-trip
+category: functional
+type: client
+protocol: sbi
+nf: udr
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_sub
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudr-dr/v2/application-data/influenceData/subs-to-notify",
+                "body": {
+                  "notificationUri": "http://127.0.0.1:1/influ-notify",
+                  "dnns": ["internet"],
+                  "snssais": [{"sst": 1, "sd": "000001"}]
+                }
+              }
+
+  wait_sub:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_delete
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: check
+            field: sbi.headers.Location
+            op: not_empty
+          # The create echoes the TrafficInfluSub — confirm notificationUri
+          # round-trips before tearing it down.
+          - type: check
+            field: sbi.body.notificationUri
+            op: equals
+            expected: "http://127.0.0.1:1/influ-notify"
+          - type: extract
+            field: sbi.headers.Location
+            store: sub_loc
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "{{ue.Params.sub_loc}}",
+                "body": {}
+              }
+
+  wait_delete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

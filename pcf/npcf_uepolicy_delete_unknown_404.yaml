@@ -1,0 +1,49 @@
+# Npcf_UEPolicyControl — DELETE an unknown association id → 404 (negative).
+# 3GPP TS 29.525 §4.2.5: DELETE /npcf-ue-policy-control/v1/policies/{polAssoId}
+# for an id the PCF never minted returns 404 Not Found (handler:
+# DeleteUEPolicyAssociation → store.Delete miss → nfhttp.NotFound()).
+#
+# SCOPE: SBI surface negative only — proves the store-miss path returns the
+# spec status, not a 204/500. Self-contained: no prior create, fixed bogus id.
+
+kind: flow
+name: npcf_uepolicy_delete_unknown_404
+description: DELETE /policies/{unknown} → 404 — Npcf_UEPolicyControl negative
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_delete
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "/npcf-ue-policy-control/v1/policies/does-not-exist-00000000",
+                "body": {}
+              }
+
+  wait_delete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404

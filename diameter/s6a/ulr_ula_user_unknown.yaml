@@ -1,0 +1,58 @@
+# S6a ULR/ULA negative scenario — DIAMETER_ERROR_USER_UNKNOWN.
+#
+# The HSS rejects the ULR for an unprovisioned subscriber by returning
+# Experimental-Result with Vendor-Id=10415 and Experimental-Result-Code=5001
+# (3GPP TS 29.272 §7.4.5). The standard top-level Result-Code AVP is
+# absent — Experimental-Result wins for 3GPP-specific errors.
+#
+# Mirrors dsr-sim's ulr_user_unknown.json. The check on the answer leg
+# resolves the nested AVP path Experimental-Result.Experimental-Result-Code
+# via the diameter resolver's grouped-AVP unfold (Phase 3).
+
+kind: flow
+name: diameter_s6a_ulr_ula_user_unknown
+description: S6a ULR/ULA error — DIAMETER_ERROR_USER_UNKNOWN (5001)
+category: negative
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ulr_echo
+        actions:
+          - type: send
+            message: ULR
+
+  wait_ulr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULR
+        target: wait_ula_echo
+        actions:
+          - type: send
+            message: ULAUserUnknown
+
+  wait_ula_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULA
+        target: completed
+        actions:
+          - type: check
+            field: Experimental-Result
+            op: exists
+          - type: check
+            field: Experimental-Result.Experimental-Result-Code
+            op: equals
+            expected: 5001

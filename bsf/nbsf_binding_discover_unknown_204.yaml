@@ -1,0 +1,43 @@
+# Nbsf_Management — discover with a UE IP that has no binding → 204 No Content.
+# TS 29.521 §5.3.3.3.3 (GET /pcfBindings, no match → 204).
+kind: flow
+name: nbsf_binding_discover_unknown_204
+description: GET /pcfBindings?ipv4Addr=<unknown> -> 204
+category: functional
+type: client
+protocol: sbi
+nf: bsf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_discover
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nbsf-management/v1/pcfBindings",
+                "query": {"ipv4Addr": "203.0.113.250"}
+              }
+
+  wait_discover:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

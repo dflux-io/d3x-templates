@@ -1,0 +1,81 @@
+# PERSIST-02 (flow A — create). See d3x-core docs/nrf/sanity-tests.md
+# §2.14 and §4.7.6.
+#
+# Subscriptions are the ONE persistence resource whose ID is
+# server-assigned (POST returns it in the Location header + body), so
+# unlike the NF-instance pairs this one cannot use a fixed client-chosen
+# UUID. runner has no way to inject a value into a flow at invocation time
+# (the template function registry is fixed; there is no $env and no
+# -param flag), so the verify half is a *.tmpl* that the harness renders
+# with the captured subscriptionId — this is the "fixture file owned by
+# the harness, not runner" contract from §2.14.3.
+#
+# This flow just creates the subscription and asserts the 201 contract;
+# the harness scrapes the subscriptionId from the run output to render
+# persistence_sub_verify.yaml.tmpl for flow B.
+
+kind: flow
+name: nrf_persistence_sub_create
+description: Create a subscription (PERSIST-02 pre-restart); harness captures the server-assigned ID.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: creating
+        actions:
+          - type: send
+            message: CreateSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-nfm/v1/subscriptions",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfStatusNotificationUri": "http://callback.persist.example.com/notify",
+                  "validityTime": "2099-01-01T00:00:00Z"
+                }
+              }
+
+  creating:
+    transitions:
+      - event: rest.CreateSub_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.headers.Location
+            op: contains
+            expected: /nnrf-nfm/v1/subscriptions/
+          - type: check
+            field: rest.body.subscriptionId
+            op: not_empty
+          - type: check
+            field: rest.body.nfStatusNotificationUri
+            op: equals
+            expected: http://callback.persist.example.com/notify
+          # The request above asks for 2099 deliberately: the NRF must CLAMP it
+          # to now + MaxSubscriptionValidity (24h) and return the reduced value
+          # (TS 29.510 §5.2.2.5.2, tinycore/nrf/handler_sub.go). Asserting the
+          # clamp here is what makes the request date meaningful — and it is
+          # the assertion whose absence let persistence_sub_verify's stale
+          # `== 2099` expectation survive (xp-168 #2).
+          - type: check
+            field: rest.body.validityTime
+            op: not_empty
+          - type: check
+            field: rest.body.validityTime
+            op: not_contains
+            expected: "2099"
+
+  done: {}
+  failed: {}

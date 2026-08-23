@@ -1,0 +1,184 @@
+# REG-805 — NG SETUP offering ONLY an S-NSSAI the AMF does not support.
+#
+# Clauses, retrieved with matrix/scripts/spec-clause.py 38.413 <clause>:
+#
+#   §8.7.1.3 (Unsuccessful Operation) "If the AMF cannot accept the setup, it should respond
+#            with an NG SETUP FAILURE message and appropriate cause value."
+#
+#   §8.7.1.4 (Abnormal Conditions) names exactly TWO conditions that make rejection a SHALL:
+#            "If the AMF does not identify any of the PLMNs/SNPNs indicated in the NG SETUP
+#             REQUEST message, it shall reject the NG Setup procedure with an appropriate cause
+#             value. If none of the RATs indicated by the NG-RAN node ... is supported by the
+#             AMF, then the AMF shall fail the NG Setup procedure ..."
+#            An unsupported SLICE is neither. That is why this row was arbitrated to `weakened`
+#            (matrix/register/arbitration.yaml REG-805) and why this flow has TWO pass terminals.
+#
+#   §9.2.6.2 (NG SETUP RESPONSE) makes PLMN Support List mandatory, and >>Slice Support List
+#            mandatory inside each PLMN Support Item — "Supported S-NSSAIs per PLMN or per SNPN".
+#
+# WHAT IS ON THE WIRE, AND WHY IT IS IN THE FLOW. The gNB advertises exactly one S-NSSAI,
+# SST 3 ("MIoT" per TS 23.501 Table 5.15.2.2-1), on its own served PLMN and its own configured
+# TAC. Nothing else deviates: the PLMN is the one the AMF serves, so a failure here cannot be
+# blamed on §8.7.1.4's PLMN condition, and an answer that omits SST 3 cannot be an answer about
+# the PLMN. The deviation is carried by the send action's `slice_ssts` param
+# (NGSetupRequestAdvertisedTAs, runner/runner/enrichers_ngap_ifmgmt.go), NOT by a gNB config
+# file: the register asks for `config: slice-mismatched-gnb`, which was never built, and REG-804
+# is the standing evidence of what an external-config probe costs — it sent the ordinary
+# well-formed request every positive row sends and asserted nothing.
+#
+# THE TWO CONFORMANT ANSWERS, both of which are PASS terminals here:
+#
+#   (a) `rejected` — NG SETUP FAILURE. Its Cause IE is mandatory (§9.2.6.3) and is asserted
+#       non-empty. radioNetwork "Slice(s) not supported" is the apt value (§9.3.1.2) and is
+#       recorded by the trace, but any decodable cause passes: §8.7.1.3 says "appropriate",
+#       not which one.
+#
+#   (b) `slice_not_advertised` — NG SETUP RESPONSE whose mandatory Slice Support List does NOT
+#       advertise SST 3. This is the honest answer of an AMF that accepts the association and
+#       tells the RAN which slices it actually serves; the RAN then knows not to select SST 3.
+#       The assertion is that the list is PRESENT (mandatory IE) and does NOT contain the
+#       offered S-NSSAI — an AMF that echoes SST 3 back has claimed support for a slice it does
+#       not have, which is exactly the failure this row exists to catch, and it lands on
+#       `failed` through the check rather than through the terminal.
+#
+# Everything else fails: silence (the timeout targets `failed`), and an answer whose mandatory
+# IE is missing or whose Slice Support List advertises the offered slice (the checks below).
+#
+# HOW THE NOT-ADVERTISED CHECK READS. `not_contains` compares against the string form of the
+# resolved JSON value of the whole Slice Support List, e.g.
+#   [map[nssai_sd:0 nssai_sst:1]]
+# so the needle `nssai_sst:3]` matches an item whose SST is exactly 3 and cannot be satisfied
+# by SST 30 or 31 — the closing bracket is the end of that item's map. MEASURED against
+# tinycore 2026-08-11, not assumed; the run's check `actual` field carries the exact string.
+#
+# MEASURED against tinycore 2026-08-11: branch (b). NG SETUP RESPONSE (49 bytes) whose PLMN
+# Support List advertises exactly one S-NSSAI, `[map[nssai_sd:0 nssai_sst:1]]` — SST 3 is not
+# in it. Terminal `slice_not_advertised`, 3/3 checks passed. The offered SST 3 is on the wire:
+# the Supported TA List IE (id 0x66) of the 53-byte request ends `... 00 00 00 18`, and 0x18 is
+# 3 shifted by the three preamble bits that precede the SST octet.
+#
+# Note for whoever scores this row: tinycore never constructs an NGSetupFailure at all (xp-257,
+# filed 2026-08-11 — it accepts NG SETUP from any PLMN and has no path to refuse a gNB for any
+# reason), so branch (a) is unreachable on this core. Branch (b) is reached on its merits
+# rather than by that absence: the AMF's Slice Support List is built from its own configured
+# SST (tinycore/dmf/amf/amf.go), so it reports what it serves and not what it was offered.
+#
+# ACCEPTANCE TEST (the row must be able to report the other verdict), RUN 2026-08-11: offering
+# `slice_ssts: 1` — the S-NSSAI tinycore DOES serve — and asserting `not_contains
+# nssai_sst:1]`, the check FAILS (2/3, RESULT: FAIL) against the same response. The row's
+# verdict tracks what the core advertises, not the flow's ability to reach a terminal.
+
+kind: flow
+name: ng_setup_unsupported_slice
+description: NG SETUP offering only an S-NSSAI the AMF does not support — expect NGSetupFailure with a cause, or a response whose Slice Support List omits it (TS 38.413 §8.7.1.3/§8.7.1.4)
+detail: |
+  Negative interface-management probe. The gNB sends a structurally well-formed NG SETUP
+  REQUEST whose Supported TA List broadcasts exactly one S-NSSAI — SST 3 — on the PLMN and TAC
+  the AMF serves. Only the slice deviates.
+
+  TS 38.413 §8.7.1.3 lets the AMF refuse a setup it "cannot accept" with an NG SETUP FAILURE
+  and an appropriate cause, but §8.7.1.4 makes rejection mandatory only for an unidentified
+  PLMN/SNPN or an unsupported RAT — not for a slice. So two answers are conformant and the flow
+  has a pass terminal for each: `rejected` (NG SETUP FAILURE carrying its mandatory Cause), and
+  `slice_not_advertised` (NG SETUP RESPONSE whose mandatory Slice Support List does not
+  advertise SST 3). Which one the core chose is recorded by the terminal it reaches.
+
+  An NG SETUP RESPONSE that echoes SST 3 back as supported is the finding this row exists to
+  catch: the core claiming a slice it does not serve, which turns into mysterious per-session
+  failures later. Silence within the budget fails.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - slice_not_advertised
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ng_setup_answer
+        actions:
+          - type: send
+            message: NGSetupRequestAdvertisedTAs
+            params:
+              # The ONLY deviation. SST 3 is a valid, registered SST value, so the
+              # request stays structurally conformant — this is a supported-slice
+              # probe, not a malformed-message probe.
+              slice_ssts: "3"
+
+  wait_ng_setup_answer:
+    # Row budget is 10s. Silence is a failure: §8.7.1.2/§8.7.1.3 give the AMF
+    # exactly two answers to this message and neither of them is nothing.
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      # --- Branch (a): the AMF refuses the setup -------------------------
+      - event: NGSetupFailure
+        target: rejected
+        actions:
+          # Cause is mandatory in NG SETUP FAILURE (§9.2.6.3). An empty one is
+          # not "an appropriate cause value".
+          - { type: check, field: cause, op: not_empty }
+
+      # --- Branch (b): the AMF accepts and advertises what it really serves
+      - event: NGSetupResponse
+        target: slice_not_advertised
+        actions:
+          # PLMN Support List and its Slice Support List are both mandatory
+          # (§9.2.6.2). Absent => the path misses and the length check fails.
+          - { type: check, field: plmn_support_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: plmn_support_list.0.slice_support_list.length, op: greater_or_equal, expected: 1 }
+          # ... and it must NOT advertise the S-NSSAI we offered and it does not
+          # support. See the header for the exact string form this reads.
+          - { type: check, field: plmn_support_list.0.slice_support_list, op: not_contains, expected: "nssai_sst:3]" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-805 (negative, expected_terminal:
+# slice_not_advertised) — Within the timeout and on the same SCTP association, the AMF
+# answers the NG SETUP REQUEST with exactly one of: (a) an NGSetupFailure carrying its
+# mandatory, decodable Cause IE — radioNetwork "Slice(s) not supported" is the apt value
+# per §9.3.1.2 and is recorded when used, but any decodable cause passes; or (b) an
+# NGSetupResponse whose mandatory PLMN Support List carries a Slice Support List that
+# does not advertise the S-NSSAI the gNB offered and the AMF does not support. Both
+# branches are conformant and which one occurred is recorded. Silence, an undecodable or
+# structurally invalid answer, an answer omitting the mandatory Cause or Slice Support
+# List, or loss of the SCTP association, fail.
+#
+# NO NON-FAILURE TERMINAL IS PINNED, AND THE REGISTER CONTRADICTS ITSELF HERE. REG-805
+# sets `expected_terminal: slice_not_advertised`, but its own criterion says the AMF may
+# answer with EITHER an NGSetupFailure carrying a decodable Cause IE (a) OR an
+# NGSetupResponse whose PLMN Support List does not advertise the offered S-NSSAI (b),
+# and then states in as many words: "Both branches are conformant and which one occurred
+# is recorded." (a) is `rejected` and (b) is `slice_not_advertised`. A pin on either
+# would fail a core doing the other, so neither is pinned. What the criterion DOES rule
+# out is its last sentence — "Silence ... or loss of the SCTP association, fail" — and
+# that is `failed`, the only terminal this flow reaches without an answer.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` — the AMF answered, and the SCTP association stayed up
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

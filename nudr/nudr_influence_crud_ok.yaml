@@ -1,0 +1,173 @@
+# Nudr_DataRepository application-data/influenceData — AF traffic-influence
+# CRUD (SBI round-trip). 3GPP TS 29.519 §5.x: PUT
+# /nudr-dr/v2/application-data/influenceData/{influenceId} → 201 Created +
+# Location (200 on replace); GET /{influenceId} → 200 (body round-trips);
+# GET /influenceData?dnn= → 200 collection; DELETE /{influenceId} → 204.
+#
+# SCOPE: this validates the Nudr application-data/influenceData SBI surface
+# ONLY — the AF (via NEF) PUT/GET/DELETE round-trip and the ?dnn= collection
+# filter. The influence→SMF DNAI/FAR application (trafficRoutes[0] acted on at
+# PDU-session establishment) needs the docker lab + a live SMF and stays
+# Go-gated; here we only assert the stored TrafficInfluData round-trips.
+#
+# Drives the UDR role against the seeded dpf (peer: udr). The PUT body is a
+# minimal TrafficInfluData satisfying the TS 29.519 oneOf constraints
+# validateInfluenceData enforces: traffic identified by afAppId AND scope set
+# by supi, plus dnn/snssai for the query filter and a trafficRoutes DNAI hint.
+# The union round-trips raw JSON verbatim, so GET echoes dnn/snssai back at the
+# top level for exact assertion.
+
+kind: flow
+name: nudr_influence_crud_ok
+description: PUT influenceData (201+Location) → GET (200, dnn/snssai round-trip) → GET ?dnn= collection → DELETE (204)
+category: functional
+type: client
+protocol: sbi
+nf: udr
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_put
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v2/application-data/influenceData/infl-0001",
+                "body": {
+                  "afAppId": "edge-app-1",
+                  "dnn": "internet",
+                  "snssai": {"sst": 1, "sd": "000001"},
+                  "supi": "imsi-001010000000001",
+                  "trafficRoutes": [
+                    {"dnai": "edge1", "routeInfo": {"ipv4Addr": "198.51.100.20", "portNumber": 8080}}
+                  ]
+                }
+              }
+
+  wait_put:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_get
+        actions:
+          # First PUT for this influenceId → 201 Created + Location.
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: check
+            field: sbi.headers.Location
+            op: not_empty
+          # PUT echoes the stored TrafficInfluData — confirm the body
+          # round-trips before the dedicated GET.
+          - type: check
+            field: sbi.body.dnn
+            op: equals
+            expected: "internet"
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudr-dr/v2/application-data/influenceData/infl-0001",
+                "body": {}
+              }
+
+  wait_get:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_query
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # The union round-trips raw JSON — dnn + snssai come back verbatim.
+          - type: check
+            field: sbi.body.dnn
+            op: equals
+            expected: "internet"
+          - type: check
+            field: sbi.body.snssai.sst
+            op: equals
+            expected: 1
+          - type: check
+            field: sbi.body.snssai.sd
+            op: equals
+            expected: "000001"
+          - type: check
+            field: sbi.body.afAppId
+            op: equals
+            expected: "edge-app-1"
+          # GET the collection with a dnn= filter — must select our resource.
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudr-dr/v2/application-data/influenceData",
+                "query": {"dnn": "internet"},
+                "body": {}
+              }
+
+  wait_query:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_delete
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # Collection is a JSON array; the dnn=internet filter selects exactly
+          # our resource — assert element 0 round-trips the dnn.
+          - type: check
+            field: sbi.body.0.dnn
+            op: equals
+            expected: "internet"
+          - type: check
+            field: sbi.body.0.afAppId
+            op: equals
+            expected: "edge-app-1"
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "/nudr-dr/v2/application-data/influenceData/infl-0001",
+                "body": {}
+              }
+
+  wait_delete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

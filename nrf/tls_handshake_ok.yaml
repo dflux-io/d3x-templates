@@ -1,0 +1,44 @@
+# MTLS-01 — baseline server TLS against a trusted CA. See d3x-core
+# docs/nrf/sanity-tests.md §4.7.7 (MTLS-01).
+#
+# Client trusts the CA that signed the server cert (peer nrf-tls →
+# ca_file=ca.crt). The TLS handshake completes and the public
+# bootstrapping GET returns 200. Run by scripts/nrf-mtls.sh with the NRF
+# launched `-tls-cert server-good -tls-key …` (no client auth).
+
+kind: flow
+name: nrf_tls_handshake_ok
+description: Trusted-CA TLS handshake → 200 on bootstrapping (MTLS-01).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: getting
+        actions:
+          - type: send
+            message: GetBstr
+            peer: nrf-tls
+            message_body: |
+              {"method": "GET", "url": "/nnrf-bstr/v1/bootstrapping"}
+
+  getting:
+    transitions:
+      - event: rest.GetBstr_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nrfInstanceId
+            op: not_empty
+
+  done: {}
+  failed: {}

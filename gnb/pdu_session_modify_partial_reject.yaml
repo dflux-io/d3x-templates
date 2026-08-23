@@ -1,0 +1,176 @@
+# Respond to a PDUSessionResourceModifyRequest with a PARTIAL reject
+# (3GPP TS 38.413 §8.2.4 / §9.2.1.4 — FailedToModify list).
+#
+# Under test: on a network-initiated PDUSessionResourceModifyRequest the gNB
+# replies PDUSessionResourceModifyResponse carrying a PduSessionResourceFailedTo-
+# ModifyItems entry (modelling a session the RAN could not modify). A correct
+# AMF/SMF processes the partial failure without crashing.
+#
+# TRIGGER DEPENDENCY: network-initiated, not produced by a bare Open5GS lab, so
+# NOT in a suite — reaches `not_triggered` when no request arrives. Run standalone
+# with an induced QoS modification. Success: `modify_partial_rejected` or
+# `not_triggered`.
+
+kind: flow
+name: pdu_session_modify_partial_reject
+description: Reply to PDUSessionModifyRequest with a FailedToModify list (partial reject) (YAML)
+detail: |
+  Registers, establishes a PDU session, then on a network-initiated
+  PDUSessionResourceModifyRequest replies with a PDUSessionResourceModifyResponse
+  whose FailedToModify list marks the session as not modifiable (3GPP TS 38.413
+  §8.2.4). Network-initiated and not produced by a bare Open5GS lab, so the flow
+  reaches `not_triggered` on timeout and is for standalone use.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - modify_partial_rejected
+  - not_triggered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_modify_request
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          # N2 tunnel fidelity: UPF uplink GTP-U F-TEID present (non-zero)
+          # at establishment — proves the tunnel was allocated (T2 item 5).
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+
+  wait_modify_request:
+    on_timeout:
+      duration: 20s
+      target: not_triggered
+    transitions:
+      - event: PDUSessionModifyRequest
+        target: modify_partial_rejected
+        actions:
+          - type: send
+            message: PDUSessionResourceModifyResponse
+            message_body: |
+              {
+                "pdu_session_resource_failed_to_modify_items": [
+                  { "pdu_session_id": 1 }
+                ]
+              }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-342 (abnormal, expected_terminal: null) — After a
+# PDUSessionResourceModifyResponse carrying a failed-to-modify item, the NG association
+# stays up, no ErrorIndication is received, and a subsequent PDUSessionReleaseRequest
+# for the session is still answered
+#
+# `not_triggered` is the 20 s timer — the AMF never sent a PDU Session Resource Modify
+# Request, so the failed-to-modify item this row is about was never sent. NOT ASSERTED:
+# REG-342's claim continues past this FSM's last state ("a subsequent
+# PDUSessionReleaseRequest for the session is still answered"), so what is pinned is
+# that the row ran, not that its full criterion held.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `modify_partial_rejected` — the terminal this row claims
+    metric: final_state_counts.modify_partial_rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

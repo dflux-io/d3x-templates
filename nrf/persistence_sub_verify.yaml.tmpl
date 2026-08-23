@@ -1,0 +1,86 @@
+# PERSIST-02 (flow B — verify after restart) TEMPLATE. See d3x-core
+# docs/nrf/sanity-tests.md §2.14 and §4.7.6.
+#
+# This is NOT a runnable runner flow on its own — it is rendered by
+# scripts/nrf-restart.sh, which substitutes ${SUB_ID} (the
+# server-assigned subscriptionId) and ${SUB_VALIDITY} (the
+# server-ASSIGNED validityTime), both scraped from
+# persistence_sub_create's run, via `envsubst '${SUB_ID},${SUB_VALIDITY}'`
+# into a temp templates dir, then runs the rendered flow against the
+# restarted NRF. envsubst is scoped to those two tokens only, so no other
+# token is touched.
+#
+# Asserts the subscription created before the restart survived and
+# round-trips field-for-field.
+#
+# WHY validityTime IS A FIXTURE AND NOT A LITERAL
+# This file used to assert `validityTime == 2099-01-01T00:00:00Z` — the value
+# the create flow REQUESTS. The NRF does not store that: per TS 29.510
+# §5.2.2.5.2 it caps validityTime at cfg.MaxSubscriptionValidity (24h) and
+# returns the reduced value (tinycore/nrf/handler_sub.go). So the assertion
+# had been asserting a value the product never produces, and this pair was the
+# one nrf-restart.sh failure (3/4 passing). It rotted unnoticed because
+# nrf-restart.sh was not in the standing gate — it is now (xp-168 #2).
+#
+# The fix is deliberately NOT "assert something looser". The point of
+# PERSIST-02 is field-for-field survival, so the harness captures the exact
+# value the NRF assigned at create time and asserts THAT value came back after
+# the restart. A hard-coded date could only ever rot again; a captured one
+# tracks the product by construction.
+
+kind: flow
+name: nrf_persistence_sub_verify
+description: GET the subscription by its server-assigned ID after restart (PERSIST-02 post-restart).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: fetching
+        actions:
+          - type: send
+            message: GetSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/subscriptions/${SUB_ID}"
+              }
+
+  fetching:
+    transitions:
+      - event: rest.GetSub_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.subscriptionId
+            op: equals
+            expected: ${SUB_ID}
+          - type: check
+            field: rest.body.nfStatusNotificationUri
+            op: equals
+            expected: http://callback.persist.example.com/notify
+          - type: check
+            field: rest.body.validityTime
+            op: equals
+            expected: "${SUB_VALIDITY}"
+          # Belt and braces: the captured value must be the CLAMPED one, so a
+          # future regression that stopped applying the cap (and therefore
+          # persisted the requested 2099 date) cannot pass by making both
+          # sides agree on the wrong value.
+          - type: check
+            field: rest.body.validityTime
+            op: not_contains
+            expected: "2099"
+
+  done: {}
+  failed: {}

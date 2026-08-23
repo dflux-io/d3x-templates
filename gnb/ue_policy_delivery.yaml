@@ -1,0 +1,153 @@
+# URSP / UE-policy delivery over NGAP (3GPP TS 24.501 §8.2.11, TS 29.525).
+#
+# Registration preamble (mirrors gnb/registration.yaml), then the UE stays
+# CM-CONNECTED and waits for the AMF to push a UE-policy / URSP container
+# session-less in a DL NAS TRANSPORT (payload container type UE_POLICY),
+# triggered by a PCF/AF namf-comm N1N2MessageTransfer with N1MessageClass=UPDP.
+#
+# The runner event resolver surfaces the opaque container as
+# NASDownlinkTransport.DLNASTransport.UEPolicyContainer and stashes the raw
+# bytes (hex) on ue.Params.ue_policy_container. This flow asserts the URSP
+# rules arrived byte-exact, matching the test vector posted by the e2e step
+# (scripts/e2e-gnb-run.sh → 07-ue-policy): raw bytes 01 02 03 c0 ff ee.
+#
+# v1 boundary: the UE-policy bytes are OPAQUE end to end (no TS 24.526 ASN.1
+# decode); this proves the NGAP transport + container typing, not URSP rule
+# semantics.
+
+kind: flow
+name: ue_policy_delivery
+description: URSP / UE-policy NAS delivery over NGAP after registration (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - policy_received
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_ue_policy
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+  # CM-CONNECTED: hold here until the AMF pushes the UE-policy container.
+  # The e2e step backgrounds this flow, waits for registration, then fires the
+  # namf-comm N1N2MessageTransfer (UPDP) — so the timeout must cover that gap.
+  wait_ue_policy:
+    on_timeout: { duration: 30s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.UEPolicyContainer
+        target: policy_received
+        actions:
+          # Container decoded as UE_POLICY (TS 24.501 payload container type 5)
+          - { type: check, field: ue.Params.ue_policy_container_type, op: equals, expected: 5 }
+          # URSP bytes arrived byte-exact (matches the e2e step's test vector)
+          - { type: check, field: ue.Params.ue_policy_container, op: equals, expected: "010203c0ffee" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-700).
+#
+# REG-700 — A DownlinkNASTransport is received carrying DL NAS TRANSPORT with Payload
+# container type = 5 ('UE policy container'); the container's first octet is a PTI in
+# 80H..FEH and the second is the MANAGE UE POLICY COMMAND message identity
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `policy_received`
+    metric: final_state_counts.policy_received
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a UE POLICY CONTAINER arrived
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.UEPolicyContainer
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The five `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all five declared checks ran
+    metric: checks_total
+    op: equals
+    value: 5
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

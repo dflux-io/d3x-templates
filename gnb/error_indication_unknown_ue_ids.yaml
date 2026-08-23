@@ -1,0 +1,184 @@
+# UE-associated ErrorIndication referencing UNKNOWN UE-NGAP-IDs
+# (3GPP TS 38.413 §8.7.5 / §9.2.6.10 + §8.3 unknown UE-NGAP-ID handling).
+#
+# Abnormal input under test: after a normal registration the gNB sends a
+# UE-associated NGAP ErrorIndication whose RAN/AMF-UE-NGAP-IDs are bogus values
+# the AMF has no context for. Per §8.7.5 the receiving node may either ignore
+# the ErrorIndication or initiate an Error Indication of its own — both are
+# spec-valid; what is NOT acceptable is crashing or tearing down the live
+# association.
+#
+# Lenient assertion (security suite "AMF stays up" doctrine): success terminal
+# `tolerated` is reached either when the window elapses with no adverse reaction
+# (AMF silently ignored the unknown IDs) OR when the AMF replies with its own
+# ErrorIndication (it reacted and the association is alive). Only a transport
+# error (association drop) routes to `failed` via the any-state Error handler.
+
+kind: flow
+name: error_indication_unknown_ue_ids
+description: Send a UE-associated ErrorIndication with unknown UE-NGAP-IDs; assert AMF liveness (YAML)
+detail: |
+  Performs a UE registration, then sends a UE-associated NGAP ErrorIndication
+  carrying RAN/AMF-UE-NGAP-IDs the AMF has no context for (3GPP TS 38.413 §8.7.5).
+  The IDs are injected via message_body, overriding the values the enricher would
+  otherwise back-fill from the live UE context.
+
+  A spec-compliant AMF either silently ignores the unknown identifiers or returns
+  its own ErrorIndication; either way the NG-C association and SCTP connection
+  must stay healthy. This flow treats both outcomes (timeout-with-no-teardown and
+  an inbound ErrorIndication) as success `tolerated`. A transport-level error
+  (association drop) routes to `failed`.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_tolerance
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # ErrorIndication referencing UE-NGAP-IDs the AMF does not know.
+          # The enricher only back-fills these when zero, so the bogus values
+          # provided here survive.
+          - type: send
+            message: ErrorIndication
+            message_body: |
+              {
+                "ran_ue_ngap_id": 16777215,
+                "amf_ue_ngap_id": 8388607
+              }
+
+  wait_tolerance:
+    # Silent ignore is the most likely Open5GS reaction -> tolerated on timeout.
+    on_timeout:
+      duration: 8s
+      target: tolerated
+    transitions:
+      # AMF reacted with its own ErrorIndication: spec-valid, association alive.
+      - event: ErrorIndication
+        target: tolerated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-859).
+#
+# REG-859 — An ErrorIndication is returned carrying the AP IDs that were sent and a
+# cause such as 'Unknown local UE NGAP ID', or the message is discarded; either way the
+# association stays up and no action is taken on the named UE
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL. One route to `tolerated` is a timer (the absence window), so the
+  # message assertions below are what separate "reached it" from "waited it out".
+  - name: the flow reached `tolerated`
+    metric: final_state_counts.tolerated
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one ERROR INDICATION was sent
+    metric: msg_types.tx.ngap.NGAP_ERROR_INDICATION
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

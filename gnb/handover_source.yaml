@@ -1,0 +1,205 @@
+# N2 inter-gNB handover from source-gNB perspective.
+#
+# YAML mirror of the built-in `handover_source` flow defined in
+# runner/flows/gnb/flow_handover_source.go. Composes registrationStates +
+# pduSessionStates(wait_handover_response, HandoverRequired) + the
+# handover-specific outcome and target-side notify states. Exercises
+# ngap_handover_swap.
+
+kind: flow
+name: handover_source
+description: N2 inter-gNB handover from the source gNB perspective (YAML)
+detail: |
+  Tests the source-gNB side of an N2 (inter-gNB) handover via AMF
+  (3GPP TS 38.413 §8.4).
+
+  Phase 1 — Registration: standard auth/security/context-setup.
+  Phase 2 — PDU session setup: establishes a user-plane bearer.
+  Phase 3 — HandoverRequired: source gNB sends HandoverRequired with a target
+  cell ID, RRC context (stub), and PDU session list.
+  Phase 4 — Target auto-reply: when the target gNB has auto_reply.handover_request
+  enabled, the worker pool intercepts the inbound HandoverRequest, allocates a
+  fresh RAN-UE-NGAP-ID on the target, sends a stub HandoverRequestAcknowledge
+  back to AMF, and records a (AmfUeNgapId → target ranId) bridge entry.
+  Phase 5 — HandoverCommand → swap: AMF returns HandoverCommand to the source.
+  ngap_handover_swap consumes the bridge, swaps ue.NGAP.GNB to the target gNB,
+  takes over the target's pre-allocated ranId, and pins the UE's outbound
+  traffic to the target's SCTP.
+  Phase 6 — HandoverNotify: the (now-target) gNB sends HandoverNotify to AMF
+  to confirm the UE attached to the target cell.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - completed_success
+  - completed_prep_failure
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_handover_response
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: HandoverRequired
+
+  wait_handover_response:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: HandoverCommand
+        target: wait_handover_notify_done
+        actions:
+          - type: ngap_handover_swap
+          - type: send
+            message: HandoverNotify
+      - event: HandoverPreparationFailure
+        target: completed_prep_failure
+      # In a single-gNB lab there is no target gNB to hand over to, so the
+      # AMF decodes the HandoverRequired and reports it can't route it —
+      # Open5GS replies with an NGAP ErrorIndication ("cannot find target
+      # gNB-id"). That is a spec-valid, well-formed reaction (the message
+      # was accepted and processed); treat it as a graceful prep failure
+      # rather than a timeout. A real handover needs a second gNB + Xn/N2
+      # target configured.
+      - event: ErrorIndication
+        target: completed_prep_failure
+
+  # Terminal-but-not-final marker so dispatch tests can verify the
+  # HandoverNotify send action ran. Uses a tiny timeout fallback to land on
+  # the success state when no further events arrive.
+  wait_handover_notify_done:
+    on_timeout:
+      duration: 1ms
+      target: completed_success
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-500 (positive, expected_terminal:
+# completed_success) — After HandoverRequired on the source gNB's N2 association, a
+# HANDOVER REQUEST is received on the second gNB's N2 association carrying the same AMF-
+# UE-NGAP-ID, and a HandoverCommand is received on the source association.
+#
+# REG-500: the HANDOVER REQUEST relayed to the second gNB with the same AMF-UE-NGAP-ID,
+# and a HandoverCommand back on the source association. `completed_prep_failure` is a
+# HANDOVER PREPARATION FAILURE or an ERROR INDICATION — the preparation the row is about
+# did not happen.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `completed_success` — the terminal this row claims
+    metric: final_state_counts.completed_success
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 7
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

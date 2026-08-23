@@ -1,0 +1,382 @@
+# NFM-04 — collection GET with nf-type filter + limit boundary checks.
+#
+# Register 3 SMFs + 2 UDMs as fixtures, then probe the list endpoint:
+#   - ?nf-type=SMF → exactly the 3 SMFs
+#   - ?limit=1     → at most 1 nfInstance
+#   - ?limit=1000  → 200 (max accepted)
+#   - ?limit=1001  → 400 + ProblemDetails
+# Catches a broken filter implementation (returns wrong nfType),
+# missing limit bounds checking, and silent truncation at the cap.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-04.
+#
+# Note: the NRF list endpoint defaults to a 3gppHal UriList (see
+# nfm_list_hal.yaml / NFM-15). This flow asserts on full-profile content
+# (fqdn substrings), so every GET here sends `Accept: application/json` to
+# opt into the plain profile-array representation. We check substring
+# presence on the serialized body rather than array arithmetic.
+
+kind: flow
+name: nrf_nfm_list_filtered
+description: List collection with nf-type filter + limit boundaries.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering_smf_a
+        actions:
+          - type: send
+            message: RegisterSmfA
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-a-list-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering_smf_a:
+    transitions:
+      - event: rest.RegisterSmfA_Answer
+        target: registering_smf_b
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: smfA
+          - type: send
+            message: RegisterSmfB
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-b-list-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering_smf_b:
+    transitions:
+      - event: rest.RegisterSmfB_Answer
+        target: registering_smf_c
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: smfB
+          - type: send
+            message: RegisterSmfC
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-c-list-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering_smf_c:
+    transitions:
+      - event: rest.RegisterSmfC_Answer
+        target: registering_udm_a
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: smfC
+          - type: send
+            message: RegisterUdmA
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "UDM",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "udm-a-list-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering_udm_a:
+    transitions:
+      - event: rest.RegisterUdmA_Answer
+        target: registering_udm_b
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: udmA
+          - type: send
+            message: RegisterUdmB
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "UDM",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "udm-b-list-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering_udm_b:
+    transitions:
+      - event: rest.RegisterUdmB_Answer
+        target: listing_smf_filter
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: udmB
+          - type: send
+            message: ListSmfFiltered
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances",
+                "headers": {"Accept": "application/json"},
+                "query": {"nf-type": "SMF"}
+              }
+
+  listing_smf_filter:
+    transitions:
+      - event: rest.ListSmfFiltered_Answer
+        target: listing_limit_1
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          # SMF filter: each SMF's fqdn must be present
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-a-list-test.local"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-b-list-test.local"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-c-list-test.local"
+          # UDM fqdns must NOT be present (filter is doing its job)
+          - type: check
+            field: rest.body
+            op: not_contains
+            expected: "udm-a-list-test.local"
+          - type: check
+            field: rest.body
+            op: not_contains
+            expected: "udm-b-list-test.local"
+          - type: send
+            message: ListLimit1
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances",
+                "headers": {"Accept": "application/json"},
+                "query": {"limit": "1"}
+              }
+
+  listing_limit_1:
+    transitions:
+      - event: rest.ListLimit1_Answer
+        target: listing_limit_1000
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: ListLimit1000
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances",
+                "headers": {"Accept": "application/json"},
+                "query": {"limit": "1000"}
+              }
+
+  listing_limit_1000:
+    transitions:
+      - event: rest.ListLimit1000_Answer
+        target: listing_limit_too_high
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: ListLimitTooHigh
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances",
+                "headers": {"Accept": "application/json"},
+                "query": {"limit": "1001"}
+              }
+
+  listing_limit_too_high:
+    transitions:
+      - event: rest.ListLimitTooHigh_Answer
+        target: cleaning_up_smf_a
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: send
+            message: DeregisterSmfA
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.smfA}}"
+              }
+
+  cleaning_up_smf_a:
+    transitions:
+      - event: rest.DeregisterSmfA_Answer
+        target: cleaning_up_smf_b
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+          - type: send
+            message: DeregisterSmfB
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.smfB}}"
+              }
+
+  cleaning_up_smf_b:
+    transitions:
+      - event: rest.DeregisterSmfB_Answer
+        target: cleaning_up_smf_c
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+          - type: send
+            message: DeregisterSmfC
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.smfC}}"
+              }
+
+  cleaning_up_smf_c:
+    transitions:
+      - event: rest.DeregisterSmfC_Answer
+        target: cleaning_up_udm_a
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+          - type: send
+            message: DeregisterUdmA
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.udmA}}"
+              }
+
+  cleaning_up_udm_a:
+    transitions:
+      - event: rest.DeregisterUdmA_Answer
+        target: cleaning_up_udm_b
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+          - type: send
+            message: DeregisterUdmB
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.udmB}}"
+              }
+
+  cleaning_up_udm_b:
+    transitions:
+      - event: rest.DeregisterUdmB_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

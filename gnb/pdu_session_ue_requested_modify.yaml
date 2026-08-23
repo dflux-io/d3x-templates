@@ -1,0 +1,286 @@
+# REG-350 — the UE asks for a different PDU session, and the answer comes back
+# under the transaction the UE opened.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 24.501 §6.4.2.2 — "The UE shall allocate a PTI value currently not used
+#   and shall set the PTI IE of the PDU SESSION MODIFICATION REQUEST message to
+#   the allocated PTI value."
+#
+#   TS 24.501 §6.4.2.3 — "Upon receipt of a PDU SESSION MODIFICATION REQUEST
+#   message, if the SMF accepts the request to modify the PDU session, the SMF
+#   shall perform the network-requested PDU session modification procedure as
+#   specified in subclause 6.3.2."
+#
+#   TS 24.501 §6.3.2.2 — the sentence this row exists for, verbatim: "If the
+#   network-requested PDU session modification procedure is triggered by a
+#   UE-requested PDU session modification procedure, the SMF shall set the PTI
+#   IE of the PDU SESSION MODIFICATION COMMAND message to the PTI of the PDU
+#   SESSION MODIFICATION REQUEST message received as part of the UE-requested
+#   PDU session modification procedure."
+#
+#   TS 24.501 §7.3.1 — why that matters rather than being bookkeeping: a 5GSM
+#   answer under a PTI that "does not match any PTI in use" is not a late
+#   answer, it is an answer to a different transaction, and the receiver
+#   responds with 5GSM STATUS #47 "PTI mismatch" instead of completing.
+#
+#   TS 24.501 §9.6 — the PTI is the third octet of every 5GSM message, which is
+#   how stashInner5GSMHeader can read it out of the payload container without a
+#   per-message type switch.
+#
+# THE ASSERTION IS FIELD-TO-FIELD AND BOTH ENDS ARE REAL. The left-hand side is
+# ue.Params.sm_pti — the third octet of the 5GSM message the CORE sent, read off
+# the wire by stashInner5GSMHeader. The right-hand side is
+# ue.Params.pdu_modify_pti — the value THIS UE allocated, published by
+# EnrichPDUSessionModificationRequest at the moment it built the request. Neither
+# is a constant written twice in this file, which is the failure mode a
+# `equals 3` would have: it passes just as happily when the enricher and the
+# template are both wrong.
+#
+# WHY THE ROW COULD NOT BE WRITTEN BEFORE #248. Two independent gaps.
+# PDUSessionModificationRequest / Complete existed in the codec with no
+# sendable, so nothing could open the transaction or close it; and the `nas.`
+# namespace resolves the OUTER DL NAS TRANSPORT, whose payload container is an
+# opaque byte string, so the PTI of the inner COMMAND was invisible to any check.
+#
+# ---------------------------------------------------------------------------
+# THE ONE THING THIS FLOW CANNOT SEE, STATED UP FRONT.
+#
+# TS 23.502 §4.3.3.2 step 4: "The AMF may send N2 ([N2 SM information received
+# from SMF], NAS message (PDU Session ID, N1 SM container (PDU Session
+# Modification Command))) Message to the (R)AN." So the COMMAND has TWO
+# conformant roads to the UE: a DOWNLINK NAS TRANSPORT, or the per-item NAS-PDU
+# IE of a PDU SESSION RESOURCE MODIFY REQUEST (TS 38.413 §9.3.3.4).
+#
+# The runner decodes only the first. extractNasPdu() names six NGAP message
+# types and NGAPPduSessionResourceModifyRequest is not among them, and unlike
+# the SETUP request there is no per-item NAS decode for the MODIFY request — so
+# on that road ue.Params.sm_pti is never written, the COMMAND's PTI is not
+# readable, and EnrichPDUSessionModificationComplete has no transaction to
+# answer and refuses (correctly — an answer under an invented PTI is §7.3.1's
+# "does not match any PTI in use").
+#
+# This flow therefore gives that road its OWN terminal, `command_carried_on_n2`,
+# rather than letting it look like a timeout or a core defect. Reaching it means
+# THE HARNESS could not read the answer, not that the core failed to send one,
+# and the terminal name says so. Closing it is a codec change and has not been
+# done.
+#
+# The DL NAS TRANSPORT road is the expected one HERE specifically because this
+# probe asks for no resource change: the request carries a PTI and nothing else,
+# so there is no N2 SM information for the AMF to carry, and TS 23.502 §4.3.3.2
+# step 3a is explicit that "the SMF shall not include both N1 SM Container and
+# N2 SM Information ... unless the N1 SM Container is related to the N2 SM
+# Information".
+# ---------------------------------------------------------------------------
+#
+# VACUITY, EVERY CLASS, CHECKED.
+#   * `not_contains` — not used.
+#   * `exists` — not used. `ie_present` is used where presence is the question,
+#     because it fails on a path that does not resolve. That is load-bearing for
+#     ue.Params.sm_*: those keys are written ONLY when a 5GSM message actually
+#     arrived, precisely because PTI 0 means "no procedure transaction identity
+#     assigned" and PDU session identity 0 means "none assigned" — both real
+#     values a core can send. A check on them before one arrives MISSES.
+#   * `not_empty` on a raw ue.Params path — not used. ue.Params.* resolves the
+#     raw Go value, so `not_empty` there degrades to `exists` on a zero. Every
+#     numeric assertion below is `equals` or `greater_than`.
+#   * pkt_tx — no user-plane leg in this row.
+#   * zero checks evaluated — impossible: all three non-`failed` terminals are
+#     reached through transitions carrying checks (7, 3 and 2 respectively).
+#
+# NOT A BARE TIMER: every non-`failed` terminal is reached by a message
+# arriving. Every on_timeout targets `failed`.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; another
+# agent holds Docker (xp-234) and this flow has never been executed. tinycore is
+# expected to reach `failed` on this row: nothing in tinycore/ references
+# PDU SESSION MODIFICATION REQUEST outside the codec, so it has no handler for
+# the message this flow sends — a capability gap, which is what the row is for.
+
+kind: flow
+name: pdu_session_ue_requested_modify
+description: Registration, one PDU session, then a UE-requested PDU session modification; assert the COMMAND comes back under the PTI the UE allocated and complete the transaction (TS 24.501 §6.3.2.2)
+detail: |
+  Registration and one PDU session establishment, then the UE opens a
+  UE-requested PDU session modification (TS 24.501 §6.4.2.2) under a PTI it
+  allocates itself.
+
+  TS 24.501 §6.4.2.3 makes the SMF answer by running the network-requested
+  procedure, and §6.3.2.2 obliges it to carry the UE's PTI in the PDU SESSION
+  MODIFICATION COMMAND. The flow asserts exactly that — the PTI in the command
+  read off the wire against the PTI the UE published when it built the request —
+  and then closes the transaction with a PDU SESSION MODIFICATION COMPLETE
+  under the same PTI.
+
+  A command delivered on the N2 road instead (PDU SESSION RESOURCE MODIFY
+  REQUEST carrying the NAS-PDU) is equally conformant and is NOT decodable by
+  this runner; it gets its own terminal so the trace says which road was taken.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - modified
+  - modification_rejected
+  - command_carried_on_n2
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration — the establishment request
+          # AND the modification request below — so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7). PreparseFSM enforces this for
+          # PDUSessionModificationRequest.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_setup_request
+        actions:
+          - { type: check, field: security_key, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_setup_request:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_modification_command
+        actions:
+          # There is a session to modify, and it is the one the request will
+          # name. `greater_than 0`, never `not_empty`: these resolve to raw Go
+          # values and `any(uint32(0)) != any(float64(0.0))`.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # THE PROBE. §6.4.2.2: the UE allocates a PTI currently not used. 3 is
+          # the enricher's default and is deliberately not 1 or 2, which the
+          # establishment and release enrichers already spend — two live
+          # transactions under one PTI would make the COMMAND ambiguous, which
+          # is the thing §7.3.1 exists to prevent. The allocated value is
+          # published as ue.Params.pdu_modify_pti.
+          - { type: send, message: PDUSessionModificationRequest, params: { pdu_session_id: 1 } }
+
+  wait_modification_command:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      # THE EXPECTED ROAD: the COMMAND as a 5GSM message inside a DL NAS
+      # TRANSPORT, which is the only road this runner can read the PTI on.
+      - event: NASDownlinkTransport.DLNASTransport.PDUSessionModificationCommand
+        target: modified
+        actions:
+          # GUARDS. These keys exist only if a 5GSM message really arrived and
+          # decoded — see the vacuity note in the header.
+          - { type: check, field: ue.Params.sm_pti, op: ie_present }
+          - { type: check, field: ue.Params.pdu_modify_pti, op: ie_present }
+          # The UE really did allocate an assigned PTI. §9.6 / §7.3.1: 0 means
+          # "no procedure transaction identity assigned", which a UE-requested
+          # procedure may not use.
+          - { type: check, field: ue.Params.pdu_modify_pti, op: greater_than, expected: 0 }
+          # It is the message this state claims it is: 0xCB == 203,
+          # PDU SESSION MODIFICATION COMMAND (TS 24.501 §9.7).
+          - { type: check, field: ue.Params.sm_message_type, op: equals, expected: 203 }
+          # ...about the session the UE asked about.
+          - { type: check, field: ue.Params.sm_pdu_session_id, op: equals, expected: "{{ue.Params.pdu_modify_session_id}}" }
+          # ---- THE ROW. TS 24.501 §6.3.2.2: the COMMAND carries the PTI of the
+          # REQUEST that triggered it. Both operands are real observations —
+          # one off the wire, one the UE's own allocation. ----
+          - { type: check, field: ue.Params.sm_pti, op: equals, expected: "{{ue.Params.pdu_modify_pti}}" }
+          # And the transaction is CLOSED, which is what lets the SMF commit the
+          # new rules (§6.4.2.3 -> §6.3.2.3). The enricher reads the PTI back
+          # from the command rather than assuming one.
+          - { type: send, message: PDUSessionModificationComplete }
+
+      # A REJECT is a real answer and its cause is the finding, not a timeout.
+      - event: NASDownlinkTransport.DLNASTransport.PDUSessionModificationReject
+        target: modification_rejected
+        actions:
+          - { type: check, field: ue.Params.sm_message_type, op: equals, expected: 202 }
+          # §6.3.2.2's PTI rule binds the reject too — a reject under another
+          # transaction is not an answer to this one.
+          - { type: check, field: ue.Params.sm_pti, op: equals, expected: "{{ue.Params.pdu_modify_pti}}" }
+          - { type: check, field: ue.Params.pdu_modify_pti, op: greater_than, expected: 0 }
+
+      # THE OTHER CONFORMANT ROAD, which this runner cannot read. See the header:
+      # reaching here is OUR gap, not the core's.
+      - event: PDUSessionModifyRequest
+        target: command_carried_on_n2
+        actions:
+          # The COMMAND really was carried here — the per-item NAS-PDU IE is
+          # present, it is simply never decoded. `ie_present` fails on a path
+          # that does not resolve, so an N2 modify with no NAS attached cannot
+          # pass this and be mistaken for the delivery road.
+          - { type: check, field: pdu_session_resource_modify_request_items.0.nas_pdu, op: ie_present }
+          - { type: check, field: pdu_session_resource_modify_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          # Answer as a well-behaved gNB regardless, so the core is not left
+          # holding an unanswered elementary procedure.
+          - { type: send, message: PDUSessionResourceModifyResponse }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-350 (positive, expected_terminal: modified) — A
+# PDUSessionModificationCommand is received whose PTI equals the PTI the UE used in its
+# PDUSessionModificationRequest
+#
+# REG-350: "A PDUSessionModificationCommand is received whose PTI equals the PTI the UE
+# used in its PDUSessionModificationRequest." Reading the PTI needs the NAS command
+# itself, which is what `modified` consumes. `command_carried_on_n2` is the command
+# delivered inside a PDU Session Resource Modify Request instead — a delivery TS 23.502
+# permits, and one where this FSM does not decode the inner PTI. It is a weaker
+# observation of the same procedure, not the row's claim, and it is the terminal to look
+# at if a core reads as failing this row. `modification_rejected` is a
+# PDUSessionModificationReject.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `modified` — the terminal this row claims
+    metric: final_state_counts.modified
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 11
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

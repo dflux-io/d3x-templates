@@ -1,0 +1,208 @@
+# NEGATIVE — PDU session request for an UNCONFIGURED / unsubscribed slice —
+# expect rejection (NSSF admission and/or SMF subscription check).
+#
+# 3GPP ref:     TS 24.501 §6.4.1 (UE-requested PDU session establishment),
+#               §6.3.2 (S-NSSAI / slice handling), TS 23.501 §5.15,
+#               TS 29.531 §6.1.3.2.3.1 (Nnssf_NSSelection PDU-session mode).
+# Abnormal in:  After a normal registration, the gNB sends a
+#               PDUSessionEstablishmentRequest whose requested S-NSSAI uses
+#               sst: 3 — a slice that is neither in the NSSF configured plan
+#               nor in the subscriber's Allowed/Subscribed NSSAI. Compare with
+#               pdu_session_setup.yaml which uses a configured/subscribed slice.
+# Expected OK:  With NSSF wired, the AMF admits the S-NSSAI via
+#               Nnssf_NSSelection PDU-session mode before SMF selection; an
+#               unconfigured slice yields 403 SNSSAI_NOT_SUPPORTED and the AMF
+#               sends PDU Session Establishment Reject without CreateSmContext.
+#               If NSSF is absent, the SMF still rejects on subscription match.
+#               The gNB observes a NAS PDUSessionEstablishmentReject (5GSM
+#               cause, e.g. #33) or 5GMMStatus. A PDUSessionResourceSetupRequest
+#               (accept) would be a compliance FAILURE.
+#
+# SUCCESS terminal = `rejected` (a PDU-session reject was observed). Reaching it
+# asserts the core refused the unconfigured/unsubscribed slice instead of
+# granting it.
+
+kind: flow
+name: pdu_session_reject_slice
+description: PDU session request for an unconfigured slice (sst 3) — expect 5GSM reject via NSSF 403 path when NSSF is up (YAML)
+detail: |
+  This is a negative test for slice-based admission control of PDU session
+  establishment (3GPP TS 24.501 §6.4.1, §6.3.2; TS 23.501 §5.15; TS 29.531
+  PDU-session mode).
+
+  Phase 1 — Registration: a normal initial registration (authentication +
+  security activation + context setup) is performed.
+
+  Phase 2 — Unconfigured-slice request: the gNB sends a
+  PDUSessionEstablishmentRequest with params {sst: 3}, requesting a network
+  slice that is not in the NSSF operator plan (and not subscribed).
+
+  A spec-correct core rejects the request rather than establishing the session.
+  With NSSF up, the AMF rejects pre-SMF after Nnssf 403 SNSSAI_NOT_SUPPORTED.
+  Without NSSF, the SMF rejects on subscription. Either path yields a NAS
+  PDUSessionEstablishmentReject (or 5GMMStatus) — SUCCESS terminal `rejected`.
+  Receiving a PDUSessionResourceSetupRequest would be a compliance FAILURE.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_reject
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              sst: 3
+
+  wait_pdu_reject:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # SMF path: the 5GSM reject arrives either bare or (spec-correct,
+      # TS 24.501 §8.2.11 — what open5gs and d3x-core send) wrapped
+      # in the 5GMM DL NAS TRANSPORT container.
+      # AMF/NSSF path: same reject, issued before CreateSmContext when
+      # Nnssf_NSSelection returns 403 SNSSAI_NOT_SUPPORTED.
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: rejected
+      # AMF path: AMF rejects at the 5GMM level before forwarding to the SMF.
+      - event: NASDownlinkTransport.5GMMStatus
+        target: rejected
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-321).
+#
+# REG-321 — PDUSessionEstablishmentReject received with a 5GSM cause from the enumerated
+# set in TS 24.501 §6.4.1.4.1, and no PDUSessionResourceSetupRequest arrives on N2
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `rejected`
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # "…and no PDUSessionResourceSetupRequest arrives on N2" (REG-321).
+  # The flow establishes no other session, so the count is the claim.
+  - name: and no PDU SESSION RESOURCE SETUP REQUEST arrived on N2
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: equals
+    value: 0
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

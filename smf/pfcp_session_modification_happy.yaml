@@ -1,0 +1,70 @@
+# N4/PFCP — Session Modification happy path (compliance).
+# 3GPP TS 29.244 §7.5.4 / §7.5.5.
+#
+# runner (SMF) associates, establishes a session, then sends a
+# PFCPSessionModificationRequest (header + RemoteSEID auto-stamped). The UPF
+# replies with PFCPSessionModificationResponse; with the pfcp.cause resolver we
+# assert the spec-correct success cause (Request accepted).
+#
+# RUNTIME RISK: depends on a successful Establishment (which itself has no
+# enricher-built PDR/FAR — see pfcp_session_establishment_happy), and the modify
+# carries no Update/Create/Remove PDR/FAR/QER IEs from the enricher. A strict
+# UPF may reject an empty modification. Structurally valid; asserts the spec
+# happy-path cause and lets the live run sort core gap from flow bug.
+kind: flow
+name: smf_pfcp_session_modification_happy
+description: SMF modifies an established PFCP session — expect Cause Request accepted
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - modified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: smf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_modify
+        actions:
+          - type: send
+            message: PFCPSessionModificationRequest
+
+  wait_modify:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionModificationResponse
+        target: modified
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

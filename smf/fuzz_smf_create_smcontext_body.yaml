@@ -1,0 +1,81 @@
+# SBI wire-fuzz driver — W2-F3.
+#
+# smf/nsmf_create_smcontext_happy.yaml with a `fuzz:` block and relaxed
+# assertions. Fuzzes the JSON request body of
+# POST /nsmf-pdusession/v1/sm-contexts against a live SMF.
+#
+# For SBI the mutate stage does not touch the internal envelope
+# (method/path/headers). It mutates the envelope's BODY and re-marshals around
+# it, so a well-formed HTTP POST carries a corrupt SmContextCreateData — the
+# real request that crosses the network.
+#
+# ORACLE
+#   survived  the SMF answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400 on a corrupt body is CORRECT.
+# Only that a status EXISTS is checked.
+
+kind: flow
+name: fuzz_smf_create_smcontext_body
+description: Wire-level fuzz of the Nsmf_PDUSession CreateSMContext request body against a live SMF
+category: robustness
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [SBI_Request]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 5,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1",
+                  "pei": "imeisv-1234567890123456"
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 201, 400, 403, 500 — means the NF
+    # parsed, decided and replied, which is what F3 asserts.
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: survived
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

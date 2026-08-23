@@ -1,0 +1,172 @@
+# REGISTRATION ACCEPT assigns a TAI list as the registration area (register row REG-103).
+#
+# WHY THIS IS A SEPARATE FLOW FROM `registration`.
+# `registration` proves the procedure completes. Completing it says nothing
+# about whether the accept carried a registration area, and REG-103 is only
+# about the registration area. Bound to `registration`, REG-103 was coverage on
+# paper: it scored green on a core whose accept has no TAI list IE at all.
+#
+# CLAUSE (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.5.1.2.4 — "The AMF shall assign and include a TAI list as a
+#   registration area the UE is registered to in the REGISTRATION ACCEPT
+#   message. The AMF shall not assign a TAI list containing both tracking areas
+#   in NB-N1 mode and tracking areas not in NB-N1 mode. The UE, upon receiving a
+#   REGISTRATION ACCEPT message, shall delete its old TAI list and store the
+#   received TAI list."
+#
+#   TS 24.501 §5.5.1.2.4 (the 5G-GUTI sentence, for why the two IEs travel
+#   together) — "the AMF shall include in the REGISTRATION ACCEPT message the
+#   new assigned 5G-GUTI together with the assigned TAI list."
+#
+# "shall assign and include" — unconditional for 3GPP access. This is not a MAY.
+#
+# WHAT THE CHECKS ASSERT, AND WHY EACH ONE IS THERE.
+#   1. `nas.tai_list ie_present`   — the IE is carried at all. `ie_present` and
+#      not `not_empty`/`equals`, because it is the only operator that fails on a
+#      path that does not resolve; a typo in the field name cannot make it pass.
+#   2. `nas.tai_list.elements.length greater_than 0` — a TAI list IE with an
+#      empty element list would satisfy (1) and assign no registration area.
+#   3. `nas.tai_list contains AAAB` — the list actually covers where the UE is.
+#      "AAAB" is base64(00 00 01), the 3-octet TAC 1 configured as the gNB's
+#      served TA in every matrix core config (matrix/cores/*/gnb.yaml
+#      `supported_tas: - tac: 1`) and reported by this very flow in the
+#      InitialUEMessage's User Location Information. Asserted with `contains`
+#      against the whole IE rather than a fixed path, because §9.11.3.9 allows
+#      three list types (partial TAI list with a TAC list, with a TAI list, or
+#      a list of TACs) and only one of them puts the TAC at
+#      `elements.0.partial_tai.tac`. The value has to appear SOMEWHERE in the
+#      assigned list under all three encodings, and it either does or does not.
+#
+# MEASURED AGAINST tinycore 2026-08-11: FAIL — the REGISTRATION ACCEPT carries
+# `registration_result`, `guti` and `allowed_nssai` and NOTHING else; check (1)
+# reports `<missing>`. That is a tinycore defect against a "shall", not a
+# harness defect, and the check stays as written. The decoder is not the
+# suspect: the same build decodes free5gc's accept into
+# `tai_list.elements.0.partial_tai.tac = "AAAB"` (matrix/traces/free5gc/
+# registration_guti_reallocation-REG-102/runner.json), so IEI 0x54 parses.
+# registration_guti_reallocation.yaml records the same tinycore observation and
+# deliberately does NOT assert it — this flow is where it is asserted.
+#
+# Terminals are (registered, failed) only and every on_timeout targets `failed`,
+# so this flow cannot end in a "didn't fail" state.
+kind: flow
+name: registration_accept_tai_list
+description: Initial registration; assert the REGISTRATION ACCEPT assigns a TAI list covering the gNB's served TAC (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          # THE row assertions — see the header for what each one rules out.
+          - { type: check, field: nas.tai_list, op: ie_present }
+          - { type: check, field: nas.tai_list.elements.length, op: greater_than, expected: 0 }
+          - { type: check, field: nas.tai_list, op: contains, expected: "AAAB" }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-103).
+#
+# REG-103 — nas.tai_list is present in the decoded RegistrationAccept and contains the
+# gNB's configured TAC
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The five `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all five declared checks ran
+    metric: checks_total
+    op: equals
+    value: 5
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

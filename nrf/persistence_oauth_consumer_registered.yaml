@@ -1,0 +1,60 @@
+# PERSIST-03 (flow A — register consumer). See d3x-core
+# docs/nrf/sanity-tests.md §2.14 and §4.7.6.
+#
+# Registers a consumer AMF under a FIXED nfInstanceId. The NRF token
+# endpoint rejects a token request whose requester nfInstanceId is not a
+# registered NF (nrf/handler_token.go), so this proves the next half:
+# after a restart, the token endpoint must read the consumer identity
+# from the persistent store rather than a process-local cache. Fixed
+# UUID, so no cross-process handoff — persistence_oauth_token_after_restart
+# requests a token for the same UUID.
+
+kind: flow
+name: nrf_persistence_oauth_consumer_registered
+description: Register a consumer AMF under a fixed UUID (PERSIST-03 pre-restart).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterConsumer
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/aaaa0003-0000-4000-8000-000000000003",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "AMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "amf-persist.local",
+                  "ipv4Addresses": ["10.0.0.20"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterConsumer_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.body.nfInstanceId
+            op: equals
+            expected: aaaa0003-0000-4000-8000-000000000003
+
+  done: {}
+  failed: {}

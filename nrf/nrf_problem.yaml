@@ -1,0 +1,34 @@
+# ProblemDetails cross-cutting suite — single consolidated regression
+# gate for the RFC 7807 contract.
+#
+# One flow (PROB-01) chains 10 known 4xx-producing requests across
+# NFM, Discovery, and Subscriptions; each step asserts status code +
+# Content-Type: application/problem+json + body.status. If any
+# handler regresses its error shape, exactly one flow turns red.
+#
+# Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.7):
+#   PROB-01  problem_json_shape   10 negative paths in one flow
+
+kind: suite
+name: nrf_problem
+description: ProblemDetails contract — every 4xx must be RFC 7807.
+
+steps:
+  - name: problem_json_shape
+    flow: nrf_problem_json_shape
+    repetitions: 1
+    stop_on_failure: true
+
+final_checks:
+  - name: all_flows_succeeded
+    metric: flows_succeeded
+    op: equals
+    value: 1
+  - name: no_failed_flows
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no_failed_checks
+    metric: checks_failed
+    op: equals
+    value: 0

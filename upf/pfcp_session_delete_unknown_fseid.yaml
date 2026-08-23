@@ -1,0 +1,72 @@
+# PFCP Session Deletion against an unknown SEID (replay / double-delete)
+# (3GPP TS 29.244 §7.2.2.4.2 / §8.2.1).
+#
+# Security/negative: after establishing the association, runner sends a
+# PFCPSessionDeletionRequest whose PFCP header SEID is a bogus value
+# (0xDEADBEEF) the UPF never allocated — modelling a replayed/double delete or
+# a stale SEID. A spec-correct UPF must REJECT with Cause "Session context not
+# found" (TS 29.244 §8.2.1, value 65) and stay up. We supply the header in
+# message_body so the enricher does not overwrite the SEID.
+#
+# Spec-correct success = a SessionDeletionResponse whose Cause is "Session
+# context not found".
+
+kind: flow
+name: upf_pfcp_session_delete_unknown_fseid
+description: Session Deletion with an unknown SEID; UPF must reject (Cause 65)
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_delete
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionDeletionRequest
+            message_body: |
+              {
+                "header": {
+                  "seid_flag": true,
+                  "seid": 3735928559,
+                  "sequence_number": 4098
+                }
+              }
+
+  wait_delete:
+    on_timeout:
+      duration: 5s
+      target: tolerated
+    transitions:
+      - event: pfcp.PFCPSessionDeletionResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Session context not found"

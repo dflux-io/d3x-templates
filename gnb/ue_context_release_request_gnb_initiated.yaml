@@ -1,0 +1,308 @@
+# gNB-initiated UE Context Release Request, and proof that the UE-associated
+# logical NG-connection is actually gone afterwards (3GPP TS 38.413 §8.3.2 +
+# §8.3.3 + §10.6).
+#
+# Clauses, operative sentences (retrieved with matrix/scripts/spec-clause.py):
+#
+#   §8.3.2.1 "The purpose of the UE Context Release Request procedure is to enable the NG-RAN
+#            node to request the AMF to release the UE-associated logical NG-connection due to
+#            NG-RAN node generated reasons."
+#
+#   §8.3.2.2 "The NG-RAN node controlling a UE-associated logical NG-connection initiates the
+#            procedure by sending a UE CONTEXT RELEASE REQUEST message towards the affected AMF."
+#            "The UE Context Release procedure should be initiated upon reception of a UE CONTEXT
+#            RELEASE REQUEST message with the Cause IE set to 'User inactivity' and there is no
+#            downlink signaling, as specified in TS 23.502."
+#
+#   §8.3.3.2 "The UE CONTEXT RELEASE COMMAND message shall contain both the AMF UE NGAP ID IE and
+#            the RAN UE NGAP ID IE if available, otherwise the message shall contain the AMF UE
+#            NGAP ID IE."
+#
+#   §10.6    "If a node receives a message (other than the first or first returned messages)
+#            including an erroneous AP ID that is either an unknown local AP ID, or an
+#            inconsistent remote AP ID ... - if this message is not the last message for this
+#            UE-associated logical connection, the node SHALL INITIATE AN ERROR INDICATION
+#            PROCEDURE with inclusion of the received AP ID(s) from the peer node and an
+#            appropriate cause value."
+#
+# This is REG-246, whose pass_criterion has two halves:
+#   (a) "UEContextReleaseCommand received on N2 after the release request" — asserted with the
+#       §8.3.3.2 AP-ID content, not merely by message type; and
+#   (b) "the UE-associated logical NG-connection is gone, evidenced by the AMF rejecting or
+#       error-indicating subsequent traffic on the same AP IDs".
+#
+# (b) used to be untested. It is driven here by sending one more UPLINK NAS TRANSPORT — a
+# properly secured DEREGISTRATION REQUEST, NOT the PlainUplinkNas probe — on the AP IDs the AMF
+# has just released. A secured message is the right probe: if the AMF discarded an UNPROTECTED
+# one, that would prove nothing about the connection state, only about NAS security (TS 24.501
+# §4.4.5). Once released, those AP IDs are an unknown local AP ID at the AMF and §10.6 makes the
+# ERROR INDICATION a "shall". Choosing a DEREGISTRATION REQUEST as the probe also gives the
+# opposite outcome teeth: a DEREGISTRATION ACCEPT coming back would prove the connection was
+# NOT gone (TS 24.501 §5.5.2.2.2 obliges the AMF to answer one it can still associate), so that
+# path targets `failed` rather than being silently ignored.
+#
+# The "no downlink signalling" fairness condition of §8.3.2.2 is honoured by naming
+# ConfigurationUpdateCommand in wait_release_cmd and answering it: Open5GS reallocates the 5G-GUTI
+# right after RegistrationAccept, and an unanswered CONFIGURATION UPDATE COMMAND is exactly the
+# pending downlink signalling that entitles an AMF to defer the release.
+#
+# Every on_timeout targets `failed`. In particular the §10.6 probe window does: an AMF that
+# neither error-indicates nor answers has not produced the evidence the row's criterion requires,
+# and silence is not the same as a released connection.
+#
+# NOTE FOR THE SUITE OWNER: suites/gnb_compliance.yaml step
+# "ue_context_release_request" runs this flow with success_when.at_least_one_final_state:
+# released. The terminal name is unchanged, but the flow is now strictly harder — it can go red
+# on a core that releases correctly yet stays silent on the stale-AP-ID probe. The step already
+# has stop_on_failure: false.
+
+kind: flow
+name: ue_context_release_request_gnb_initiated
+description: gNB-initiated UEContextReleaseRequest; assert the Release Command AP IDs and that the released AP IDs are error-indicated (YAML)
+detail: |
+  Performs registration, then drives the gNB-initiated UE Context Release
+  procedure (3GPP TS 38.413 §8.3.2 / §8.3.3). The gNB sends a
+  UEContextReleaseRequest with Cause radioNetwork(user-inactivity); the AMF
+  responds with UEContextReleaseCommand carrying the matching UE NGAP IDs; the
+  gNB confirms with UEContextReleaseComplete and then proves the connection is
+  gone by sending one more secured UPLINK NAS TRANSPORT on the released AP IDs,
+  which per TS 38.413 §10.6 must draw an ERROR INDICATION. Terminal: `released`.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # The RAN UE NGAP ID this gNB allocates and puts in the INITIAL UE
+          # MESSAGE (TS 38.413 §8.6.1.2), captured before any downlink exists.
+          - type: extract
+            field: ue.RanUeNgapId
+            store: sent_ran_ue_ngap_id
+          - type: send
+            message: InitialUEMessage
+            # This UE does have uplink NAS pending after registration — the
+            # §10.6 stale-AP-ID probe in wait_release_cmd — so the Follow-on
+            # request indicator must say so (TS 24.501 §5.5.1.2.2), and
+            # `d3x-run lint` refuses the flow without it. It bears on the
+            # UPLINK direction only, so it does not soften §8.3.2.2's "there is
+            # no downlink signaling" condition, which is handled separately by
+            # answering the CONFIGURATION UPDATE COMMAND below.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # gNB-initiated release request (Cause user-inactivity by default).
+          - type: send
+            message: UEContextReleaseRequest
+
+  wait_release_cmd:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_stale_ap_id_reaction
+        actions:
+          # §8.3.3.2 content, read out of the UE NGAP IDs IE group and compared
+          # against values captured from EARLIER messages: pilot_amf_id came off
+          # the AUTHENTICATION REQUEST, sent_ran_ue_ngap_id off our own
+          # allocation before the INITIAL UE MESSAGE went out. Neither side of
+          # either comparison is re-read from the message under test.
+          - type: check
+            field: ue_context_release_command_ies.0.ue_ngap_ids.amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          - type: check
+            field: ue_context_release_command_ies.0.ue_ngap_ids.ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.sent_ran_ue_ngap_id}}"
+          - type: send
+            message: UEContextReleaseComplete
+          # The §10.6 probe: one more secured UPLINK NAS TRANSPORT on the AP IDs
+          # the AMF has just released. No ngap_realloc — the point is to reuse
+          # the stale pair.
+          - type: send
+            message: DeregistrationRequest
+      # Open5GS's GUTI reallocation. ABSORBED, NOT ANSWERED — deliberately.
+      # A CONFIGURATION UPDATE COMPLETE is an uplink message, and if it landed
+      # after the AMF had released the context it would itself draw the §10.6
+      # ERROR INDICATION that `wait_stale_ap_id_reaction` treats as the proof.
+      # The row would then be green for our own stray message rather than for
+      # the probe. Leaving it unanswered keeps exactly one uplink message after
+      # the release, so the ERROR INDICATION can only be about that one.
+      # (§8.3.2.2's fairness condition is about downlink signalling PENDING TO
+      # BE SENT; this command has already been delivered.)
+      #
+      # UNREVIEWED INTERACTION WITH ccd6864 (#362) — recorded 2026-08-18, NOT acted
+      # on. The scoping is deliberate and it still holds where it is written: a
+      # declared transition beats fsm.DispatchRx's tail default, so this state stays
+      # silent. But the SAME command arriving in any OTHER state of this flow now
+      # draws a CONFIGURATION UPDATE COMPLETE from that default — precisely the
+      # stray uplink this comment exists to prevent, and this row's evidence is an
+      # ERROR INDICATION about "exactly one uplink message after the release".
+      # Latent rather than live today: the default is gated on the Configuration
+      # update indication ACK bit, and open5gs's command carries no such IE at all
+      # (decoded off the v1 sweep). Whether the silence should become flow-wide is
+      # an owner's call, not a template edit.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_cmd
+
+  wait_stale_ap_id_reaction:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      # §10.6: the AMF shall initiate an Error Indication for the unknown local
+      # AP ID. This is the criterion's "error-indicating subsequent traffic".
+      - event: ErrorIndication
+        target: released
+      # The opposite outcome: the AMF still has a context under those AP IDs and
+      # answers the NAS procedure, so the connection was NOT released.
+      - event:
+          or:
+            - NASDownlinkTransport.DeregistrationAccept
+            - NASDownlinkTransport.5GMMStatus
+            - NASDownlinkTransport.ServiceReject
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.IdentityRequest
+            - NASDownlinkTransport.AuthenticationRequest
+            - NASDownlinkTransport.SecurityModeCommand
+            - InitialContextSetupRequest
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-246).
+#
+# REG-246 — UEContextReleaseCommand received on N2 after the release request; the UE-
+# associated logical NG-connection is gone, evidenced by the AMF rejecting or error-
+# indicating subsequent traffic on the same AP IDs
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `released`
+    metric: final_state_counts.released
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an ERROR INDICATION arrived
+    metric: rx_events.ErrorIndication
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

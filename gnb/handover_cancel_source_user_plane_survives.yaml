@@ -1,0 +1,296 @@
+# REG-549 — cancelling a handover must cost the subscriber nothing.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 38.413 §8.4.5.1 (Handover Cancellation, purpose) — "The purpose of the
+#   Handover Cancellation procedure is to enable a source NG-RAN node to cancel
+#   an ongoing handover preparation or an already prepared handover." The UE has
+#   not moved: it is still served by the source cell.
+#
+#   TS 23.502 §4.9.1.4 (Handover cancellation) — the AMF/SMF undo the
+#   preparation and the UE stays where it was, with its PDU sessions as they
+#   were. Nothing in the procedure touches the SOURCE N3 tunnel, so nothing may
+#   change about it.
+#
+# WHY THIS IS A SEPARATE ROW FROM REG-548. `handover_cancel` (REG-548) asserts
+# the SIGNALLING rolls back — HANDOVER CANCEL ACKNOWLEDGE arrives. That is the
+# control-plane half and it is not this row. REG-549 asks the question the
+# subscriber actually notices: after the rollback, does the data still flow on
+# the tunnel that was never supposed to move? A core can acknowledge the cancel
+# perfectly and still have torn the source session's PDRs down while preparing
+# the target — and the acknowledgement would look identical.
+#
+# THE ASSERTION, AND WHY THE FIRST WINDOW IS NOT DECORATION. The row is
+# "the source user plane STILL works", which is a comparison, not a state. A
+# single post-cancel window returning pkt_rx > 0 would be a fine result and a
+# poor assertion: against a core with no data path at all it returns pkt_rx == 0
+# and the row would read as "the cancel broke the user plane" when the user
+# plane was never up. So the flow measures the SAME tunnel twice — once before
+# the handover is ever prepared, once after the cancel is acknowledged — and
+# requires pkt_rx > 0 in both. The first window failing names itself in the
+# trace and is a different sentence from the second window failing.
+#
+# THE TWO WINDOWS ARE INDEPENDENT MEASUREMENTS. UspaceExecutor.AddTeid stores a
+# fresh teidEntry with a fresh newTeidStats() each time uplane_start runs
+# (runner/runner/uplane_uspace.go), and ReportForTeid reads the live entry
+# before the retired one, so the second UplaneComplete carries only the second
+# window's counters. Neither number is a running total.
+#
+# TWO gNBs ARE REQUIRED (register preconditions.gnbs: 2, so `run` selects
+# gnb-2gnb.yaml). With one gNB the HANDOVER REQUIRED names a target the AMF has
+# never seen and the row measures "unknown target" instead of cancellation.
+# The UE never leaves the source association here — there is no
+# ngap_handover_swap in this flow — so both user-plane windows run on the source
+# gNB's executor, which is the tunnel the row is about.
+#
+# VACUITY, ALL FOUR CLASSES, CHECKED. No `not_contains`. No `exists`. pkt_tx
+# appears twice and is generator liveness only — it is non-zero after a sendto
+# on an unconnected socket and proves nothing about the core; pkt_rx is the gate
+# in both windows. Fourteen checks are evaluated on the path to the terminal and
+# the terminal is reachable only through them.
+#
+# NOT A BARE TIMER: every terminal but `failed` is reached by a message or an
+# UplaneComplete arriving; every on_timeout targets `failed`.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; the
+# matrix was held by a concurrent run and this flow has never been executed.
+
+kind: flow
+name: handover_cancel_source_user_plane_survives
+description: N2 handover preparation cancelled by the source gNB; assert the source N3 tunnel still carries traffic afterwards (TS 38.413 §8.4.5.1)
+detail: |
+  Registration, one PDU session, and a user-plane window on the source gNB's
+  N3 tunnel that must succeed — the baseline.
+
+  The source gNB then begins an N2 handover with HANDOVER REQUIRED and
+  immediately aborts it with HANDOVER CANCEL (TS 38.413 §8.4.5). The AMF rolls
+  the preparation back and answers HANDOVER CANCEL ACKNOWLEDGE, which the flow
+  asserts is addressed to this UE.
+
+  A second user-plane window then drives the SAME source tunnel. ICMP echo
+  replies must still return on the DL TEID the source gNB signalled at session
+  setup. A cancelled handover the subscriber can feel is not a cancelled
+  handover.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - source_user_plane_survived
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest }
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_before_cancel
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: uplane_start
+
+  # WINDOW ONE — the baseline the row compares against.
+  uplane_before_cancel:
+    # 12s against a configured 3s traffic duration (gnb.uplane.duration), sized
+    # to fire inside the row's 30s budget so a stalled executor still reaches a
+    # terminal instead of being killed by the flow timeout.
+    on_timeout:
+      duration: 12s
+      target: failed
+    transitions:
+      - event: UplaneComplete
+        target: wait_cancel_ack
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # Generator liveness only — never a verdict about the core.
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          # The baseline: the source tunnel carries traffic before any handover
+          # is prepared.
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+          # Begin the preparation, then abort it before HANDOVER COMMAND —
+          # the §8.4.5.1 "ongoing handover preparation" case.
+          - { type: send, message: HandoverRequired }
+          - { type: send, message: HandoverCancel }
+
+  wait_cancel_ack:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: HandoverCancelAcknowledge
+        target: uplane_after_cancel
+        actions:
+          # The rollback happened, and it happened for THIS UE. The
+          # AMF-UE-NGAP-ID is the identity that spans both legs, so it is the
+          # one that says the acknowledgement is ours (TS 38.413 §9.2.3.9).
+          - { type: check, field: amf_ue_ngap_id, op: equals, expected: "{{ue.Params.pilot_amf_id}}" }
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - type: uplane_start
+
+  # WINDOW TWO — the row. Same source gNB, same TEIDs, same UE address; a fresh
+  # teidStats, so these counters describe only what happened after the cancel
+  # was acknowledged.
+  uplane_after_cancel:
+    on_timeout:
+      duration: 12s
+      target: failed
+    transitions:
+      - event: UplaneComplete
+        target: source_user_plane_survived
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          # ---- THE ROW. TS 38.413 §8.4.5.1 / TS 23.502 §4.9.1.4: the UE never
+          # left the source cell, so its tunnel must be exactly as it was. ----
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-549).
+#
+# REG-549 — After HandoverCancelAcknowledge, an ICMP echo from the UE address through
+# the SOURCE gNB's original N3 tunnel still receives a reply from the N6 endpoint.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `source_user_plane_survived`
+    metric: final_state_counts.source_user_plane_survived
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one HANDOVER CANCEL was sent
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_CANCEL
+    op: equals
+    value: 1
+  - name: one HANDOVER REQUIRED was sent
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_REQUIRED
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a HANDOVER CANCEL ACKNOWLEDGE arrived
+    metric: rx_events.HandoverCancelAcknowledge
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 15 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 15 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 15
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

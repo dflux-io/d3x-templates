@@ -1,0 +1,104 @@
+# Npcf_SMPolicyControl — provisioning-driven UpdateNotify trigger (client half).
+# The PCF-2 counterpart to npcf_smpolicy_notify_trigger: instead of driving the
+# decision change through an AF app-session PATCH, it changes the subscriber's
+# SM SUBSCRIPTION DATA through the Nudr provisioning API and lets the co-located
+# PCF re-evaluate on its own — no SMF-asserted trigger.
+#
+# Steps: (1) create an SM policy whose notificationUri points at the runner REST
+# listener (http://127.0.0.1:39998/sm-policy-notify); (2) PUT the subscriber's
+# provisioned-data/sm-data with a NEW session-AMBR (999/1500 Mbps, vs the seed's
+# 200/400). The PUT fires dpf's in-process PCF re-evaluation, which recomputes
+# the default session-rule/AMBR from the new sm-data and POSTs an
+# SmPolicyNotification to {notificationUri}/update. The assertion of record is
+# in the receiver flow (npcf_smpolicy_provision_notify_receiver).
+#
+# Notify is async/fire-and-forget (R14): these client steps assert only their
+# own immediate SBI statuses. Runs foreground while the receiver listens;
+# scripts/dpf-sanity-run.sh step 06-pcf-notify orchestrates both halves.
+# supi is the dash-less seed form (E15).
+
+kind: flow
+name: npcf_smpolicy_provision_trigger
+description: Create sm-policy (notifUri→listener) → PUT provisioned sm-data (sessionAmbr→999/1500) to drive PCF re-eval
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_sm_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:39998/sm-policy-notify",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_sm_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_provision
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000001/provisioned-data/sm-data",
+                "headers": {"Content-Type": "application/json"},
+                "body": [
+                  {
+                    "singleNssai": {"sst": 1, "sd": "000001"},
+                    "dnnConfigurations": {
+                      "internet": {
+                        "sessionAmbr": {"uplink": "999 Mbps", "downlink": "1500 Mbps"}
+                      }
+                    }
+                  }
+                ]
+              }
+
+  wait_provision:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200

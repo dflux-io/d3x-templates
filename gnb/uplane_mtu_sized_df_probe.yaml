@@ -1,0 +1,268 @@
+# REG-960 — a data path that only works for small packets is not a working data
+# path.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 23.501 §5.6.10.4 — "In order to avoid data packet fragmentation between
+#   the UE and the UPF acting as PSA, the link MTU size in the UE should be set
+#   to the value provided by the network as part of the IP configuration", and
+#   NOTE 2: "In network deployments that have MTU size of 1500 octets in the
+#   transport network, providing a link MTU value of 1358 octets ... will
+#   prevent the IP layer fragmentation within the transport network between the
+#   UE and the UPF."
+#
+#   TS 29.281 §4.2.1 / §4.2.4 — the G-PDU carries the T-PDU whole, and the
+#   fragmentation rules for the tunnel's outer packet.
+#
+# THE SIZE IS 1358 OCTETS OF INNER IP, AND HERE IS THE ARITHMETIC.
+# `payload_size` is the inner payload the ICMP handler asks randomPayload for,
+# after the 8-octet ICMP echo header and the 20-octet IPv4 header:
+#
+#     1330 payload + 8 ICMP + 20 IPv4  = 1358 octets of inner IP packet
+#     1358 + 16 GTP-U (8 base + 4 seq/N-PDU/next-ext + 4 extension header)
+#          +  8 UDP + 20 outer IPv4    = 1402 octets on N3
+#
+# 1402 is inside a 1500-octet transport, which is what makes 1358 the right
+# number per NOTE 2 — and it is also inside go-gtp's 1500-octet receive buffer
+# (gtpv1/u-conn.go), so a failure here is the core's path and not this
+# generator's ceiling. Anything materially larger would start measuring the
+# runner.
+#
+# THE NETWORK ADVERTISES NOTHING HERE, WHICH IS WHY NOTE 2 APPLIES. §5.6.10.4
+# sends the IPv4 link MTU in the PCO. exposePduSessionAcceptParams projects the
+# ePCO container COUNT but not the IPv4 Link MTU container itself, so this flow
+# cannot read an advertised value and size itself to it; it uses NOTE 2's
+# default for a 1500-octet transport, which is the documented fallback and the
+# register's own wording ("or 1358 octets where none is advertised, per
+# TS 23.501 §5.6.10.4 NOTE 2"). Exposing the advertised link MTU is runner work
+# that has not been done; when it lands, this row should assert the probe size
+# EQUALS the advertised value.
+#
+# DF IS THE WHOLE MECHANISM, NOT A DETAIL. Without the Don't Fragment flag an
+# over-large inner packet is fragmented somewhere along the path and still
+# arrives, so the reply proves nothing about the MTU: the row would be green on
+# a network that fragments every full-size packet, which is exactly the fault it
+# exists to catch. With DF set (RFC 791), a hop that would have to fragment must
+# drop instead — so an echo REPLY coming back is proof the inner packet
+# traversed whole in BOTH directions. That is how "the inner packet observed at
+# n6 carries no fragmentation" is decided from the gNB end, where this harness
+# stands; there is no n6 observer.
+#
+# TWO WINDOWS, BECAUSE "AT THE FULL MTU" IS A COMPARISON. A single window
+# returning pkt_rx == 0 has two utterly different causes — the path cannot carry
+# a full-size packet, or the path cannot carry anything — and this row must not
+# conflate them. Window one is the ordinary small ICMP probe with no DF; when it
+# is the one that fails, the trace names that check and the sentence is
+# "the datapath is dead", not "the MTU is wrong". The two windows are
+# independent measurements: UspaceExecutor.AddTeid stores a fresh teidEntry with
+# fresh stats on every uplane_start and ReportForTeid prefers the live entry.
+#
+# VACUITY, EVERY CLASS, CHECKED.
+#   * `not_contains` — not used.
+#   * `exists` — not used. `ie_present` is used where presence is the question.
+#   * pkt_tx is asserted in window two only, and only to prove the MTU-sized
+#     probe was EMITTED. It counts sends on an unconnected socket and is
+#     non-zero with no datapath at all, so it is never the verdict; pkt_rx is.
+#   * `not_empty` on a raw ue.<Scalar> — not used. ue.UplaneReport is a map, so
+#     `not_empty` there is a real nil test; ue.UpfTeid uses `greater_than 0`.
+#   * zero checks evaluated — impossible: `mtu_sized_packet_traversed` is
+#     reachable only through the chain below, ten checks deep.
+#
+# NOT A BARE TIMER: every non-`failed` terminal is reached by a message or an
+# UplaneComplete arriving.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; another
+# agent holds Docker (xp-234) and this flow has never been executed.
+
+kind: flow
+name: uplane_mtu_sized_df_probe
+description: Registration, one PDU session, a small control window, then a 1358-octet inner packet with DF set; assert it traverses the tunnel and is answered without fragmentation (TS 23.501 §5.6.10.4)
+detail: |
+  Registration, one PDU session establishment, then two user-plane windows over
+  the same tunnel.
+
+  Window one is the ordinary probe and must succeed — it separates "this path
+  cannot carry a full-size packet" from "this path cannot carry anything".
+
+  Window two sends an ICMP echo whose inner IPv4 packet is 1358 octets — the
+  link MTU TS 23.501 §5.6.10.4 NOTE 2 prescribes for a 1500-octet transport when
+  the network advertises none — with the Don't Fragment flag set. An echo reply
+  coming back is proof that the packet crossed whole in both directions: with DF
+  set, a hop that would have had to fragment it must drop it instead.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - mtu_sized_packet_traversed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_setup_request
+        actions:
+          - { type: check, field: security_key, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_setup_request:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_small_probe
+        actions:
+          # `greater_than 0`, never `not_empty`: ue.UpfTeid resolves to a raw
+          # uint32 and `any(uint32(0)) != any(float64(0.0))` in Go, so
+          # `not_empty` passes on the zero TS 29.281 §5.1 forbids.
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          # There is a QoS flow for the packet to belong to. §9.11.4.13: exactly
+          # one Authorized QoS rule carries the DQR bit.
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_count, op: equals, expected: 1 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # Window one: the executor's configured payload, no DF.
+          - type: uplane_start
+
+  # WINDOW ONE — the control. When THIS is the window that fails, the finding is
+  # "no datapath", not "wrong MTU".
+  uplane_small_probe:
+    # 12s against a configured 3s traffic duration (gnb.uplane.duration).
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: uplane_mtu_probe
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+          # THE PROBE. 1330 + 8 ICMP + 20 IPv4 = 1358 octets of inner IP, the
+          # link MTU of TS 23.501 §5.6.10.4 NOTE 2, with DF set so that a hop
+          # which would have to fragment must drop instead.
+          - type: uplane_start
+            params:
+              payload_size: 1330
+              df: true
+
+  # WINDOW TWO — the row.
+  uplane_mtu_probe:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: mtu_sized_packet_traversed
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # The MTU-sized probe was emitted at all. Generator liveness only.
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          # ---- THE ROW. TS 23.501 §5.6.10.4 / TS 29.281 §4.2.1: a T-PDU at the
+          # link MTU is carried whole. With DF set, a reply can only exist if
+          # nothing along the path had to fragment it. ----
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+          # The reply came back through the TUNNEL, encapsulated, rather than by
+          # some other route — the full-size packet survived the return leg too.
+          - { type: check, field: ue.UplaneReport.dl_gpdu_rx, op: greater_than, expected: 0 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-960).
+#
+# REG-960 — An ICMP echo request of the advertised link-MTU size with DF set, sent
+# inside a G-PDU, produces an echo reply at n6 and back on n3, and the inner packet
+# observed at n6 carries no fragmentation
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `mtu_sized_packet_traversed`
+    metric: final_state_counts.mtu_sized_packet_traversed
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 13 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 13 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 13
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

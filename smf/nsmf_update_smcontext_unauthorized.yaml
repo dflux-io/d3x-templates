@@ -1,0 +1,59 @@
+# Nsmf_PDUSession_UpdateSMContext — unauthorized (forged token) (negative).
+# 3GPP TS 29.500 §6.7.3; TS 33.501 §13.4.1.
+#
+# runner (AMF) POSTs a modify with a bogus OAuth2 bearer token. When the SMF
+# enforces OAuth2 it MUST reject with 401/403 and stay up. If the lab runs with
+# token verification disabled, the SMF answers on the operation's merits
+# (typically 404 for the fabricated ref); either way a clean 4xx + liveness is
+# the spec-correct outcome.
+kind: flow
+name: smf_nsmf_update_smcontext_unauthorized
+description: AMF Update SM context with forged token — expect 401/403/4xx rejection
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts/deadbeef-0000-0000-0000-000000000000/modify",
+                "headers": {
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer not-a-valid-jwt.forged.token"
+                },
+                "body": {
+                  "upCnxState": "DEACTIVATED"
+                }
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

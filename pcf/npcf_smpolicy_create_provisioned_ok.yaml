@@ -1,0 +1,176 @@
+# Npcf_SMPolicyControl — Create SM Policy for an API-PROVISIONED subscriber.
+#
+# PCF-1 acceptance flow: rather than relying on dpf/seed.go, this provisions a
+# fresh subscriber (imsi-001010000000042, outside the 5-seed range) at runtime
+# through the Nudr write surface, then drives the same dynamic-decision create
+# and assertions as npcf_smpolicy_create_dynamic_ok.
+#
+# Provisioning steps (peer: udr):
+#   1. PUT /nudr-dr/v1/subscription-data/{supi}/provisioned-data/sm-data
+#      → SessionAmbr 200/400 Mbps + 5QI 9 (the AMBR/QoS the decision echoes).
+#      The body is an ARRAY of SessionManagementSubscriptionData (TS 29.505
+#      whole-set replace) — the same shape nudr_provisioning_crud_ok uses. It
+#      was a bare object until 2026-07-28, which the UDR answered 400, so this
+#      step failed inside the dpf-sanity 05-pcf-compliance suite.
+#   2. PUT /nudr-dr/v1/policy-data/ues/{supi}/sm-data  (PCF-1, available now)
+#      → SmPolicySnssaiData "01000001" + DNN internet.
+#
+# Then POST /npcf-smpolicycontrol/v1/sm-policies and assert the bare dynamic
+# SmPolicyDecision (authSessAmbr 200/400, authDefQos/qosDecs 5QI 9), and clean
+# up the association.
+
+kind: flow
+name: npcf_smpolicy_create_provisioned_ok
+description: Provision a subscriber via Nudr writes, then POST sm-policies → 201 + dynamic SmPolicyDecision
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_prov_smdata
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/sm-data",
+                "body": [
+                  {
+                    "singleNssai": {"sst": 1, "sd": "000001"},
+                    "dnnConfigurations": {
+                      "internet": {
+                        "sessionAmbr": {"uplink": "200 Mbps", "downlink": "400 Mbps"},
+                        "5gQosProfile": {"5qi": 9, "arp": {"priorityLevel": 8, "preemptCap": "NOT_PREEMPT", "preemptVuln": "NOT_PREEMPTABLE"}}
+                      }
+                    }
+                  }
+                ]
+              }
+
+  wait_prov_smdata:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_prov_policy
+        actions:
+          - type: check
+            field: sbi.status
+            op: in
+            expected: [200, 201]
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v1/policy-data/ues/imsi-001010000000042/sm-data",
+                "body": {
+                  "smPolicySnssaiData": {
+                    "01000001": {
+                      "snssai": {"sst": 1, "sd": "000001"},
+                      "smPolicyDnnData": {"internet": {"dnn": "internet"}}
+                    }
+                  }
+                }
+              }
+
+  wait_prov_policy:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_create
+        actions:
+          - type: check
+            field: sbi.status
+            op: in
+            expected: [200, 201]
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000042",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_cleanup
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: check
+            field: sbi.headers.Location
+            op: not_empty
+          - type: check
+            field: sbi.body.sessRules.sess-rule-default.authSessAmbr.uplink
+            op: equals
+            expected: "200 Mbps"
+          - type: check
+            field: sbi.body.sessRules.sess-rule-default.authSessAmbr.downlink
+            op: equals
+            expected: "400 Mbps"
+          - type: check
+            field: sbi.body.sessRules.sess-rule-default.authDefQos.5qi
+            op: equals
+            expected: 9
+          - type: check
+            field: sbi.body.qosDecs.qos-default.5qi
+            op: equals
+            expected: 9
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/delete",
+                "body": {}
+              }
+
+  wait_cleanup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

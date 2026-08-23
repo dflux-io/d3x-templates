@@ -1,0 +1,240 @@
+# NEGATIVE — Periodic registration update at an AMF that holds no 5GMM context
+# for the UE must draw a reaction, never silence (register row REG-163).
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.5.1.3.8 h) — "If the REGISTRATION REQUEST message with 5GS
+#   registration type IE indicating 'periodic registration updating' is received
+#   by the new AMF which does not have the 5GMM context data related to the
+#   subscription, the new AMF may send the REGISTRATION REJECT message with
+#   5GMM cause #10 'implicitly de-registered'."
+#
+#   TS 24.501 §4.4.4.3 — REGISTRATION REQUEST is first in the list of messages
+#   the AMF processes without an established secure exchange, and again in the
+#   list it "shall process … even if the MAC included in the message fails the
+#   integrity check or cannot be verified, as the 5G NAS security context is not
+#   available in the network". NOTE 3 spells out why: "as in certain situations
+#   they can be sent by the UE protected with a 5G NAS security context that is
+#   no longer available in the network" — which is precisely this scenario.
+#
+#   TS 24.501 §4.4.4.3 — "If a REGISTRATION REQUEST message for mobility and
+#   periodic registration update fails the integrity check … the AMF shall
+#   initiate a primary authentication and key agreement procedure to create a
+#   new native 5G NAS security context. Additionally, the AMF shall initiate a
+#   security mode control procedure …"
+#
+# WHY SILENCE IS A FAILURE HERE — THE QUESTION RULE (A) MAKES US ASK.
+# For several NAS abnormal cases the spec-mandated answer is a SILENT DISCARD,
+# and a flow that treats silence as "the core tolerated it" scores a conformant
+# core worst of all. That is NOT this case, and §4.4.4.3 is what settles it: a
+# REGISTRATION REQUEST is explicitly exempt from the discard rule and the AMF
+# SHALL process it even when the MAC cannot be verified, then SHALL run
+# authentication and a security mode procedure. §5.5.1.3.8 h) adds a permitted
+# shortcut ("may … REGISTRATION REJECT with #10"). Every conformant path emits
+# something. So `on_timeout -> silent` is a genuine failure terminal, not an
+# inverted reading.
+#
+# The cause value is NOT pinned to #10: §5.5.1.3.8 h) says "may", so an AMF that
+# rebuilds the context instead of rejecting is at least as conformant, and one
+# that rejects with a different cause has not violated this clause. The
+# assertion is that a 5GMM cause is carried at all.
+#
+# HOW THE PRECONDITION IS MANUFACTURED — and it is real, not simulated.
+# Phase 1 registers normally, so the UE holds a live native 5G NAS security
+# context and a 5G-GUTI. It then DE-REGISTERS, which is the AMF deleting its
+# 5GMM context for this subscriber. Phase 2 sends a periodic REGISTRATION
+# REQUEST identified by the now-orphaned 5G-GUTI and integrity protected with
+# the now-orphaned security context (EnrichRegistrationUpdate secures it per
+# §4.4.6). The UE's side of the context is intact; the network's side is gone.
+# That is exactly "an AMF holding no 5GMM context", produced by the AMF's own
+# de-registration rather than by fabricating a GUTI — which is what
+# `registration_guti_unknown` does and why that flow cannot serve this row: a
+# fabricated GUTI is unprotected and unrelated to any context, so it exercises
+# identity recovery, not §4.4.4.3's "protected with a context that is no longer
+# available in the network".
+#
+# TERMINALS.
+#   amf_reacted             EITHER conformant answer: a REGISTRATION REJECT
+#                           carrying a 5GMM cause (§5.5.1.3.8 h), or an
+#                           AUTHENTICATION REQUEST / SECURITY MODE COMMAND /
+#                           IDENTITY REQUEST rebuilding what the AMF lost
+#                           (§4.4.4.3). ONE terminal on purpose — see below.
+#   accepted_stale_context  a REGISTRATION ACCEPT with no re-verification at
+#                           all. The AMF answered from a 5GMM context it should
+#                           have deleted at de-registration — the precondition
+#                           did not hold and the de-registration did not do its
+#                           job. Its own terminal so it cannot be read as a pass.
+#   silent                  nothing in the window. The §4.4.4.3 violation.
+#   failed                  phase 1 never completed, so phase 2 never ran.
+#
+# WHY THE CONFORMANT ANSWERS SHARE ONE TERMINAL. matrix/register/terminals.yaml
+# maps a row to exactly ONE expected terminal and `run` asserts
+# final_state_counts[expected_terminal] >= 1; its own header records that "where
+# a spec permits several conformant answers, the row needs a SET of acceptable
+# terminals, which this file's one-terminal-per-flow shape cannot express".
+# §5.5.1.3.8 h) is a "may" and §4.4.4.3 mandates a different reaction, so
+# splitting reject from recovery would make this row unbindable — whichever were
+# named, a core taking the other conformant route would score red. The event log
+# still records which message arrived, and the reject branch keeps its own cause
+# check.
+#
+# MEASURED AGAINST tinycore 2026-08-11: terminal `amf_reacted`, reached via
+# NASDownlinkTransport.IdentityRequest — with no 5GMM context for the orphaned
+# 5G-GUTI, tinycore starts the identification procedure. Conformant.
+#
+# CONTROL — the precondition removed. The same flow with the DEREGISTRATION
+# REQUEST replaced by a UE CONTEXT RELEASE REQUEST, so the AMF KEEPS its 5GMM
+# context and everything else is identical (scratchpad only, not committed),
+# reached `amf_reacted` via NASDownlinkTransport.AuthenticationRequest instead.
+# Same terminal, different message: with the context tinycore goes straight to
+# re-authentication; without it, it has to ask who the UE is first. So the
+# de-registration really does remove the context on the network side, and the
+# stimulus is the one this row names — the terminal cannot show that (the
+# harness binds one terminal per row) but the event log does.
+kind: flow
+name: periodic_update_without_amf_context
+description: NEGATIVE — periodic registration update carrying a 5G-GUTI and security context the AMF has de-registered; assert the AMF reacts and never goes silent (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - amf_reacted
+  - accepted_stale_context
+  - silent
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # The DEREGISTRATION REQUEST below is pending uplink NAS
+            # (TS 24.501 §9.11.3.7), so the FOR bit must say so.
+            params: { follow_on_request: true }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_dereg_reaction
+        actions:
+          # Precondition: the UE must actually hold a 5G-GUTI and a security
+          # context, or phase 2 is not the message this row is about.
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # The AMF deletes its 5GMM context here. Everything after this is the
+          # row.
+          - { type: send, message: DeregistrationRequest }
+
+  wait_dereg_reaction:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_dereg_release
+      - event: UEContextReleaseCommand
+        target: wait_stale_update_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - type: send
+            message: RegistrationUpdate
+            params: { registration_type: 3 }
+
+  wait_dereg_release:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_stale_update_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # registration_type 3 = periodic updating (TS 24.501 §9.11.3.7),
+          # identified by the orphaned 5G-GUTI and integrity protected with the
+          # orphaned security context. THE row's stimulus.
+          - type: send
+            message: RegistrationUpdate
+            params: { registration_type: 3 }
+
+  wait_stale_update_reaction:
+    # §4.4.4.3 obliges the AMF to PROCESS this message. Nothing arriving is the
+    # violation, so this timeout targets a failure terminal — and it is safe to
+    # do so on a timer here only because the flow demonstrably got as far as
+    # sending the stimulus (phase 1 completed with checks, the release was
+    # answered), so silence cannot mean "the flow did nothing".
+    on_timeout: { duration: 15s, target: silent }
+    transitions:
+      - event: NASDownlinkTransport.RegistrationReject
+        target: amf_reacted
+        actions:
+          # §5.5.1.3.8 h) names #10 but says "may", so the value is not pinned;
+          # a REJECT with no cause at all is not a usable answer, and that is
+          # what is asserted.
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: amf_reacted }
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: amf_reacted }
+      - { event: NASDownlinkTransport.IdentityRequest, target: amf_reacted }
+      # No re-verification at all: the AMF answered out of a context it should
+      # have deleted.
+      - { event: InitialContextSetupRequest.RegistrationAccept, target: accepted_stale_context }
+      - { event: NASDownlinkTransport.RegistrationAccept, target: accepted_stale_context }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-163 (negative, expected_terminal: amf_reacted) — A
+# NAS RegistrationReject with nas.gmm_cause == 10 is received, or an IdentityRequest
+# starting identity recovery — never silence
+#
+# REG-163: "A NAS RegistrationReject with nas.gmm_cause == 10 is received, or an
+# IdentityRequest starting identity recovery — never silence." `amf_reacted` is every
+# one of those messages; `silent` is the 15 s timer the criterion rules out by name;
+# `accepted_stale_context` is the AMF accepting a periodic update for a UE it holds no
+# 5GMM context for.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `amf_reacted` — the terminal this row claims
+    metric: final_state_counts.amf_reacted
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

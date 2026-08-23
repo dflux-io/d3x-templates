@@ -1,0 +1,87 @@
+# Npcf_SMPolicyControl — UpdateNotify receiver (REST-server, NOTIFY half).
+# 3GPP TS 29.512 §4.2.3.2 (PCF POSTs SmPolicyNotification to the SMF's
+# notificationUri on a decision change).
+#
+# runner binds a rest-listen listener on :39998 and waits for dpf's PolicyNotifier
+# to POST the SmPolicyNotification to {notificationUri}/update (the notifier
+# appends /update — TS 29.512 §4.2.3.2 / contract §8). The trigger half is
+# pcf/npcf_smpolicy_notify_trigger.yaml, orchestrated by
+# scripts/dpf-sanity-run.sh step 06-pcf-notify (the nrf-notify.sh skeleton).
+#
+# The notify is a DELTA SmPolicyNotification {resourceUri, smPolicyDecision}
+# (R10/R14). dpf's PolicyNotifier notifies on BOTH decision changes the trigger
+# drives: the app-session INSTALL (medComponents marBwDl 20 Mbps → first POST
+# /update) and the subsequent PATCH (marBwDl→40 Mbps → second POST /update). The
+# assertion of record is the PATCH delta carrying "40 Mbps", which arrives
+# SECOND — so a single waiting→done state would (wrongly) assert "40 Mbps"
+# against the install delta's "20 Mbps" and fail.
+#
+# runner checks abort the flow on first failure (no non-terminating guards), so a
+# self-re-arming guarded transition isn't expressible. Instead two sequential
+# waiting states drain the notifies in order: waiting_install consumes the
+# first POST /update (the install delta, any body) and replies 204;
+# waiting_patch consumes the second POST /update, asserts the 40 Mbps body, and
+# replies 204 before terminating. Each holds an on_timeout→failed so a missing
+# notify fails the flow rather than hanging. Per E4 absence of exact runtime-UUID
+# keys is handled with `contains` over the stringified body. Inbound raises
+# rest.POST.<path>; each reply 204 on the held ResponseWriter via a *_Answer
+# send (the notify_receiver pattern).
+
+kind: flow
+name: npcf_smpolicy_update_notify_receiver
+description: Receive + assert dpf's Npcf SmPolicyNotification (UpdateNotify) over REST.
+type: server
+protocol: rest
+nf: external
+initial_state: waiting_install
+final_states: [done, failed]
+
+states:
+  # First notify — the app-session INSTALL delta (marBwDl 20 Mbps). Drained
+  # without body assertions (any well-formed SmPolicyNotification); reply 204.
+  waiting_install:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      - event: rest.POST./sm-policy-notify/update
+        target: waiting_patch
+        actions:
+          - type: check
+            field: rest.body.smPolicyDecision
+            op: exists
+          - type: check
+            field: rest.body.resourceUri
+            op: not_empty
+          - type: send
+            message: Notify_Answer
+            message_body: |
+              {"status": 204}
+
+  # Second notify — the PATCH delta. The triggering PATCH set marBwDl→40 Mbps;
+  # the delta's derived QoS carries the verbatim bitrate string.
+  waiting_patch:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      - event: rest.POST./sm-policy-notify/update
+        target: done
+        actions:
+          - type: check
+            field: rest.body.smPolicyDecision
+            op: exists
+          - type: check
+            field: rest.body.resourceUri
+            op: not_empty
+          - type: check
+            field: rest.body.smPolicyDecision.qosDecs
+            op: contains
+            expected: "40 Mbps"
+          - type: send
+            message: Notify_Answer
+            message_body: |
+              {"status": 204}
+
+  done: {}
+  failed: {}

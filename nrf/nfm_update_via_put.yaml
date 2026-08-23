@@ -1,0 +1,164 @@
+# NFM-14 — PUT-as-update is full-replace semantics, not implicit PATCH.
+#
+# REST PUT semantics: re-PUT to an existing resource fully REPLACES the
+# representation. Any client-controlled field present in the first PUT
+# but omitted from the second must be ABSENT in the subsequent GET. A
+# server that silently merges (treating PUT as implicit PATCH) is the
+# common bug this test catches.
+#
+# IMPORTANT: nfStatus is NOT a client-controlled field on the PUT path.
+# Per TS 29.510 §5.2.2.5, NRF unconditionally sets nfStatus=REGISTERED
+# on every PUT (NFRegister) — clients transition nfStatus via PATCH
+# (NFUpdate) or via heartbeat-monitor side-effects, never directly via
+# PUT. Verified against nrf/handler_nfm.go:49-56 where the server
+# overwrites whatever the client supplied. We therefore test full-replace
+# using only client-controlled fields: priority, capacity, locality.
+#
+# Sequence (per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-14):
+#   1. PUT initial body with priority=10, capacity=100, locality="site-a"
+#   2. PUT same UUID body with priority=50, capacity=200 (locality DROPPED)
+#   3. GET — assert (a) priority=50, (b) capacity=200,
+#      (c) "locality" key is ABSENT from response body
+#   4. DELETE cleanup
+#
+# The locality-absent assertion uses `op: not_contains` on the whole
+# stringified body. We assert `"locality"` (with surrounding double
+# quotes) because no other field's value contains that word, so the
+# substring only appears as an object key.
+
+kind: flow
+name: nrf_nfm_update_via_put
+description: Re-PUT same UUID with dropped field; GET must show full replace, not merge.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: first_put
+        actions:
+          - type: send
+            message: RegisterFirst
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "priority": 10,
+                  "capacity": 100,
+                  "locality": "site-a",
+                  "fqdn": "smf-update-test.local",
+                  "ipv4Addresses": ["10.0.0.40"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  first_put:
+    transitions:
+      - event: rest.RegisterFirst_Answer
+        target: second_put
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: check
+            field: ue.Params.nfInstanceId
+            op: not_empty
+          - type: send
+            message: UpdateViaPut
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "priority": 50,
+                  "capacity": 200,
+                  "fqdn": "smf-update-test.local",
+                  "ipv4Addresses": ["10.0.0.40"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  second_put:
+    transitions:
+      - event: rest.UpdateViaPut_Answer
+        target: verifying
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: GetAfterUpdate
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  verifying:
+    transitions:
+      - event: rest.GetAfterUpdate_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.priority
+            op: equals
+            expected: 50
+          - type: check
+            field: rest.body.capacity
+            op: equals
+            expected: 200
+          # Full-replace assertion: locality was in PUT #1, omitted from
+          # PUT #2; must be ABSENT from GET. If the server is silently
+          # merging, this substring will appear and the check fails.
+          - type: check
+            field: rest.body
+            op: not_contains
+            expected: '"locality"'
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

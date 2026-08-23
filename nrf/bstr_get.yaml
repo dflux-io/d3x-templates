@@ -1,0 +1,61 @@
+# Bootstrapping endpoint smoke (TS 29.510 §5.5).
+#
+# NFs call GET /nnrf-bstr/v1/bootstrapping on cold start to discover the
+# NRF's service endpoints (NFM, Discovery, OAuth2) before any other
+# request. The endpoint is unprotected — no Bearer token required even
+# when oauth2_required is true on other endpoints.
+#
+# Assertions:
+#   - status == 200
+#   - body._links exists (service endpoint map)
+#   - body.status is one of OPERATIVE / NON_OPERATIVE (asserted exists +
+#     not_empty; explicit equality with the expected value belongs in a
+#     longer-run conformance flow once the OpenAPI enum is locked)
+#   - body.nrfInstanceId is non-empty (UUID format checked in the
+#     dedicated conformance suite, not in sanity)
+
+kind: flow
+name: nrf_bstr_get
+description: GET bootstrapping; assert _links + status + nrfInstanceId.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: probing
+        actions:
+          - type: send
+            message: BootstrapGet
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-bstr/v1/bootstrapping"
+              }
+
+  probing:
+    transitions:
+      - event: rest.BootstrapGet_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body._links
+            op: exists
+          - type: check
+            field: rest.body.status
+            op: not_empty
+          - type: check
+            field: rest.body.nrfInstanceId
+            op: not_empty
+
+  done: {}
+  failed: {}

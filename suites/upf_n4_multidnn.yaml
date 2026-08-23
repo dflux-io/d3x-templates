@@ -1,0 +1,29 @@
+# Standalone-UPF multi-DNN mini-suite (F-06) — secondary-pool establish.
+#
+# Split out from upf_n4 because it needs the UPF launched with a SECONDARY
+# DNN pool, which the default sanity launch doesn't have. Establishes a
+# session on DNN "sanity2" with a UE-IP CHOOSE so the UPF allocates from the
+# secondary pool, proving per-DNN pool routing accepts a configured DNN
+# (complement to the unknown-DNN negative F-14 in upf_n4).
+#
+# Launch the SUT WITH the secondary pool, then run:
+#   ./bin/upf -datapath stub -n4-addr 127.0.0.1:8805 -node-id upf.sanity.local \
+#     -dnn-pool sanity2=10.46.0.0/24
+#   ./bin/d3x-run run-suite -suite upf_n4_multidnn \
+#     -templates . -c config/lab-upf.yaml -gen-subscriber
+#
+# Scope: asserts establish/delete accepted. Asserting the UE-IP falls inside
+# 10.46.0.0/24 needs a pfcp.ue_ip_address resolver runner lacks (G7); the
+# allocation is exercised regardless.
+
+kind: suite
+name: upf_n4_multidnn
+description: Establish on a secondary DNN (UE-IP CHOOSE from the second pool); requires -dnn-pool sanity2.
+steps:
+  - name: multi_dnn_establish
+    flow: upf_pfcp_session_multi_dnn
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: deleted

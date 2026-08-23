@@ -1,0 +1,285 @@
+# REG-203 — PDU session status synchronisation between UE and AMF at service request.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 24.501 §5.6.1.4.1 — the obligation, in two halves, both quoted verbatim:
+#     "If the PDU session status information element is included in the SERVICE
+#      REQUEST message, then: a) for single access PDU sessions, the AMF shall:
+#      1) perform a local release of all those PDU sessions which are not in
+#      5GSM state PDU SESSION INACTIVE on the AMF side ... but are indicated by
+#      the UE as being in 5GSM state PDU SESSION INACTIVE; and 2) request the
+#      SMF to perform a local release of all those PDU sessions"
+#     and
+#     "If the AMF needs to initiate PDU session status synchronization or a PDU
+#      session status IE was included in the SERVICE REQUEST message, the AMF
+#      shall include a PDU session status IE in the SERVICE ACCEPT message to
+#      indicate: - which single access PDU sessions ... are not in 5GSM state
+#      PDU SESSION INACTIVE in the AMF".
+#
+#   TS 24.501 §9.11.3.44 — the bit semantics the whole row turns on:
+#     "PSI(1) – PSI(15): 0 indicates that the 5GSM state of the corresponding
+#      PDU session is PDU SESSION INACTIVE. 1 indicates that the 5GSM state of
+#      the corresponding PDU session is not PDU SESSION INACTIVE."
+#     and PSI(0) "is spare and shall be coded as zero".
+#
+#   TS 24.501 §4.4.6 — the PDU session status IE is NOT in the SERVICE REQUEST
+#   cleartext list (which is: Extended protocol discriminator, Security header
+#   type, Spare half octet, ngKSI, Service request message identity, Service
+#   type, 5G-S-TMSI). It is therefore carried the way §4.4.6 b)1) requires —
+#   inside the ciphered NAS message container, with the outer message integrity
+#   protected only (wire security header 0x01). Sending it in the outer
+#   plaintext instead would be a UE-side violation the AMF is entitled to
+#   ignore, and the row would then be measuring our own non-conformance.
+#
+# THE PROBE. The UE establishes PDU session 1, is put into CM-IDLE by a
+# gNB-initiated UE Context Release — which per TS 23.502 §4.2.6 DEACTIVATES the
+# user plane and leaves the session alive in the AMF — and then resumes with a
+# SERVICE REQUEST whose PDU session status IE has EVERY BIT ZERO. That is the
+# UE saying "I hold no active session", while the AMF still holds session 1.
+# The disputed session is therefore PSI(1), and the dispute is real: the flow
+# has just watched the AMF create that session.
+#
+# AN ALL-ZERO BITMAP IS A PRESENT IE, NOT AN ABSENT ONE, and the enricher emits
+# it for exactly that reason (ServiceRequestPduSessionStatus,
+# runner/runner/enrichers_ngap_connmgmt.go, with a test pinning it). §5.6.1.4.1
+# keys the AMF's entire obligation on the IE being "included in the SERVICE
+# REQUEST message"; an enricher that dropped an empty IE would leave the AMF
+# owing nothing and this row would score a core on a duty it was never given.
+#
+# WHAT IS ASSERTED
+#   1. the disputed session really exists first — PDU SESSION RESOURCE SETUP
+#      REQUEST for id 1 with a non-zero uplink TEID. Without it the row would be
+#      satisfied by a core that never created the session, which is the cheapest
+#      possible way to "pass" a reconciliation test;
+#   2. the UE really went to CM-IDLE — UE CONTEXT RELEASE COMMAND observed and
+#      acknowledged;
+#   3. THE ROW, part one: the SERVICE ACCEPT CARRIES a PDU session status IE
+#      (`ie_present`, which fails on absence — `equals false` alone would report
+#      a value mismatch against <missing> and `not_contains` would PASS on it);
+#   4. THE ROW, part two: the bit for the disputed session is CLEARED —
+#      `nas.pdu_session_status.psi_1 equals false`, i.e. the AMF agrees the
+#      session is INACTIVE and has locally released it;
+#   5. THE ROW, part three: no N2 PDU Session Resource Setup is attempted for
+#      it afterwards.
+#
+# ON CHECK 5 AND THE BARE-TIMER RULE. `wait_no_reactivation` is left by a timer
+# when nothing arrives, and that is safe here ONLY because it cannot be reached
+# without checks 3 and 4 having already fired on a real SERVICE ACCEPT. The
+# positive acceptance observable is the accept and its IE — a flow that sent
+# nothing, or a core that answered nothing, ends on `failed` in
+# `wait_service_answer` and never sees this state. The timer decides one
+# question and one only: whether a resource setup followed an accept that had
+# already been read and asserted on.
+#
+# THE OTHER VERDICTS ARE NAMED TERMINALS. A PDU SESSION RESOURCE SETUP REQUEST
+# after the accept is `session_reactivated` — the core re-establishing user-plane
+# resources for a session its subscriber has just disclaimed, which is the
+# stranded-resource failure the row's why_it_matters describes. A SERVICE REJECT
+# is `service_rejected`: reconciliation is not supposed to cost the UE its
+# connection.
+#
+# MEASURED AGAINST tinycore 2026-08-11 (git-8523d93): 5/6 checks, terminal
+# reached via `InitialContextSetupRequest.ServiceAccept`, and the row FAILS on
+#     [FAIL] nas.pdu_session_status ie_present (actual=<missing>)
+# The SERVICE ACCEPT carries no PDU session status IE, so the AMF never reported
+# a reconciled session set. §5.6.1.4.1's "the AMF shall include a PDU session
+# status IE in the SERVICE ACCEPT message" is not met.
+#
+# The core's source agrees with the wire: handleServiceRequest
+# (tinycore/dmf/amf/registration.go) opens `_ = sr` — it discards the decoded
+# SERVICE REQUEST without reading any IE — and then calls reactivatePduSessions
+# unconditionally. There is no code path from a PDU session status IE to
+# anything.
+#
+# ORDERING NOTE FOR WHOEVER READS THIS CELL NEXT TO REG-207: both rows carry
+# their non-cleartext IE in the §4.4.6 NAS message container, so a core that
+# cannot read the container fails both. tinycore ACCEPTED this service request
+# (it resolves the 5G-S-TMSI from the cleartext part), so the container is not
+# what stopped it here — the IE inside it is simply never looked at.
+
+kind: flow
+name: service_request_pdu_session_status_sync
+description: SERVICE REQUEST reporting every PDU session INACTIVE while the AMF still holds one — expect the SERVICE ACCEPT to carry a PDU session status IE with that bit cleared and no resource setup to follow (YAML)
+detail: |
+  Registration, one PDU session, a gNB-initiated UE Context Release to CM-IDLE,
+  and then a SERVICE REQUEST carrying a PDU session status IE with every bit
+  zero — the UE reporting that it holds no active PDU session while the AMF
+  still holds PDU session 1 (TS 24.501 §5.6.1.4.1, §9.11.3.44).
+
+  The IE rides inside the ciphered NAS message container, because it is not a
+  cleartext IE of a SERVICE REQUEST (TS 24.501 §4.4.6).
+
+  The AMF owes two things: a local release of the disputed session, and a PDU
+  session status IE in the SERVICE ACCEPT reporting the reconciled set. The flow
+  asserts the IE is present, that the disputed session's bit is cleared, and
+  that no PDU Session Resource Setup is attempted for it afterwards.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - reconciled
+  - session_reactivated
+  - service_rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration (the PDU session request),
+          # so the FOR bit must say so — TS 24.501 §9.11.3.7.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_session
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  # The disputed session must EXIST before the UE can dispute it.
+  wait_first_session:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          - { type: send, message: UEContextReleaseRequest }
+
+  wait_release_command:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_answer
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          # A new UE-associated logical NG-connection needs a new RAN UE NGAP ID
+          # (TS 38.413 §8.6.1.2).
+          - { type: ngap_realloc }
+          # THE PROBE: PDU session status with every bit zero — "I hold no
+          # active PDU session". `pdu_session_status_psi` is deliberately
+          # absent, which is how the enricher is told to set no bits; it still
+          # emits the IE.
+          - type: send
+            message: ServiceRequestPduSessionStatus
+            params:
+              # ENUM SVC_TYPE_SIGNALLING=1: this UE has pending uplink
+              # signalling and no pending user data, which is exactly true —
+              # the whole point is that it wants NO user plane back.
+              service_type: 1
+      # A GUTI reallocation racing the release is unrelated and spec-legal
+      # (TS 24.501 §5.4.4); absorbed rather than answered.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_command
+
+  wait_service_answer:
+    # §5.6.1.4.1 makes the SERVICE ACCEPT the successful completion of the
+    # procedure; silence is a failure of that duty, not a pass.
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # The two carriers a SERVICE ACCEPT can arrive in.
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceAccept
+            - InitialContextSetupRequest.ServiceAccept
+        target: wait_no_reactivation
+        actions:
+          # PART ONE — the IE is carried at all. `ie_present` fails on absence;
+          # this guard is what stops part two from being an assertion about
+          # <missing>.
+          - { type: check, field: nas.pdu_session_status, op: ie_present }
+          # PART TWO — the disputed session's bit is CLEARED: the AMF agrees it
+          # is PDU SESSION INACTIVE (§9.11.3.44).
+          - { type: check, field: nas.pdu_session_status.psi_1, op: equals, expected: false }
+          - { type: send, message: InitialContextSetupResponse }
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceReject
+            - InitialContextSetupRequest.ServiceReject
+        target: service_rejected
+
+  wait_no_reactivation:
+    # PART THREE. Reached ONLY after a real SERVICE ACCEPT was read and asserted
+    # on, so this timer is not the row's evidence — it decides one residual
+    # question: did the core go on to re-establish user-plane resources for a
+    # session the UE just disclaimed?
+    on_timeout: { duration: 6s, target: reconciled }
+    transitions:
+      # Fires on the FAILURE path on purpose: the finding is that the core
+      # re-established user-plane resources for THE DISPUTED session, and the
+      # session id is what says so.
+      - event: PDUSessionResourceSetupRequest
+        target: session_reactivated
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-203 (positive, expected_terminal: reconciled) —
+# SERVICE ACCEPT received on N1 containing a PDU session status IE whose bit for the
+# disputed PDU session id is cleared, and no N2 PDU Session Resource Setup is attempted
+# for it
+#
+# REG-203 has a positive half and a negative half: the SERVICE ACCEPT carries a PDU
+# session status IE with the disputed session's bit cleared, AND no N2 PDU Session
+# Resource Setup is attempted for it. The positive half is asserted on the accept before
+# the absence window opens (that is what the seven checks are), so `reconciled` is not a
+# terminal reached on a bare timer with nothing behind it — the timer only closes the
+# negative half. `session_reactivated` is the N2 setup arriving anyway;
+# `service_rejected` is a SERVICE REJECT.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `reconciled` — the terminal this row claims
+    metric: final_state_counts.reconciled
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 7
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

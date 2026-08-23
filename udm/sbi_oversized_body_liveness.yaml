@@ -1,0 +1,79 @@
+# Oversized request body then liveness probe — security/negative (multi-step).
+# 3GPP TS 33.501; TS 29.500 §6.x (413 Payload Too Large / 4xx).
+# Abusive leg: POST sdm-subscriptions with an oversized/deeply-nested body.
+# Liveness leg: a normal GET am-data must still succeed afterwards. Both legs via
+# SBI_Request — unlocked by the new generic SBI message (POST body + arbitrary path).
+
+kind: flow
+name: udm_sbi_oversized_body_liveness
+description: POST oversized sdm-subscription body, then UDM still serves GET am-data (stays live)
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_abuse
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/sdm-subscriptions",
+                "body": {
+                  "callbackReference": "http://127.0.0.1:7777/sdm-notify",
+                  "nfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "monitoredResourceUris": [
+                    "http://example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "http://example/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "http://example/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "http://example/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    "http://example/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                  ]
+                }
+              }
+
+  wait_abuse:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      # Abusive POST answered (accepted or 4xx) — proceed to liveness probe.
+      - event: sbi.SBI_Request_Answer
+        target: wait_liveness
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/am-data",
+                "query": {"dataset-names": "AM"}
+              }
+
+  wait_liveness:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: tolerated
+        actions:
+          # UDM stayed live: normal GET still serves 200.
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200

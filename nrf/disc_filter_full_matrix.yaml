@@ -1,0 +1,291 @@
+# DISC-02 — remaining OpenAPI filters not covered by DISC-01.
+#
+# Covers three filter families:
+#   - target-nf-instance-id  (positive narrow to one specific profile)
+#   - target-nf-set-id       (narrows to profiles in a named nfSet)
+#   - exclude-nfinst-list    (excludes one or more nfInstanceIds)
+#
+# Note: requester-nf-instance-id is in the OpenAPI but not in the
+# current handler's supportedDiscoveryParams (handler_disc.go); when
+# the SUT adds it, extend this flow to assert that filter too.
+# group-id-list is left for a future SUB / UDM-specific test (it
+# requires per-NF-type info objects with groupId set).
+#
+# Fixtures: 3 SMFs (alpha/beta/gamma) with distinct fqdns and
+# nfSetIdList = ["set-disc-test-1"] on alpha+beta, none on gamma.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.3 DISC-02.
+
+kind: flow
+name: nrf_disc_filter_full_matrix
+description: target-nf-instance-id + target-nf-set-id + exclude-nfinst-list filters.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering_smf_a
+        actions:
+          - type: send
+            message: RegisterSmfA
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-alpha-fullfilter-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}],
+                  "nfSetIdList": ["set-disc-test-1"]
+                }
+              }
+
+  registering_smf_a:
+    transitions:
+      - event: rest.RegisterSmfA_Answer
+        target: registering_smf_b
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: smfA
+          - type: send
+            message: RegisterSmfB
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-beta-fullfilter-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}],
+                  "nfSetIdList": ["set-disc-test-1"]
+                }
+              }
+
+  registering_smf_b:
+    transitions:
+      - event: rest.RegisterSmfB_Answer
+        target: registering_smf_c
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: smfB
+          - type: send
+            message: RegisterSmfC
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-gamma-fullfilter-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering_smf_c:
+    transitions:
+      - event: rest.RegisterSmfC_Answer
+        target: filtering_by_instance_id
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: smfC
+          # Filter 1: target-nf-instance-id narrows to SMF_A only.
+          - type: send
+            message: DiscoverByInstanceId
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances",
+                "query": {
+                  "target-nf-type": "SMF",
+                  "requester-nf-type": "AMF",
+                  "target-nf-instance-id": "{{ue.Params.smfA}}"
+                }
+              }
+
+  filtering_by_instance_id:
+    transitions:
+      - event: rest.DiscoverByInstanceId_Answer
+        target: filtering_by_set_id
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-alpha-fullfilter-test.local"
+          - type: check
+            field: rest.body
+            op: not_contains
+            expected: "smf-beta-fullfilter-test.local"
+          - type: check
+            field: rest.body
+            op: not_contains
+            expected: "smf-gamma-fullfilter-test.local"
+          # Filter 2: target-nf-set-id narrows to set members (A + B), not C.
+          - type: send
+            message: DiscoverBySetId
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances",
+                "query": {
+                  "target-nf-type": "SMF",
+                  "requester-nf-type": "AMF",
+                  "target-nf-set-id": "set-disc-test-1"
+                }
+              }
+
+  filtering_by_set_id:
+    transitions:
+      - event: rest.DiscoverBySetId_Answer
+        target: filtering_by_exclude
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-alpha-fullfilter-test.local"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-beta-fullfilter-test.local"
+          - type: check
+            field: rest.body
+            op: not_contains
+            expected: "smf-gamma-fullfilter-test.local"
+          # Filter 3: exclude-nfinst-list (JSON array) drops SMF_A. We
+          # build the JSON inline using the stored UUID.
+          - type: send
+            message: DiscoverExcludingA
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances",
+                "query": {
+                  "target-nf-type": "SMF",
+                  "requester-nf-type": "AMF",
+                  "exclude-nfinst-list": "[\"{{ue.Params.smfA}}\"]"
+                }
+              }
+
+  filtering_by_exclude:
+    transitions:
+      - event: rest.DiscoverExcludingA_Answer
+        target: cleaning_up_smf_a
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: not_contains
+            expected: "smf-alpha-fullfilter-test.local"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-beta-fullfilter-test.local"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "smf-gamma-fullfilter-test.local"
+          - type: send
+            message: DeregisterSmfA
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.smfA}}"
+              }
+
+  cleaning_up_smf_a:
+    transitions:
+      - event: rest.DeregisterSmfA_Answer
+        target: cleaning_up_smf_b
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+          - type: send
+            message: DeregisterSmfB
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.smfB}}"
+              }
+
+  cleaning_up_smf_b:
+    transitions:
+      - event: rest.DeregisterSmfB_Answer
+        target: cleaning_up_smf_c
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+          - type: send
+            message: DeregisterSmfC
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.smfC}}"
+              }
+
+  cleaning_up_smf_c:
+    transitions:
+      - event: rest.DeregisterSmfC_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

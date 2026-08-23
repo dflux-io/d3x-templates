@@ -1,0 +1,45 @@
+# Nudm_SDM Unsubscribe an unknown subscriptionId — security/negative.
+# 3GPP TS 29.503 §6.1.7.3 (DELETE {ueId}/sdm-subscriptions/{id}; 404).
+# Uses SBI_Request DELETE — unlocked by the new generic SBI message.
+# UDM must reject deletion of a non-existent subscription with 404 and stay live.
+
+kind: flow
+name: udm_sdm_unsubscribe_unknown_subscription
+description: DELETE an unknown sdm-subscription id is rejected with 404
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/sdm-subscriptions/does-not-exist-0000"
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404

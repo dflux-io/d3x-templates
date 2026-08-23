@@ -1,0 +1,52 @@
+# S6a AIR/AIA 4-step echo flow.
+# Authentication-Information-Request/Answer (3GPP TS 29.272 §7.2.5).
+# Same 4-step echo shape as ulr_ula — d3x-run originates the
+# AIR + answers with AIA, edge echoes both directions.
+
+kind: flow
+name: diameter_s6a_air_aia_success
+description: S6a AIR/AIA 4-step echo against edge
+category: functional
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_air_echo
+        actions:
+          - type: send
+            message: AIR
+
+  wait_air_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: AIR
+        target: wait_aia_echo
+        actions:
+          - type: check
+            field: User-Name
+            op: exists
+          - type: send
+            message: AIA
+
+  wait_aia_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: AIA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001

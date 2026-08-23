@@ -1,0 +1,283 @@
+# REG-452 — before secure exchange is established, only the messages TS 24.501 §4.4.4.3 lists
+# are processed. Everything else is discarded.
+#
+# ============================================================================================
+# A CORRECT DISCARD IS SILENCE, AND SILENCE IS NOT EVIDENCE. THIS FLOW MAKES THE AMF SPEAK.
+# ============================================================================================
+#
+# THE PROBE IS GENUINE, and it always was. The UplinkNASTransport carries exactly `7e 00 43` —
+# EPD 5GMM, security header type 0 (plain), message type 0x43 REGISTRATION COMPLETE — sent while
+# the AMF is still waiting for the SECURITY MODE COMPLETE it asked for. REGISTRATION COMPLETE is
+# not one of the seven message types §4.4.4.3 lets the AMF process before secure exchange is
+# established, and tinycore said so in as many words: "uplink NAS refused before decode: message
+# type 0x43 requires an integrity-verified security context (TS 24.501 §4.4.4.2)".
+#
+# WHAT WAS WRONG WAS THE EVIDENCE, TWICE.
+#
+#   1. (xp-245) It refused the message by DROPPING it, which is what §4.4.4.3 asks for, and the
+#      flow had no transition for a drop — so it timed out into `tolerated` and reported
+#      textbook-correct behaviour as a pre-authentication processing gap.
+#
+#   2. (this row, xp-279) Inverting that window moved the defect rather than ending it. Measured
+#      on the 50effc0 baseline, `rejected` was reached BY TIMER on ALL THREE CORES —
+#      terminal_via_timeout {"rejected": 1} for tinycore, Open5GS and free5GC alike — with ONE
+#      check evaluated per row against a corpus median of 6-12. lib/outcome.py DEFENCE 11 voided
+#      all three, correctly: the same silence would have been produced by a crashed AMF, a dead
+#      association, a message that never arrived, or an answer our FSM names no transition for,
+#      and Open5GS and free5GC each had one refused arrival in that very run
+#      (bus_audit.rx_refused: 1). The pass rested on OUR silence, not the network's.
+#
+# NEITHER "INVERT THE TIMER" NOR "EXEMPT NEGATIVE ROWS FROM DEFENCE 11" IS A FIX. The first makes
+# silence always mean pass, so a broken flow that sends nothing goes green. The second restores
+# step 1 exactly — the reading in which the most conformant core is reported as the one
+# tolerating an attack. The row needs POSITIVE EVIDENCE.
+#
+# ============================================================================================
+# THE DISCRIMINATOR: ASK THE AMF WHETHER IT IS STILL WAITING FOR A SECURITY MODE COMPLETE.
+# ============================================================================================
+#
+# The state this row asserts the AMF is in is PRE-SECURITY: it sent a SECURITY MODE COMMAND, it
+# has not received a valid SECURITY MODE COMPLETE, and it therefore has an OPEN security mode
+# control procedure. TS 24.501 §5.4.2.4: "The AMF shall, upon receipt of the SECURITY MODE
+# COMPLETE message, stop timer T3560 ... If the SECURITY MODE COMPLETE message contains a NAS
+# message container IE with a REGISTRATION REQUEST message, the AMF shall complete the ongoing
+# registration procedure by considering the REGISTRATION REQUEST message contained in the NAS
+# message container IE as the message that triggered the procedure."
+#
+# So after the absence window the flow sends the SECURITY MODE COMPLETE the AMF has been waiting
+# for all along, correctly protected, and asserts the REGISTRATION ACCEPT that §5.4.2.4 obliges
+# an AMF with an open procedure to produce. That single observation excludes every alternative
+# reading of the silence at once: the AMF is alive, the association is up, our uplink NAS
+# messages arrive and are processed, and the procedure the plain REGISTRATION COMPLETE did NOT
+# advance was still open when we got there.
+#
+#   `tolerated`  a REGISTRATION ACCEPT inside the absence window — i.e. the AMF completed the
+#                registration off an unprotected uplink NAS message, with no SECURITY MODE
+#                COMPLETE ever sent. The finding, stated by the core.
+#   `rejected`   the AMF is still inside security mode control: either it retransmits the
+#                SECURITY MODE COMMAND (§5.4.2.7 b, on the first expiry of T3560 — free5gc does
+#                this measurably, on REG-437/438), or the deferred valid completion draws the
+#                REGISTRATION ACCEPT the plain message did not. Alive, reached, and in the
+#                pre-security state this row asserts.
+#   `unproven`   silence even to a correctly protected SECURITY MODE COMPLETE the AMF is
+#                required to act on, or an answer that proves liveness without separating the
+#                two states of the world. Reached by the timer it is a semantic terminal, so
+#                DEFENCE 11 turns it into `inconclusive` with no rule needing to know its name.
+#
+# WHY NOT A §4.4.4.3-LIST MESSAGE INSTEAD. A DEREGISTRATION REQUEST (item f) would also be
+# answered before security activation, and its DEREGISTRATION ACCEPT would prove the association
+# is live. But that is the WEAKEST kind of discriminator — liveness only, an answer any AMF
+# would give from any state. The SECURITY MODE COMPLETE is answered ONLY by an AMF that still has
+# the procedure open, which is the claim, so it proves strictly more for the same one message.
+#
+# THE RESIDUAL AMBIGUITY, STATED RATHER THAN HIDDEN. A REGISTRATION COMPLETE draws no downlink
+# whether it is discarded or wrongly processed — accepting one out of order changes nothing the
+# AMF would transmit. So this flow's `tolerated` arm catches the case where the AMF treats the
+# plain message as completing the registration and answers, and the probe excludes the four
+# inadmissible readings of silence; what neither can do is detect an AMF that read the plain
+# message, changed nothing observable, and then answered the probe normally. That limit belongs
+# to the message the register chose, not to the evidence: it is recorded here rather than papered
+# over with a check that pretends otherwise.
+#
+# COUNT DISCIPLINE. The plain REGISTRATION COMPLETE is security header type 0 and consumes no
+# NAS COUNT on either side, so the SECURITY MODE COMPLETE below is the FIRST secured uplink and
+# goes out at COUNT 0 through EncodeSecureNewContext, exactly as in an ordinary registration.
+# Nothing is rewound anywhere, which is the trap EnrichSecuredUplinkStaleCount already paid for
+# once: encodeSecure increments whatever COUNT it is handed, so a rewind leaves every later
+# uplink failing its own MAC.
+kind: flow
+name: uplink_nas_before_security_activation
+description: Protection-required NAS sent PLAIN before security activation (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions: [{ type: send, message: InitialUEMessage }]
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_reaction
+        actions:
+          # THE PRE-SECURITY STATE THIS ROW ASSERTS, READ OFF THE WIRE. The AMF has selected an
+          # integrity algorithm and is now waiting for a SECURITY MODE COMPLETE it will not get
+          # until the probe below. nas5g's NAS_IntegrityAlgorithm is the wire nibble + 1, so 0 is
+          # the decoder's "IE absent" sentinel and 1..8 a genuine selection: `>= 1` fails on an
+          # AMF that omitted the mandatory Selected NAS Security Algorithms IE, which would mean
+          # there was no open security mode control procedure for the probe to test.
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          # THE VIOLATION: a plain REGISTRATION COMPLETE, outside §4.4.4.3's seven.
+          - { type: send, message: PlainUplinkNas }
+  wait_reaction:
+    # THE ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. 6 s against a T3560 of 6 s
+    # (TS 24.501 §10.2): long enough that a core about to retransmit is about to, and that a core
+    # that was going to act on the plain message has had three orders of magnitude more time than
+    # the measured acceptance latency of comparable rows. Falling out of it is the cue to ASK.
+    on_timeout:
+      duration: 6s
+      target: probe_still_awaiting_completion
+      actions:
+        # THE PROBE: the SECURITY MODE COMPLETE the AMF has been waiting for since it sent its
+        # command — correctly protected, carrying the replayed REGISTRATION REQUEST in its NAS
+        # message container. No params: everything it does differently from the send above is
+        # that it obeys the rules. §5.4.2.4 obliges an AMF whose procedure is still open to
+        # complete the registration on it.
+        - { type: send, message: SecurityModeComplete }
+    transitions:
+      # THE AMF COMPLETED THE REGISTRATION OFF AN UNPROTECTED UPLINK NAS MESSAGE, with no
+      # SECURITY MODE COMPLETE ever sent. That is the finding, and it is a message.
+      #
+      # NO CHECK ON THIS BRANCH, DELIBERATELY. A check is a GATE, not an annotation: when one
+      # fails, runTransitionActions returns false, failUE runs and THE NAMED TARGET IS NEVER
+      # ENTERED. On the branch whose target is the security finding, any check that could fail is
+      # a way for the finding to disappear into `wrong-response`. The arrival of the accept here,
+      # before we have sent anything a conformant AMF could act on, IS the assertion.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+      # THE RETRANSMISSION IS POSITIVE EVIDENCE OF THE DISCARD. §5.4.2.7 b): "The network shall,
+      # on the first expiry of the timer T3560, retransmit the SECURITY MODE COMMAND message" —
+      # which it only does because it is STILL WAITING, i.e. because the plain REGISTRATION
+      # COMPLETE advanced nothing. free5gc sends this retransmission byte-identically on the
+      # sibling rows REG-437/438, where an unnamed one cost two runs of false findings.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 1 }
+      # THE AMF REFUSING IN WORDS. Both carry the 5GMM cause as a mandatory IE (TS 24.501 §8.2.9,
+      # §8.2.29), so the branch asserts on the message that fired it, and neither registers the
+      # UE off the plain uplink.
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      # THE AMF GOING BACK TO AUTHENTICATION — it only does that because the registration is not
+      # finished. ABBA is mandatory in AUTHENTICATION REQUEST (§8.2.1).
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: rejected
+        actions:
+          - { type: check, field: nas.abba, op: ie_present }
+      # Refusals and releases: the criterion satisfied on a message, and no mandatory IE either
+      # of them carries that we could assert on without inventing a field.
+      - event:
+          or:
+            - NASDownlinkTransport.AuthenticationReject
+            - NASDownlinkTransport.SecurityModeReject
+            - UEContextReleaseCommand
+        target: rejected
+      # THE ONE ANSWER THAT DISCRIMINATES NOTHING. An NGAP ERROR INDICATION says our message was
+      # not processed as sent — the "never received it as sent" branch of the failure list, not a
+      # §4.4.4.3 discard. Named so the bus never has to refuse it; `unproven` because reading it
+      # as a discard would credit the core for a message it may never have decoded.
+      - event: ErrorIndication
+        target: unproven
+  probe_still_awaiting_completion:
+    # Silence here is silence to a message §5.4.2.4 obliges the AMF to act on. It says nothing
+    # about §4.4.4.3 and it must never read as a pass.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      # THE DISCRIMINATOR FIRING. The registration completed on the SECURITY MODE COMPLETE — so
+      # at the moment we sent it the AMF was still inside security mode control, which is only
+      # true if the plain REGISTRATION COMPLETE was discarded rather than processed as the
+      # completion of anything. Absence turned into presence.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: rejected
+        actions:
+          # The AMF answered under the very context it commanded, with our completion's COUNT.
+          # `equals true` fails on a field that does not resolve, so neither passes by absence.
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          # And it is a REGISTRATION ACCEPT rather than something merely shaped like one: the 5GS
+          # registration result IE is mandatory in it (TS 24.501 §8.2.7).
+          - { type: check, field: nas.registration_result, op: ie_present }
+      # A T3560 retransmission landing the other side of the 6 s boundary — same evidence, named
+      # here too so the verdict does not depend on which side of it the core's timer falls.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 1 }
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: rejected
+        actions:
+          - { type: check, field: nas.abba, op: ie_present }
+      - event:
+          or:
+            - NASDownlinkTransport.AuthenticationReject
+            - NASDownlinkTransport.SecurityModeReject
+            - UEContextReleaseCommand
+        target: rejected
+      - event: ErrorIndication
+        target: unproven
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-452 (negative, expected_terminal: rejected) — An
+# unprotected uplink NAS message outside that list, sent before any SECURITY MODE
+# COMMAND, produces no corresponding downlink NAS response and no session or context
+# state change on N2 — AND the AMF is then shown, ON THE WIRE, still to be inside the
+# security mode control procedure it was in when the message arrived. Either observation
+# proves it — (a) it retransmits the SECURITY MODE COMMAND (TS 24.501 §5.4.2.7 b), which
+# it does only while still awaiting a valid reply, or (b) a correctly protected SECURITY
+# MODE COMPLETE sent afterwards draws the REGISTRATION ACCEPT that §5.4.2.4 obliges an
+# AMF with an open procedure to send. Silence alone is NOT a pass — with no message
+# behind it the row is inconclusive, because silence cannot be told apart from a crashed
+# core, a dead association or a message that never arrived.
+#
+# REG-452: the unprotected uplink produces no corresponding downlink AND the AMF is
+# shown still to be inside the security mode control procedure — the T3560
+# retransmission, or the correctly protected SECURITY MODE COMPLETE afterwards drawing
+# the accept. Both are `rejected`. `tolerated` is the registration completing off the
+# plain uplink; `unproven` is the probe unanswered, which the criterion says is not a
+# pass.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

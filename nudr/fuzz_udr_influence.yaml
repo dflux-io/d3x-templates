@@ -1,0 +1,79 @@
+# SBI wire-fuzz driver — W2-F3.
+#
+# nudr/nudr_influence_crud_ok.yaml reduced to its FIRST send (the influenceData
+# PUT) with a `fuzz:` block and relaxed assertions. Fuzzes the JSON request body
+# of PUT /nudr-dr/v2/application-data/influenceData/{influenceId} against a live
+# UDR.
+#
+# For SBI the mutate stage does not touch the internal envelope
+# (method/path/headers). It mutates the envelope's BODY and re-marshals around
+# it, so a well-formed HTTP PUT carries a corrupt TrafficInfluData — the real
+# request that crosses the network.
+#
+# ORACLE
+#   survived  the UDR answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400 on a corrupt body is CORRECT —
+# validateInfluenceData enforces the TS 29.519 oneOf constraints, so most
+# mutations should be rejected there. The finding to hunt for is a 201 on a body
+# whose oneOf-relevant fields (afAppId / supi) were the corrupted bytes. This
+# driver does not DELETE, so successful writes leave infl-0001 behind.
+
+kind: flow
+name: fuzz_udr_influence
+description: Wire-level fuzz of the Nudr_DataRepository influenceData PUT request body against a live UDR
+category: robustness
+type: client
+protocol: sbi
+nf: udr
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [SBI_Request]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v2/application-data/influenceData/infl-0001",
+                "body": {
+                  "afAppId": "edge-app-1",
+                  "dnn": "internet",
+                  "snssai": {"sst": 1, "sd": "000001"},
+                  "supi": "imsi-001010000000001",
+                  "trafficRoutes": [
+                    {"dnai": "edge1", "routeInfo": {"ipv4Addr": "198.51.100.20", "portNumber": 8080}}
+                  ]
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 201, 200, 400, 500 — means the NF
+    # parsed, decided and replied, which is what F3 asserts.
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: survived
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

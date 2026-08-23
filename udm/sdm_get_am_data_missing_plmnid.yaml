@@ -1,0 +1,46 @@
+# Nudm_SDM Get am-data without the plmn-id query — security/negative.
+# 3GPP TS 29.503 §6.1.3.2.3.1 (plmn-id is required for am-data in roaming).
+# UDM must react spec-correctly (200 for HPLMN default, or 400) and stay live.
+# Uses SBI_Request so the query map is fully author-controlled (no auto plmn-id).
+
+kind: flow
+name: udm_sdm_get_am_data_missing_plmnid
+description: GET am-data with no plmn-id query — UDM responds spec-correctly and stays live
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - tolerated
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/am-data"
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: tolerated
+        actions:
+          # Liveness/correctness: any well-formed HTTP answer (not a hang/crash).
+          - type: check
+            field: sbi.status
+            op: exists

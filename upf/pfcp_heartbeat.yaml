@@ -1,0 +1,43 @@
+# PFCP Heartbeat (3GPP TS 29.244 §6.2.2 / §7.4.3).
+#
+# Node-level liveness probe. runner sends a PFCPHeartbeatRequest (auto-stamped
+# with a RecoveryTimeStamp) and the UPF must answer with a
+# PFCPHeartbeatResponse carrying its own RecoveryTimeStamp IE.
+#
+# Spec-correct success = a HeartbeatResponse arrives carrying a
+# RecoveryTimeStamp IE (TS 29.244 §8.2.10).
+
+kind: flow
+name: upf_pfcp_heartbeat
+description: SMF liveness-probes a real UPF via PFCP Heartbeat (N4)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_heartbeat
+        actions:
+          - type: send
+            message: PFCPHeartbeatRequest
+            peer: upf
+
+  wait_heartbeat:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPHeartbeatResponse
+        target: completed
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: not_empty

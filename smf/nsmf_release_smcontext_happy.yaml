@@ -1,0 +1,97 @@
+# Nsmf_PDUSession_ReleaseSMContext — happy path (compliance).
+# 3GPP TS 29.502 §5.2.2.4 / §6.1.3.4.
+#
+# runner (AMF) creates an SM context, extracts its ref, then POSTs
+# SmContextReleaseData to {ref}/release. A spec-correct SMF replies 204 No
+# Content (or 200 with a release response body) and tears down the session.
+#
+# RUNTIME RISK: depends on a successfully created SM context; CreateSMContext via
+# single-part JSON (no embedded N1 SM NAS) is likely rejected by Open5GS, so the
+# live run is expected to expose the multipart/N1 transport gap before release.
+# Structurally valid; asserts the spec 2xx success (204 or 200). Exercises the
+# create->extract->release chain.
+kind: flow
+name: smf_nsmf_release_smcontext_happy
+description: AMF Create then Release SM context — expect 204/200 on release
+category: functional
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 18,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_release
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: smCtxRef
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.smCtxRef}}/release",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "cause": "REL_DUE_TO_DUPLICATE_SESSION_ID"
+                }
+              }
+
+  wait_release:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: released
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 199
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300

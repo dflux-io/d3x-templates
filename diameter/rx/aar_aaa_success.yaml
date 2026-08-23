@@ -1,0 +1,51 @@
+# Rx AAR/AAA 4-step echo flow.
+# AA-Request/Answer (3GPP TS 29.214 §5.6.1).
+# AF-initiated authorization request to the PCRF; mirrors dsr-sim's aar_success.
+
+kind: flow
+name: diameter_rx_aar_aaa_success
+description: Rx AAR/AAA 4-step echo against edge
+category: functional
+type: client
+protocol: diameter
+nf: af
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_aar_echo
+        actions:
+          - type: send
+            message: AAR
+
+  wait_aar_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: AAR
+        target: wait_aaa_echo
+        actions:
+          - type: check
+            field: AF-Application-Identifier
+            op: exists
+          - type: send
+            message: AAA
+
+  wait_aaa_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: AAA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001

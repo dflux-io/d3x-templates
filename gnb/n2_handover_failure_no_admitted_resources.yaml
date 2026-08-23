@@ -1,0 +1,334 @@
+# REG-520 — a target that admits nothing must not cost the UE its session.
+#
+# TS 38.413 §8.4.2.3: "If the target NG-RAN node does not admit any of the PDU
+# session resources, or a failure occurs during the Handover Preparation, it
+# shall send the HANDOVER FAILURE message to the AMF with an appropriate cause
+# value." §8.4.1.3 is the other half: the AMF then "sends the HANDOVER
+# PREPARATION FAILURE message with an appropriate cause value to the source
+# NG-RAN node". The UE has not moved and nothing about its existing connection
+# was supposed to change.
+#
+# THIS FLOW OWNS THE TARGET SIDE. Declaring a `HandoverRequest` transition
+# suppresses the runner's fire-and-forget target auto-reply and hands the
+# decoded HANDOVER REQUEST to this flow, which then answers as the target
+# NG-RAN node — on the TARGET association (`peer:`), because that is who a
+# HANDOVER REQUEST ACKNOWLEDGE / HANDOVER FAILURE is from (TS 38.413 §8.4.2).
+# A reply on the source leg would arrive on the association the AMF already
+# has the UE on, and a conformant AMF ignoring it would score as a defect.
+#
+# NEEDS TWO gNBs (register preconditions.gnbs: 2). With one gNB the HANDOVER
+# REQUIRED names a target the AMF has never seen and the row measures "unknown
+# target" instead of handover.
+
+kind: flow
+name: n2_handover_failure_no_admitted_resources
+description: N2 handover; the target admits nothing and answers HANDOVER FAILURE — assert the source gets HANDOVER PREPARATION FAILURE with a Cause and keeps its session
+detail: |
+  Registration, one PDU session, HANDOVER REQUIRED. The flow acts as the
+  target NG-RAN node and REFUSES: it answers the HANDOVER REQUEST with a
+  HANDOVER FAILURE carrying cause radioNetwork /
+  no-radio-resources-available-in-target-cell, on the target association.
+
+  It then asserts the AMF turns that into a HANDOVER PREPARATION FAILURE on the
+  SOURCE association, addressed to the source RAN-UE-NGAP-ID, carrying a Cause
+  IE — and that the UE's PDU session survived, by releasing it over the source
+  leg and requiring the release command to name the same session.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - source_intact
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_handover_request
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: HandoverRequired
+
+  wait_handover_request:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: HandoverRequest
+        target: wait_prep_failure
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # THE VIOLATION IS ON THE WIRE, and it is a refusal rather than a
+          # malformed frame: the target NG-RAN node answers HANDOVER FAILURE
+          # with cause radioNetwork/no-radio-resources-available-in-target-cell (value 13
+          # in the CauseRadioNetwork enumeration, TS 38.413 §9.3.1.2) instead of
+          # the acknowledge the AMF is waiting for. Swap this send for a
+          # HandoverRequestAcknowledge and the flow reaches the handover instead
+          # — that is the control that proves the row is testing the refusal.
+          - type: send
+            message: HandoverFailure
+            peer: "{{ue.Params.target_gnb_name}}"
+            params:
+              cause_reason: 13
+
+  wait_prep_failure:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # --- TS 38.413 §8.4.1.3: "If the 5GC or the target side is not able to
+      # --- accept any of the PDU session resources or a failure occurs during
+      # --- the Handover Preparation, the AMF sends the HANDOVER PREPARATION
+      # --- FAILURE message with an appropriate cause value to the source
+      # --- NG-RAN node."
+      - event: HandoverPreparationFailure
+        target: wait_source_alive
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # Addressed to the SOURCE leg — the UE never moved.
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          - type: check
+            field: cause
+            op: ie_present
+          - type: check
+            field: cause.cause
+            op: equals
+            expected: 0
+          - type: send
+            message: PDUSessionReleaseRequest
+      # The AMF commanded the handover anyway. That is the failure this row
+      # names: the target refused and the source was told to move regardless.
+      - event: HandoverCommand
+        target: failed
+
+  # POSITIVE ACCEPTANCE OBSERVABLE, not a bare timer. "The UE's existing user
+  # plane on the source still carries a ping to N6" is the register's wording;
+  # this deployment runs its UPF with `-datapath stub` (matrix/cores/tinycore
+  # compose.yml) and carries no user plane at all, so an ICMP echo cannot
+  # decide anything here — it would be red for the datapath, never for the
+  # handover. What IS decidable on this SUT is that the session survived the
+  # failed preparation on the source leg: an uplink NAS PDU SESSION RELEASE
+  # REQUEST for it comes back as a PDU SESSION RELEASE COMMAND naming that same
+  # session, on the SOURCE association. A session the core had torn down when
+  # the handover failed could not answer that.
+  wait_source_alive:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: source_intact
+        actions:
+          - type: check
+            field: pdu_session_resource_to_release_list.length
+            op: greater_or_equal
+            expected: 1
+          - type: check
+            field: pdu_session_resource_to_release_list.0.pdu_session_id
+            op: equals
+            expected: "{{ue.PduSessionId}}"
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          - type: send
+            message: PDUSessionResourceReleaseResponse
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-520).
+#
+# REG-520 — After the target association answers HandoverFailure,
+# HandoverPreparationFailure with a Cause IE is received on the source association, and
+# the UE's existing user plane on the source still carries a ping to N6.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `source_intact`
+    metric: final_state_counts.source_intact
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one HANDOVER FAILURE was sent
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_FAILURE
+    op: equals
+    value: 1
+  - name: one HANDOVER REQUIRED was sent
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_REQUIRED
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 5
+  - name: one PDU SESSION RESOURCE RELEASE RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
+    op: equals
+    value: 1
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a HANDOVER PREPARATION FAILURE arrived
+    metric: rx_events.HandoverPreparationFailure
+    op: greater_or_equal
+    value: 1
+  - name: a HANDOVER REQUEST arrived
+    metric: rx_events.HandoverRequest
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RELEASE COMMAND arrived (the NAS message inside the NGAP PDU SESSION RELEASE COMMAND)
+    metric: rx_events.PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 15 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 15 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 15
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

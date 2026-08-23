@@ -1,0 +1,59 @@
+# NFM Subscriptions service suite — happy path + GET + negatives.
+#
+# 4 flows. Positives use stop_on_failure: true (first broken
+# contract halts). Negatives use stop_on_failure: false so a single
+# missing 4xx doesn't mask the other; suite-level gating is via
+# flows_failed + checks_failed in final_checks.
+#
+# SUB-05 (notify_roundtrip) is deferred — needs runner rest-listen
+# background-flow features to observe NRF-initiated POSTs.
+#
+# Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.5):
+#   SUB-01  create_patch_delete   POST → PATCH validityTime → DELETE
+#   SUB-02  get                   POST → GET → body round-trips
+#   SUB-03  create_bad_callback   POST with invalid URI → 400
+#   SUB-04  delete_unknown        DELETE unknown UUID → 404 + ProblemDetails
+
+kind: suite
+name: nrf_sub
+description: NFM Subscriptions — lifecycle + GET + negatives.
+
+steps:
+  # --- Positives (stop_on_failure: true — first broken contract halts) ---
+
+  - name: create_patch_delete
+    flow: nrf_sub_create_patch_delete
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: get
+    flow: nrf_sub_get
+    repetitions: 1
+    stop_on_failure: true
+
+  # --- Negatives (stop_on_failure: false — informational; suite-level gate
+  #     is flows_failed + checks_failed in final_checks) ---
+
+  - name: create_bad_callback
+    flow: nrf_sub_create_bad_callback
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: delete_unknown
+    flow: nrf_sub_delete_unknown
+    repetitions: 1
+    stop_on_failure: false
+
+final_checks:
+  - name: all_flows_succeeded
+    metric: flows_succeeded
+    op: equals
+    value: 4
+  - name: no_failed_flows
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no_failed_checks
+    metric: checks_failed
+    op: equals
+    value: 0

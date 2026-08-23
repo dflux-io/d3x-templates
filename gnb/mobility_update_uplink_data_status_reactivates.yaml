@@ -1,0 +1,351 @@
+# REG-159 — a mobility registration update whose Uplink data status IE names a
+# PDU session with pending uplink data, and the user-plane re-establishment the
+# AMF then owes.
+#
+# CLAUSES. As in the sibling flow mobility_update_pdu_session_status_sync.yaml,
+# every clause referenced here is one this repo had already retrieved with
+# matrix/scripts/spec-clause.py and recorded in a template or an enricher — the
+# pinned corpus is gitignored and was NOT present in the worktree this was
+# authored in, so nothing is quoted as newly retrieved.
+#
+#   TS 24.501 §4.4.6 b)1), quoted verbatim in
+#   service_request_nas_container_uplink_data_status.yaml: "the UE includes the
+#   entire ... message (i.e. containing both cleartext IEs and non-cleartext IEs)
+#   in the NAS message container IE and shall cipher the value part of the NAS
+#   message container IE"; and the AMF side, "the AMF shall decipher the value
+#   part of the NAS message container IE".
+#
+#   TS 24.501 §5.5.1.3.4 — the mobility-update twin of §5.6.1.4.1: an Uplink data
+#   status IE in the REGISTRATION REQUEST obliges the AMF to have the user-plane
+#   resources of the named PDU sessions re-established and to report the outcome
+#   in a PDU session reactivation result IE in the REGISTRATION ACCEPT. This is
+#   the clause REG-159 cites and its criterion transcribes.
+#
+# ---------------------------------------------------------------------------
+# THE §4.4.6 CLEARTEXT JUDGEMENT — THE SAME ONE, AND HERE IT IS ALREADY PROVEN
+# WRONG TO IGNORE
+# ---------------------------------------------------------------------------
+#
+# The Uplink data status IE is a NON-cleartext IE. This is not a fine reading:
+# EnrichServiceRequest puts exactly this IE in the outer, unciphered message of a
+# SERVICE REQUEST and open5gs answers SERVICE REJECT #95. That behaviour is
+# recorded as live and known-wrong, and reproducing it in a REGISTRATION REQUEST
+# would make this row fail for OUR reason rather than measure the core.
+#
+# So the IE travels the §4.4.6 b)1) way — the whole registration request inside a
+# ciphered NAS message container, outer message carrying the cleartext IEs plus
+# the container, security header type 'integrity protected' (wire 0x01).
+# TestRegistrationUpdateUplinkDataStatus_IEIsOnlyInTheContainer decodes the built
+# message and fails if a plaintext copy exists in the outer message.
+#
+# A core with no b)1) support for REGISTRATION REQUEST cannot see the IE and this
+# row goes red. That red is CONFOUNDED with what REG-201/REG-207 measure; read
+# them together before attributing it. There is no unconfounded alternative,
+# because the IE is non-cleartext and the message is an initial NAS message.
+#
+# ---------------------------------------------------------------------------
+# WHY THE REACTIVATION RESULT IE IS THE CHECK THAT MAKES THIS ROW REAL, AND THE
+# N2 RESOURCE SETUP ON ITS OWN IS NOT
+# ---------------------------------------------------------------------------
+#
+# This is the same vacuity REG-207 was built to close, arriving on the
+# registration path. "User-plane resources are set up for the named session" is
+# VACUOUS against any AMF that reactivates every idle session on any transition
+# to CM-CONNECTED — which is what tinycore does (handleServiceRequest ->
+# reactivatePduSessions, whose body opens `_ = sr`). Such a core sets the session
+# up having never opened the container, and the row would report container
+# support it never demonstrated.
+#
+# The PDU session reactivation result IE has no such escape: it is owed IF AND
+# ONLY IF an Uplink data status IE was received, and in this flow that IE exists
+# nowhere but inside the ciphered container. Its presence, with PSI(1) not
+# reporting failure, is a statement that the inner copy was read.
+#
+# BOTH HALVES ARE ASSERTED because they answer different questions: the
+# reactivation result says the container was READ, the N2 setup says the
+# procedure COMPLETED on the strength of what was in it. The register's criterion
+# names both.
+#
+# THE BIT IS A NUMBER HERE, NOT A BOOLEAN. NAS_PDUSessionReactivationResult's
+# fields are uint32, so `expected: 0` is right — unlike the sibling flow's PDU
+# session status, whose fields are Go `bool` and need `expected: false`. The two
+# IEs do not agree and these templates must not either; `equals 0` against a bool
+# renders as "false" != "0" and is a false red.
+#
+# TS 24.501 table 9.11.3.42.1 codes 1 as "establishment of user-plane resource of
+# the PDU session is NOT SUCCESSFUL" and 0 as "successful ... or was not
+# requested" — the way round xp-277 found REG-207 asserting backwards, which had
+# been DEMANDING that the AMF report failure. `equals 0` alone would be vacuous
+# because 0 also codes "not requested"; that reading is excluded here by
+# construction, since this flow requests PSI(1) inside the container.
+#
+# WHAT IS ASSERTED, in order
+#   1. the session exists and has a real tunnel — PDU SESSION RESOURCE SETUP
+#      REQUEST for PSI 1 with a non-zero uplink TEID;
+#   2. its user plane really was deactivated — UE CONTEXT RELEASE COMMAND
+#      observed and acknowledged (TS 23.502 §4.2.6 leaves the session alive and
+#      the user plane gone), so there is something to re-establish and the
+#      following registration request is an initial NAS message;
+#   3. THE ROW, part one: the REGISTRATION ACCEPT carries a PDU session
+#      reactivation result IE (`ie_present`, which fails on absence) reporting
+#      PSI(1) as not-failed;
+#   4. THE ROW, part two: the user plane for session 1 really is set up on N2 —
+#      either in the same INITIAL CONTEXT SETUP REQUEST that carried the accept
+#      (TS 38.413 §9.2.2.1 allows it, and it is what all three cores were
+#      measured doing for the SERVICE REQUEST twin) or as its own PDU SESSION
+#      RESOURCE SETUP REQUEST — with a usable CN tunnel endpoint.
+#
+# REORDER SAFETY. With the accept on N1 and the N2 setup as a second frame the
+# EventBus does not preserve per-UE RX order, so either may arrive first. Both
+# orders are consumed; the state that gets part two first goes on to wait for the
+# accept, and vice versa. This is the defect TestFlowsAreNotReorderExposed exists
+# to catch and it caught REG-207's flow the moment its carriers were split.
+#
+# RE-VERIFICATION IS ANSWERED, NOT TREATED AS THE OUTCOME — §5.5.1.3.4 permits
+# authentication, a security mode procedure or an identity request before the
+# accept, and tinycore re-authenticates every update.
+#
+# NOT A BARE TIMER: every terminal but `failed` is reached by a message arriving.
+#
+# NOT MEASURED. Authored with no Docker and no core available, so there is
+# deliberately no "MEASURED AGAINST" paragraph. What only a live run can settle:
+# whether any core implements §4.4.6 b)1) for a REGISTRATION REQUEST, and which
+# carrier the accept and the resource setup actually use.
+kind: flow
+name: mobility_update_uplink_data_status_reactivates
+description: mobility registration update whose Uplink data status IE lives only inside the ciphered NAS message container — expect a PDU session reactivation result IE and the user plane re-established on N2 (YAML)
+detail: |
+  Registration, one PDU session, a gNB-initiated UE Context Release to CM-IDLE,
+  then a mobility REGISTRATION REQUEST built per TS 24.501 §4.4.6 b)1) whose
+  ciphered NAS message container holds an Uplink data status IE naming PDU
+  session 1.
+
+  §4.4.6 obliges the AMF to decipher the container; §5.5.1.3.4 then obliges it
+  to re-establish the user plane for the named session and to report the outcome
+  in a PDU session reactivation result IE. Both are asserted, because the IE
+  says the container was read and the N2 setup says the procedure completed.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - reactivated
+  - reactivation_not_reported
+  - update_rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_session
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  # ASSERTION 1 — the session named in the inner IE really exists first.
+  wait_first_session:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          - { type: send, message: UEContextReleaseRequest }
+
+  # ASSERTION 2 — the user plane really was deactivated, so there is something to
+  # re-establish, and the update that follows is an INITIAL NAS message.
+  wait_release_command:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_answer
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # THE PROBE. The Uplink data status IE naming PSI(1) exists ONLY inside
+          # the ciphered container.
+          - type: send
+            message: RegistrationUpdateUplinkDataStatus
+            params:
+              uplink_data_status_psi: "1"
+              registration_type: 2
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_command
+
+  wait_update_answer:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # CARRIER ONE — accept and re-established session in ONE message. Part two
+      # is asserted here: waiting for a standalone setup request that never comes
+      # would kill the row on a timer having already read the answer.
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: reactivated
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      # CARRIER TWO — the accept travels alone; part two must then arrive as its
+      # own message and is asserted in wait_reactivation_setup.
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: wait_reactivation_setup
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: send, message: RegistrationComplete }
+      # REORDER SAFETY — the bus delivered part two first. Same part-two
+      # assertions, reached from the other order.
+      - event: PDUSessionResourceSetupRequest
+        target: wait_update_accept
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+      # §5.5.1.3.4 re-verification: answered, and the flow keeps waiting.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_update_answer
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_update_answer
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_update_answer
+        actions:
+          - { type: send, message: IdentityResponse }
+      - event: NASDownlinkTransport.RegistrationReject
+        target: update_rejected
+      - event: InitialContextSetupRequest.RegistrationReject
+        target: update_rejected
+
+  # Reached only when the bus delivered part two FIRST. Part two is asserted and
+  # answered already; part one is asserted here. A timeout is `failed`, not
+  # `reactivation_not_reported`: no accept at all is not an answer about the
+  # container in either direction.
+  wait_update_accept:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: reactivated
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: send, message: RegistrationComplete }
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: reactivated
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationReject
+        target: update_rejected
+      - event: InitialContextSetupRequest.RegistrationReject
+        target: update_rejected
+
+  # PART TWO on its own. Reached only after the reactivation-result IE was read
+  # and asserted, so a timeout here means "the AMF said it re-established the user
+  # plane and then did not" — a failure, and it is named as one rather than
+  # allowed to look like silence.
+  wait_reactivation_setup:
+    on_timeout: { duration: 8s, target: reactivation_not_reported }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: reactivated
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+      # ...or in a context setup carrying no NAS at all — a distinct event string,
+      # since the resolver appends the NAS type only when there is one.
+      - event: InitialContextSetupRequest
+        target: reactivated
+        actions:
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: send, message: InitialContextSetupResponse }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-159 (positive, expected_terminal: reactivated) — A
+# PDUSessionResourceSetupRequest is received on N2 for the indicated PDU session and
+# nas.pdu_session_reactivation_result is present in the RegistrationAccept
+#
+# REG-159 needs both halves and `reactivated` is the only terminal carrying them: a
+# PDUSessionResourceSetupRequest on N2 for the indicated session, and a PDU session
+# reactivation result IE in the REGISTRATION ACCEPT. `reactivation_not_reported` is the
+# 8 s timer waiting for the N2 setup that never came; `update_rejected` is a
+# REGISTRATION REJECT.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `reactivated` — the terminal this row claims
+    metric: final_state_counts.reactivated
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 10
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

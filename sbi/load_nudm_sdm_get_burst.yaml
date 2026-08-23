@@ -1,0 +1,152 @@
+# SBI in-flow burst — 100 concurrent Nudm_SDM_GetSubscriptionData from ONE UE.
+#
+# The other half of the load vocabulary. `load_nudm_sdm_get` spreads requests
+# across many flow starts at a scheduled rate (the `-rate` / `-repetitions`
+# workload); this flow fires a fixed burst from a single UE inside one FSM step
+# via `parallel_send`, and asserts on the round-trip distribution of that burst.
+#
+# Use this shape when the subject is CONCURRENCY at the target — connection
+# pools, HTTP/2 stream limits, admission control, a rate limiter's 429 — rather
+# than sustained arrival rate. It is one FSM step regardless of how many
+# responses come back: parallel_send is synchronous and self-contained
+# (runner/runner/action_burst.go), so responses are tallied into Metrics
+# instead of being demuxed back into the FSM.
+#
+# ---------------------------------------------------------------------------
+# LIMITATION 1 — SBI AND REST ONLY. `parallel_send` builds its request once and
+# fires N round-trips through `httpAdaptor.RoundTrip`
+# (runner/runner/action_burst.go:buildBurstRequest), which rejects any protocol
+# that is not SBI or REST at load time with "protocol %q not supported (SBI and
+# REST only)". There is NO NGAP or PFCP equivalent: those transports have no
+# synchronous round-trip primitive, and their responses only reach a flow by way
+# of the correlation/demux path a burst deliberately skips.
+#
+# So in-flow bursting is not available to the gNB corpus. To load NGAP or PFCP,
+# use the OTHER mechanism — many flow starts via `-rate` / `-repetitions`, as
+# `load_nudm_sdm_get` does — which is protocol-agnostic because it goes through
+# the normal bus. Recorded, not worked around: see runner/README.md, "Load and
+# performance", for the same statement in the capability documentation.
+#
+# LIMITATION 2 — DO NOT AIM THIS AT A RUNNER SERVER-MODE FLOW. It needs a target
+# that answers concurrent requests independently. A real UDM does. The runner's
+# own server-mode responder does NOT, and the reason is in the burst path:
+# `buildBurstRequest` enriches ONCE, so all N copies carry the same
+# `3gpp-Sbi-Correlation-Info` header, and a runner listener keys its pending-
+# answer map on exactly that header
+# (runner/runner/transport_sbi.go:BuildInboundRequestEnvelope →
+# transport_http.go:makeServerHandler). N simultaneous arrivals collide on one
+# key, one is answered, and the rest sit until `answer_timeout` and get a 504.
+#
+# MEASURED 2026-08-19 against runner/config/lab-sbi.yaml's loopback responder,
+# count 100: concurrency 20 -> 81x200 + 19x504; concurrency 4 -> 97x200 + 3x504;
+# concurrency 1 -> 100x200. Losses are exactly `concurrency - 1` — the requests
+# in flight at any instant — which is the collision, not a capacity limit. A
+# warm-up request before the burst does not change it.
+#
+# This is why suites/sbi_load_baseline.yaml runs only the
+# sustained-rate flow: that suite is self-contained by design, and a
+# self-contained burst would be asserting against the defect above. Run this one
+# against a real UDM, or against edge with a real upstream.
+# ---------------------------------------------------------------------------
+#
+#   ./bin/d3x-run run-flow -flow load_nudm_sdm_get_burst \
+#       -templates . -c <config naming a real UDM as udm-peer> \
+#       -gen-subscriber -timeout 30s
+
+kind: flow
+name: load_nudm_sdm_get_burst
+description: In-flow SBI burst — 100 concurrent Nudm SDM Gets from one UE, with an RTT threshold
+detail: |
+  One UE, one FSM step, 100 Nudm_SDM_GetSubscriptionData with at most 20 in
+  flight. `parallel_send` tallies each round-trip into the RTT histogram and
+  records the response status as an rx message type (`status_200`,
+  `status_429`, ...), which is what the assertions below read.
+
+  Note the RTT keys and the flow's own `*_latency_ms` measure different things.
+  RTT is per request; the flow latency covers the whole burst as one step and
+  would be ~100x larger for no interesting reason. Assert on RTT here.
+category: load
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: completed
+        actions:
+          # count 100 / concurrency 20. The concurrency is the parameter with
+          # meaning: 20 in flight is above the 1-per-connection serialisation a
+          # broken pool would show, and below the HTTP/2 default
+          # MAX_CONCURRENT_STREAMS of 100/250 most servers advertise — so a
+          # target that copes will not be throttled by its own stream limit, and
+          # a target that serialises will show it in the p95 RTT below. Raise
+          # BOTH together if you are hunting for an admission-control knee, and
+          # expect the 429 assertion to be the one that moves.
+          - type: parallel_send
+            message: Nudm_SDM_GetSubscriptionData
+            peer: udm-peer
+            count: 100
+            concurrency: 20
+
+  completed: {}
+  failed: {}
+
+final_checks:
+  # ---- did the burst happen at all ----
+  #
+  # parallel_send fails the UE only if EVERY request errored at the transport
+  # (action_burst.go). 99 connection refusals out of 100 still reach
+  # `completed`, so the terminal state is not evidence and these counts are.
+  - name: the UE completed the burst step
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: all 100 requests were sent
+    metric: msg_types.tx.sbi.Nudm_SDM_GetSubscriptionData
+    op: equals
+    value: 100
+  - name: and all 100 were answered with a 200
+    # parallel_send records the response STATUS as the rx message type, so this
+    # is the only assertion that separates "answered" from "answered correctly".
+    # Exact, not a floor: a burst is a fixed count, and 99 is a defect. It is
+    # also the check that caught LIMITATION 2 above — it read 81 against the
+    # loopback responder.
+    metric: msg_types.rx.sbi.status_200
+    op: equals
+    value: 100
+
+  # ---- then the concurrency claim ----
+  #
+  # NOT BASELINED, and better said than dressed up. The only measurement
+  # available when this file was written is the loopback one in LIMITATION 2,
+  # and that path is broken for concurrent bursts — its p95 is either
+  # sub-millisecond or 5,003ms (the answer_timeout) depending on how many
+  # requests collided, and neither number characterises anything. So 50ms here
+  # is NOT derived from an observation of this flow working.
+  #
+  # What it IS: the same head-room bound `load_nudm_sdm_get` carries, brought
+  # across on the argument that one request's round-trip cannot reasonably be
+  # slower than the bound on a whole flow's latency — read that file for the
+  # derivation of 50ms and the three things it absorbs. That makes this a
+  # deliberately loose upper bound whose job is to catch an order-of-magnitude
+  # break: a target that serialises 20 concurrent streams onto one connection
+  # turns a 1ms round-trip into a 20ms one, and one that renegotiates TLS per
+  # request turns it into hundreds.
+  #
+  # FIRST PERSON TO RUN THIS AGAINST A REAL UDM: replace this number with the
+  # observed p95 plus a margin, and write down which runs it came from.
+  #
+  # The protocol-sharded key (`sbi_p95_rtt_ms`, not the global `p95_rtt_ms`) is
+  # deliberate — it stays correct if this flow is ever run in a suite alongside
+  # another protocol.
+  - name: p95 SBI round-trip stayed inside the lab head-room bound
+    metric: sbi_p95_rtt_ms
+    op: less_than
+    value: 50

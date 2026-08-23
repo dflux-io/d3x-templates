@@ -1,0 +1,51 @@
+# SUB-04 — DELETE non-existent subscription → 404 + ProblemDetails.
+#
+# Uses a fresh UUID that has never been created. Pre-PR-#224 the NRF
+# silently returned 204 (store.DeleteSubscription is idempotent and
+# does not signal not-found). PR #224 added a GetSubscription probe
+# in RemoveSubscription that surfaces 404 + RFC 7807 ProblemDetails.
+
+kind: flow
+name: nrf_sub_delete_unknown
+description: DELETE unknown subscriptionId → 404 + ProblemDetails.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: deleting
+        actions:
+          - type: send
+            message: DeleteUnknownSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/subscriptions/{{$uuid}}"
+              }
+
+  deleting:
+    transitions:
+      - event: rest.DeleteUnknownSub_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 404
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 404
+
+  done: {}
+  failed: {}

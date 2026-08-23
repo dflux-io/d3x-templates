@@ -1,0 +1,109 @@
+# OAUTH-08 (cross-listed LONG-03) — access-token expiry. See d3x-core
+# docs/nrf/sanity-tests.md §4.7.4 (OAUTH-08) / §4.7.9 (LONG-03).
+#
+# Proves the issuer honours the configured token lifetime: the advertised
+# `expires_in` matches the NRF's `-token-expiry`, and the JWT's own `exp`
+# claim is in the future at issue but in the past after the window passes.
+# Uses the `$jwt_decode` template op (runner) to read `exp` client-side — the
+# NRF has no token-introspection endpoint, so this is the only way to
+# inspect the claim without a protected endpoint to replay against.
+#
+# REQUIRES the NRF launched with `-token-expiry 30s -jwt-key <pem>`. Run
+# with a per-flow timeout > 40s (the runner uses 60s). Form params go in
+# `query` (the token handler reads r.FormValue; runner serializes body as JSON).
+
+kind: flow
+name: nrf_oauth_token_expired
+description: Token exp claim is future at issue, past after the 30s window (OAUTH-08 / LONG-03).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterConsumer
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/cccc0008-0000-4000-8000-000000000008",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "AMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 90,
+                  "fqdn": "amf-tokexp.local",
+                  "ipv4Addresses": ["10.0.8.8"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterConsumer_Answer
+        target: requesting_token
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: send
+            message: GetToken
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "cccc0008-0000-4000-8000-000000000008",
+                  "nfType": "AMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  requesting_token:
+    transitions:
+      - event: rest.GetToken_Answer
+        target: waiting_for_expiry
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          # Advertised lifetime matches the NRF's -token-expiry 30s.
+          - type: check
+            field: rest.body.expires_in
+            op: equals
+            expected: 30
+          # Decode the JWT and stash its claims for the before/after checks.
+          - type: extract
+            value: "{{$jwt_decode rest.body.access_token}}"
+            store: claims
+          # At issue, exp is in the future (>= now).
+          - type: check
+            field: ue.Params.claims.exp
+            op: greater_or_equal
+            expected: "{{$now}}"
+
+  # Wait out the 30s window, then the same exp is now in the past.
+  waiting_for_expiry:
+    on_timeout:
+      duration: 35s
+      target: done
+      actions:
+        - type: check
+          field: ue.Params.claims.exp
+          op: less_than
+          expected: "{{$now}}"
+
+  done: {}
+  failed: {}

@@ -1,0 +1,46 @@
+# gNB ↔ AMF extended compliance suite — scenario-plan functional additions.
+#
+# Companion to gnb_compliance.yaml. Holds the new "small_addition" functional
+# flows that are SINGLE-registration probes (register once, then exercise one
+# procedure) — these run cleanly in a shared-association suite. The CM-IDLE
+# reconnect flows (service_request_signalling, periodic/mobility registration
+# updating) are intentionally NOT here: repeated register→release→reconnect on
+# one association accumulates NAS-COUNT / context state and turns flaky in a long
+# suite. They are validated standalone instead.
+#
+# Each flow has more than one spec-valid terminal, so success_when is omitted —
+# the engine default (any non-"failed" terminal passes) is the right condition.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite gnb-compliance-ext \
+#       -templates <templates-dir> -c config/open5gs-gnb.yaml \
+#       -s config/subscribers.yaml -trace
+
+kind: suite
+name: gnb-compliance-ext
+description: Extended one-UE-per-flow functional conformance probes (single-registration) for a gNB.
+steps:
+  # gate: a basic registration must work or there's no point continuing.
+  - name: registration
+    flow: registration
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: registered
+
+  - { name: initial_context_setup_failure, flow: initial_context_setup_failure_unsupported_security, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: pdu_session_notify, flow: pdu_session_resource_notify_qos_flow_release, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: pdu_session_setup_ipv6, flow: pdu_session_setup_ipv6, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: emergency_registration, flow: emergency_registration, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: n2_handover_unknown_target, flow: n2_handover_preparation_failure_unknown_target, repetitions: 1, timeout: 40s, stop_on_failure: false }
+  - { name: n2_handover_no_pdu_session, flow: n2_handover_required_no_pdu_session, repetitions: 1, timeout: 30s, stop_on_failure: false }
+  - { name: n2_handover_cancel_no_prep, flow: n2_handover_cancel_no_preparation, repetitions: 1, timeout: 30s, stop_on_failure: false }
+
+  - name: cleanup
+    flow: deregistration_after_release
+    repetitions: 1
+    timeout: 30s
+    always_run: true
+    success_when:
+      at_least_one_final_state: clean

@@ -1,0 +1,55 @@
+# N4/PFCP — Session Establishment missing mandatory IE (negative/security).
+# 3GPP TS 29.244 §7.5.2; §8.2.1 (Cause 67 — Mandatory IE missing).
+#
+# runner (SMF) associates, then sends a PFCPSessionEstablishmentRequest with
+# suppress_cp_fseid=true so the mandatory CP F-SEID IE is omitted. A
+# spec-correct UPF MUST reject with Cause="Mandatory IE missing" (asserted via
+# the pfcp.cause resolver) and stay up.
+kind: flow
+name: smf_pfcp_session_est_missing_mandatory_ie
+description: SMF establishment without CP F-SEID — expect Cause Mandatory IE missing
+category: negative
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: smf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {"suppress_cp_fseid": true}
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Mandatory IE missing"

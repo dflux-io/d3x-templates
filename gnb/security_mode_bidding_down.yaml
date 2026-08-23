@@ -1,0 +1,177 @@
+# Security mode bidding-down attack — negative / integrity test.
+#
+# 3GPP ref: TS 24.501 §4.4.6 (replay of the initial NAS message inside
+# SECURITY MODE COMPLETE for bidding-down protection) and §5.4.2.3 (SMC
+# procedure / abnormal cases). NGAP carriage per TS 38.413 §8.6.
+#
+# Abnormal input sent: the gNB drives a full registration up to receiving the
+# SecurityModeCommand, then sends a SecurityModeComplete that OMITS the replayed
+# full initial NAS message (the RegistrationRequest container), via
+# params {omit_nas_container: true}. Per 24.501 §4.4.6 the UE must include the
+# complete initial NAS message in the SECURITY MODE COMPLETE so the AMF can
+# detect a man-in-the-middle that tampered with the UE security capabilities
+# (a bidding-down attack). Dropping it violates the bidding-down protection.
+#
+# Expected-correct Open5GS behavior: the AMF cannot confirm the replayed
+# capabilities, so registration MUST NOT complete. The compliant reaction is to
+# reject/abort — a NASDownlinkTransport.SecurityModeReject, a
+# NASDownlinkTransport.RegistrationReject, or a UEContextReleaseCommand tearing
+# down the context. Crucially, an InitialContextSetupRequest.RegistrationAccept
+# would mean the AMF accepted a bidding-down-vulnerable completion and is a
+# COMPLIANCE FAILURE — that path maps to 'failed'. Success terminal =
+# rejection or release (reg_rejected).
+
+kind: flow
+name: security_mode_bidding_down
+description: Full registration to SecurityModeCommand then SecurityModeComplete omitting replayed NAS — expect reject/release (YAML)
+detail: |
+  Negative bidding-down test (3GPP TS 24.501 §4.4.6, §5.4.2.3). The UE performs
+  authentication and receives a SecurityModeCommand, then replies with a
+  SecurityModeComplete that deliberately omits the replayed full initial NAS
+  message (RegistrationRequest container) using {omit_nas_container: true}.
+
+  The replayed initial NAS message is the mechanism that lets the AMF detect a
+  bidding-down attack on the UE security capabilities. A spec-compliant AMF
+  (Open5GS) therefore must NOT complete registration: the correct reactions are
+  SecurityModeReject, RegistrationReject, or a UEContextReleaseCommand. The
+  compliance assertion is that registration is rejected or the context is
+  released. If instead the AMF returns a RegistrationAccept, that is a
+  bidding-down vulnerability and is mapped to the failure terminal.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - reg_rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_reject
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          # Drop the replayed initial NAS message — violates 24.501 §4.4.6
+          # bidding-down protection. The AMF must refuse to complete registration.
+          - type: send
+            message: SecurityModeComplete
+            params:
+              omit_nas_container: true
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # Spec-correct reaction: the AMF refuses to complete registration. Any of a
+      # SecurityModeReject, RegistrationReject, or context release is the success
+      # terminal (the compliance assertion).
+      - event:
+          or:
+            - NASDownlinkTransport.SecurityModeReject
+            - NASDownlinkTransport.RegistrationReject
+            - UEContextReleaseCommand
+        target: reg_rejected
+      # Bidding-down vulnerability: accepting registration after the replayed
+      # NAS was dropped is a COMPLIANCE FAILURE.
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-436).
+#
+# REG-436 — After a SECURITY MODE COMPLETE that omits the NAS message container, no
+# REGISTRATION ACCEPT is sent; a reject or a UEContextReleaseCommand is observed
+# instead.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `reg_rejected`
+    metric: final_state_counts.reg_rejected
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: two NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 2
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # "…no REGISTRATION ACCEPT is sent" (REG-436) — the bidding-down
+  # vulnerability itself. The FSM sends an arriving accept to `failed`, so
+  # the terminal pin already refuses it on the path; these two also refuse
+  # one that arrives in a state with no transition for it, where the bus
+  # would drop the message and leave the FSM's silence to speak for the
+  # core's. Both containers, because the accept may be carried either way.
+  - name: no REGISTRATION ACCEPT arrived inside an INITIAL CONTEXT SETUP REQUEST
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: equals
+    value: 0
+  - name: nor as a downlink NAS transport
+    metric: rx_events.NASDownlinkTransport.RegistrationAccept
+    op: equals
+    value: 0
+  # The two `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: both declared checks ran
+    metric: checks_total
+    op: equals
+    value: 2
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

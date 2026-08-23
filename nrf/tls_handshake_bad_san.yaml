@@ -1,0 +1,41 @@
+# MTLS-03 — server cert SAN must match the connection target. See
+# d3x-core docs/nrf/sanity-tests.md §4.7.7 (MTLS-03).
+#
+# The NRF is launched with a server cert whose SAN does NOT include
+# 127.0.0.1 (the connect host). The client trusts the CA, so chain
+# validation passes but SAN verification fails. Asserted via the `Error`
+# event cause. (The exact x509 SAN-mismatch wording is matched loosely.)
+
+kind: flow
+name: nrf_tls_handshake_bad_san
+description: Server cert SAN mismatch → x509 host-validation error (MTLS-03).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: getting
+        actions:
+          - type: send
+            message: GetBstr
+            peer: nrf-tls
+            message_body: |
+              {"method": "GET", "url": "/nnrf-bstr/v1/bootstrapping"}
+
+  getting:
+    transitions:
+      - event: Error
+        target: done
+        actions:
+          - type: check
+            field: ue.LastError.Cause
+            op: contains
+            expected: "x509: certificate is valid for"
+
+  done: {}
+  failed: {}

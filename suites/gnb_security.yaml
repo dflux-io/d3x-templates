@@ -1,0 +1,151 @@
+# gNB ↔ AMF 5G security / robustness suite — one UE, one execution per flow.
+#
+# Drives abnormal, malformed, and security-edge NAS/NGAP procedures gNB-side
+# against a real 5G core (Open5GS). The cross-cutting assertion is that the
+# AMF reacts in a spec-correct way and STAYS UP — these flows deliberately
+# send things the network should reject, resync, or tolerate, never crash.
+#
+# Every step is one UE / one execution (repetitions: 1). stop_on_failure is
+# left default (false) on every step: a misbehaviour on one probe must not
+# block discovering the others, and AMF liveness across the whole run is the
+# real signal. The cleanup step runs always.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite gnb-security \
+#       -templates <templates-dir> -c config/open5gs-gnb.yaml \
+#       -s config/subscribers.yaml -trace
+#
+# NOTE: ng_setup_failure is intentionally NOT here — it needs a deliberately
+# PLMN/slice-mismatched config and would time out against the matched config
+# this suite runs with. Run it standalone with a mismatched config to check
+# NGSetupFailure cause-code fidelity.
+
+kind: suite
+name: gnb-security
+description: One-UE-per-flow abnormal/malformed/security probes; assert correct rejection and AMF liveness.
+# Step ORDER matters here. All steps share one subscriber IMSI over one
+# persistent SCTP association, so the AMF carries 5GMM state between steps.
+# Flows that need a CLEAN registration (they register → release → probe) run
+# FIRST; the abnormal flows that deliberately leave the AMF in a half-state
+# (rejected/pending auth) run LAST so they don't poison a following
+# registration. (Found the hard way: service_request_malformed passes
+# standalone and when run before the reject flows, but fails if a preceding
+# step left a dirty 5GMM context for the shared IMSI.)
+# NOTE: service_request_malformed is intentionally NOT a step here. Its
+# register -> UEContextReleaseRequest -> wait-for-release preamble (needed to
+# put the UE in CM-IDLE before a service request) is fragile against Open5GS,
+# which does not reliably emit a UEContextReleaseCommand in response to the
+# gNB's release request (it sends a ConfigurationUpdateCommand and keeps the
+# UE connected) — so the flow stalls. That is a scenario fragility on our
+# side, not an Open5GS bug, so it doesn't belong in the suite. The flow +
+# MalformedServiceRequest enricher remain in gnb/ for targeted standalone use.
+steps:
+  - name: error_indication
+    flow: error_indication
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  # path_switch: Acknowledge / Failure / ErrorIndication are all spec-valid
+  # graceful reactions (Open5GS replies ErrorIndication) — no success_when.
+  - name: path_switch
+    flow: path_switch
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+
+  # --- clean-registration probes: register fully, then send one abnormal /
+  #     unsolicited / unknown-id message and assert the AMF reacts correctly
+  #     and STAYS UP. These complete a normal registration so they are safe to
+  #     run before the half-state flows below. ----------------------------------
+
+  # UE-associated ErrorIndication referencing UE-NGAP-IDs the AMF doesn't know
+  # (TS 38.413 §8.7.5): ignore or bounce ErrorIndication — never crash.
+  - name: error_indication_unknown_ue_ids
+    flow: error_indication_unknown_ue_ids
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  # Unsolicited UEContextReleaseComplete with no preceding ReleaseCommand
+  # (TS 38.413 §8.3.3 / §10): stray Class-1 response must be dropped gracefully.
+  - name: ue_context_release_complete_unsolicited
+    flow: ue_context_release_complete_without_command_unsolicited
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  # Resume of a never-suspended UE (TS 38.413 §8.3.6 / §10): the AMF must not
+  # wrongly resume — reject / error / silent-drop are all acceptable.
+  - name: ue_context_resume_without_suspend
+    flow: ue_context_resume_request_without_prior_suspend
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # Release response with a mismatched PDU session id (TS 38.413 §8.2.3 / §10):
+  # detection (ErrorIndication/5GMMStatus -> handled) or tolerance are both
+  # spec-valid, so no success_when — any non-"failed" terminal passes. Against
+  # Open5GS this elicits a real ErrorIndication.
+  - name: pdu_session_release_response_wrong_id
+    flow: pdu_session_release_response_wrong_session_id
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+
+  # --- abnormal flows that leave the AMF in a half-state: run last ---------
+  - name: auth_failure_mac
+    flow: auth_failure_mac
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: auth_rechallenged
+
+  - name: auth_failure_sync
+    flow: auth_failure_sync
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: auth_resynced
+
+  - name: security_mode_bidding_down
+    flow: security_mode_bidding_down
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: reg_rejected
+
+  - name: registration_guti_unknown
+    flow: registration_guti_unknown
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: guti_recovered
+
+  - name: registration_malformed
+    flow: registration_malformed
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: clean_reaction
+
+  - name: cleanup
+    flow: deregistration_after_release
+    repetitions: 1
+    timeout: 30s
+    always_run: true
+    success_when:
+      at_least_one_final_state: clean

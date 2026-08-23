@@ -1,0 +1,243 @@
+# Registration + PDU session setup + release, asserted at the N2 (NGAP) layer:
+# the PDU SESSION RESOURCE RELEASE COMMAND names the session that was actually
+# established, and the AMF accepts the gNB's RELEASE RESPONSE without an
+# ERROR INDICATION.
+#
+# REG-362 — NGAP PDU Session Resource Release Command and Response for an
+# active session.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 38.413 §8.2.2.1 (PDU Session Resource Release, General):
+#     "The purpose of the PDU Session Resource Release procedure is to enable
+#      the release of already established PDU session resources for a given UE.
+#      The procedure uses UE-associated signalling."
+#
+#   TS 38.413 §8.2.2.2 (Successful Operation) — THE operative sentence:
+#     "The PDU SESSION RESOURCE RELEASE COMMAND message shall contain the
+#      information required by the NG-RAN node to release at least one PDU
+#      session resource, and include each PDU session resource to release in
+#      the PDU Session Resource to Release List IE."
+#     …and: "If a NAS-PDU IE is contained in the PDU SESSION RESOURCE RELEASE
+#      COMMAND message, the NG-RAN node shall pass it to the UE."
+#
+# HOW THIS ROW DIFFERS FROM REG-360 (pdu_session_release.yaml). Same procedure,
+# different criterion, and that distinction is the whole point of splitting
+# them: REG-360 is a 5GSM row and asserts the PTI of the NAS release command
+# (TS 24.501 §6.3.3.2). This row is an N2 row and asserts the NGAP envelope —
+# that the "to release" list is non-empty and names THE established PDU session
+# id, and that the AMF does not answer the gNB's release response with an
+# ERROR INDICATION. Neither flow's checks would catch the other's defect, so
+# neither is coverage-on-paper for the other.
+#
+# NOT ASSERTED HERE, DELIBERATELY: the PTI of the nested 5GSM release command.
+# tinycore sends PTI 0 where §6.3.3.2 requires the UE's PTI (xp-251) — that is
+# REG-360's finding to report, and repeating it here would make this row fail
+# for a reason its own criterion says nothing about.
+#
+# THE SETTLE STATE IS INVERTED, ON PURPOSE. "No ErrorIndication follows" is
+# only observable by waiting, so `settle_no_error`'s TIMEOUT is the success
+# edge and every transition out of it is a failure. `released` is the only
+# success terminal, and it is reachable only THROUGH the checks below — a flow
+# that sent nothing could never get there.
+
+kind: flow
+name: pdu_session_resource_release_command_n2
+description: UE-requested release asserted at N2 — the release command names the established session and no ErrorIndication follows (YAML)
+detail: |
+  Registration, PDU session establishment, then a UE-requested release
+  (TS 24.501 §6.4.3), asserted at the NGAP layer per TS 38.413 §8.2.2.
+
+  After the session is up, the UE sends a NAS PDU SESSION RELEASE REQUEST. The
+  AMF answers with an NGAP PDU SESSION RESOURCE RELEASE COMMAND. This flow
+  asserts that command's PDU Session Resource to Release List is non-empty and
+  names the PDU session id that was established, and that the NAS-PDU IE the
+  clause tells the gNB to pass to the UE is actually carried. The gNB then
+  sends the PDU SESSION RESOURCE RELEASE RESPONSE and the flow waits to prove
+  the AMF did not reject it with an ERROR INDICATION.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+          # connection as soon as registration completes.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest }
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          # The session this row releases has to exist first — "already
+          # established PDU session resources" (§8.2.2.1). A release of nothing
+          # would make the to-release list assertion below meaningless.
+          - { type: check, field: pdu_session_resource_setup_request_items.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          - { type: send, message: PDUSessionReleaseRequest }
+
+  wait_release_command:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      # The NGAP release command, whether or not it carries the NAS release
+      # command inside it — the N2 criterion holds either way, and the
+      # NAS-PDU IE is asserted explicitly below rather than through the event
+      # name, so a core that omits it fails on a check instead of silently
+      # timing out on an unmatched event.
+      - event:
+          or:
+            - PDUSessionReleaseCommand
+            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: settle_no_error
+        actions:
+          # --- THE row: the to-release list names the established session ---
+          # "shall […] include each PDU session resource to release in the PDU
+          # Session Resource to Release List IE" (§8.2.2.2).
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
+
+          # --- the NAS-PDU the gNB is told to pass to the UE (§8.2.2.2) -----
+          - { type: check, field: nas_pdu, op: ie_present }
+
+          # --- UE-associated signalling (§8.2.2.1): the command is addressed
+          #     to THIS UE's NGAP association, not broadcast at the node.
+          - { type: check, field: amf_ue_ngap_id, op: equals, expected: '{{ue.Params.pilot_amf_id}}' }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.RanUeNgapId}}' }
+
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+
+  # "…and no ErrorIndication follows the gNB's PDUSessionResourceReleaseResponse."
+  # Absence is only observable by waiting, so the TIMEOUT is the success edge
+  # and every transition out of this state is a failure.
+  settle_no_error:
+    on_timeout: { duration: 6s, target: released }
+    transitions:
+      - event: ErrorIndication
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-362).
+#
+# REG-362 — PDUSessionResourceReleaseCommand received containing the established PDU
+# Session ID in the to-release list, and no ErrorIndication follows the gNB's
+# PDUSessionResourceReleaseResponse
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL, AND WHAT IT DOES NOT PROVE ON ITS OWN. Every path to `released` in
+  # this flow ends on a TIMER — the absence window is the point of the row — so this pin
+  # says "the flow got as far as the window and nothing knocked it out", and the message
+  # assertions below are what say the run happened at all.
+  - name: the flow reached `released`
+    metric: final_state_counts.released
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 5
+  - name: one PDU SESSION RESOURCE RELEASE RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
+    op: equals
+    value: 1
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 11 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 11 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 11
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

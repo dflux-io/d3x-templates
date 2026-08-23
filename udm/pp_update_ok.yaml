@@ -1,0 +1,51 @@
+# Nudm_PP ParameterProvision Update — compliance.
+# 3GPP TS 29.503 §5.6.2.2 / §6.5.3.2
+#   (PATCH /nudm-pp/v1/{ueId}/pp-data with PpData / JSON-Patch).
+# Uses SBI_Request PATCH — unlocked by the new generic SBI message.
+
+kind: flow
+name: udm_pp_update_ok
+description: PATCH pp-data for a provisioned UE returns 200/204
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "PATCH",
+                "path": "/nudm-pp/v1/imsi-001010000000001/pp-data",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "communicationCharacteristics": {
+                    "ppSubsRegTimer": {"subsRegTimer": 3600, "afInstanceId": "af1", "referenceId": 1}
+                  }
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300

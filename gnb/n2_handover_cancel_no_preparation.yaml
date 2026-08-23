@@ -1,0 +1,86 @@
+# HandoverCancel with NO preceding handover preparation (3GPP TS 38.413 §8.4.5 /
+# §10). Registers, then sends HandoverCancel though no handover was prepared. A
+# correct AMF replies HandoverCancelAcknowledge or ErrorIndication and stays up.
+kind: flow
+name: n2_handover_cancel_no_preparation
+description: HandoverCancel with no prepared handover; assert graceful ack/error (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [cancelled, cancel_error, tolerated, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions: [{ type: send, message: InitialUEMessage }]
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_cancel_reaction
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: HandoverCancel }
+  wait_cancel_reaction:
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      - { event: HandoverCancelAcknowledge, target: cancelled }
+      - { event: ErrorIndication, target: cancel_error }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-551 (robustness, expected_terminal: null) — The
+# SCTP association stays up and the UE's subsequent uplink NAS on the same AP IDs still
+# receives a downlink NAS response; any of HandoverCancelAcknowledge, ErrorIndication or
+# no response at all is acceptable, but a dropped association, a reset, or an unanswered
+# uplink NAS is a failure.
+#
+# NO NON-FAILURE TERMINAL IS PINNED, BY THE REGISTER'S OWN WORDS. REG-551 declares
+# `expected_terminal: null` and says: "any of HandoverCancelAcknowledge, ErrorIndication
+# or NO RESPONSE AT ALL is acceptable, but a dropped association, a reset, or an
+# unanswered uplink NAS is a failure." Those three acceptable answers are `cancelled`,
+# `cancel_error` and `tolerated` respectively — all three of this flow's non-failure
+# terminals — and TS 38.413 §8.4.5.4 backs it: a missing HANDOVER CANCEL ACKNOWLEDGE
+# "shall be treated by the source as a successfully terminated cancellation". What the
+# criterion does rule out is the association or the UE being lost, which is `failed`.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` (the association or the preamble died)
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 2
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

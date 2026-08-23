@@ -1,0 +1,54 @@
+# S6a ULR/ULA 4-step echo flow.
+#
+# Drives the dsr-sim style "echo proxy" pattern (the default edge test mode):
+# d3x-run originates a ULR, edge echoes it back as if it were a fresh
+# request, d3x-run replies with a ULA, edge echoes that back. Each
+# echo arrives as an inbound diameter message and fires a same-named FSM
+# event ("ULR" then "ULA"). Both message-build steps are plain `send:`
+# actions — request vs answer is a per-enricher concern (EnrichULR generates
+# fresh correlation IDs; EnrichULA copies them from ue.Diameter.LastMsg).
+#
+# Run with:
+#   ./bin/d3x-run run \
+#       -flow template/diameter/s6a/ulr_ula_success.yaml \
+#       -c config/lab-diameter.yaml -trace
+
+kind: flow
+name: diameter_s6a_ulr_ula_success
+description: S6a ULR/ULA 4-step echo against edge
+category: functional
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ulr_echo
+        actions:
+          - type: send
+            message: ULR
+
+  wait_ulr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULR
+        target: wait_ula_echo
+        actions:
+          - type: send
+            message: ULA
+
+  wait_ula_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULA
+        target: completed

@@ -1,0 +1,356 @@
+# REG-856 — a UE-associated NGAP ERROR INDICATION is absorbed without tearing down unrelated
+# state (TS 38.413 §8.7.5.1 / §8.7.5.2, and §10.5 / §10.6 for what the receiver may do about it).
+#
+# ============================================================================================
+# THE ONE ROW IN THE CORPUS WHOSE EXPECTED TERMINAL HAD NO MESSAGE ROUTE AT ALL.
+# ============================================================================================
+#
+# Measured 2026-08-12 (50effc0 baseline):
+#
+#   tinycore  "timed out in state=wait_tolerance after 8.0s — terminal target=tolerated"
+#   open5gs   the same, plus a NASDownlinkTransport.ConfigurationUpdateCommand this flow
+#             named no transition for, so the bus REFUSED it (bus_audit.rx_refused: 1)
+#   free5gc   NGAP_UE_CONTEXT_RELEASE_COMMAND at 344 ms -> `failed`, i.e. scored as a core
+#             defect, plus the same refused ConfigurationUpdateCommand
+#
+# Two separate defects, and they compound.
+#
+#   1. `tolerated` WAS REACHABLE ONLY BY THE TIMER. Absorbing an ERROR INDICATION emits nothing,
+#      and silence cannot be told apart from a crashed AMF, a dead association, a message that
+#      never arrived, or an answer our FSM names no transition for — and open5gs's refused
+#      ConfigurationUpdateCommand shows the last of those was happening on this very row.
+#      lib/outcome.py DEFENCE 11 refuses a verdict from a terminal reached on a timer, in either
+#      direction, so both timing-out cores scored `inconclusive`. Inverting the timer is not the
+#      cure: that makes silence always mean pass, and a flow that sends nothing goes green.
+#
+#   2. THE `failed` BRANCH ASSERTED A DUTY NO CLAUSE CREATES, and free5gc paid for it. The row's
+#      own verifier said so when the row was written: "§8.7.5.1 and §8.7.5.2 ... specify only
+#      when the Error Indication procedure is initiated, which signalling scope it uses, and that
+#      at least one of Cause / Criticality Diagnostics is present. Neither says anything about
+#      what the RECEIVER of an ERROR INDICATION must not do, so 'no UEContextReleaseCommand
+#      arrives' is not a clause requirement — releasing the UE-associated connection is a
+#      defensible local error handling choice (§10.5 mandates local error handling, and §10.6
+#      mandates local release for the AP-ID case)."
+#
+# ============================================================================================
+# THE DISCRIMINATOR: ASK WHETHER THE UE IS STILL BEING SERVED.
+# ============================================================================================
+#
+# What this row actually claims is that the AMF did not lose the subscriber over a protocol
+# error report. That has a positive observable, and the register names it: "a following uplink
+# NAS still draws a downlink NAS response". So after the absence window the gNB sends a
+# DEREGISTRATION REQUEST — a normal (not switch-off) UE-originating de-registration, integrity
+# protected under the live context, on the SAME UE-associated logical NG-connection — which
+# TS 24.501 §5.5.2.2.2 obliges the AMF to answer with a DEREGISTRATION ACCEPT.
+#
+# MEASURED, not hoped for: this exact probe draws a DEREGISTRATION ACCEPT from all three cores
+# in the same baseline (REG-453's prove_count_intact state, `rejected` on
+# NASDownlinkTransport.DeregistrationAccept on tinycore, Open5GS and free5GC).
+#
+# AND THE RELEASE IS THE OTHER ACCEPTABLE PROOF, NOT A FAILURE. Per §10.5/§10.6 an AMF may
+# legitimately release the UE-associated connection as local error handling. That is not an
+# outage — an outage is losing the SUBSCRIBER — so the flow follows the release through: it
+# completes it, reallocates the RAN-UE-NGAP-ID and sends a fresh INITIAL UE MESSAGE on the same
+# association. A downlink NAS response to THAT is the same claim proved on a new connection.
+#
+#   `tolerated`  a downlink NAS response to a following uplink NAS on the same connection (a
+#                DEREGISTRATION ACCEPT the AMF is obliged to send), OR — where the AMF released
+#                the connection — a downlink NAS response to a fresh INITIAL UE MESSAGE on the
+#                same association. Either way the subscriber is still being served, ON THE WIRE.
+#   `unproven`   no answer to a message the AMF is required to act on, or an answer that proves
+#                nothing about whether the UE is still served. We learned nothing about §8.7.5,
+#                and that must never read as a pass. Reached by the timer it is a semantic
+#                terminal, so DEFENCE 11 turns it into `inconclusive` with no rule needing to
+#                know its name.
+#   `failed`     a transport-level Error. THE SCTP ASSOCIATION ITSELF WENT DOWN — which is the
+#                self-inflicted outage this row exists to catch, and the only `failed` route
+#                that is honestly about the core rather than about our reading of §8.7.5.
+#
+# THE ACCEPTANCE TEST, STATED HONESTLY. This row's violation is an abnormal but LEGAL input, so
+# "disable the violation and watch the terminal flip" does not apply the way it does to a
+# spec-violating probe: not sending the ERROR INDICATION would leave the probe answered and the
+# row `tolerated` either way. What the row CAN now distinguish, and could not before, is "the
+# subscriber is still served" from "the subscriber is gone" — the first needs a downlink NAS
+# message, the second is `unproven` or `failed`. Reaching the second requires a core that
+# actually drops the subscriber on an ERROR INDICATION, which is precisely the defect being
+# hunted and which none of the three cores exhibits.
+
+kind: flow
+name: error_indication
+description: Send a UE-associated NGAP ErrorIndication, then prove the subscriber is still served (YAML)
+detail: |
+  Performs a UE registration and then sends a UE-associated NGAP ErrorIndication
+  with an abnormal Cause (3GPP TS 38.413 §8.7.5.1). ErrorIndication is the
+  mechanism by which a node reports a protocol error (e.g. an unknown or
+  inconsistent IE) on an established UE association.
+
+  The spec requires no particular reply, so tolerance cannot be read off silence.
+  After the absence window the flow PROVES it: it sends a DEREGISTRATION REQUEST
+  on the same UE-associated connection and asserts the DEREGISTRATION ACCEPT that
+  TS 24.501 §5.5.2.2.2 obliges the AMF to send. Where the AMF instead releases the
+  connection — defensible local error handling per TS 38.413 §10.5/§10.6 — the flow
+  completes the release, reallocates the RAN-UE-NGAP-ID and proves the same thing
+  with a fresh INITIAL UE MESSAGE on the same association.
+
+  `tolerated` is reached only on a downlink NAS response. No answer at all is
+  `unproven`, never a pass; a transport-level Error is `failed`, which is the real
+  outage this row hunts.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - tolerated
+  - unproven
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # FOR bit: uplink NAS pending (TS 24.501 §9.11.3.7), and it is load-bearing here in two
+          # ways. §5.5.1.2.2 requires it when the UE will keep sending NAS after REGISTRATION
+          # COMPLETE — which this flow now does, for the probe — and §5.5.1.2.4 says the AMF
+          # SHALL NOT immediately release the connection when it is set. runner/runner
+          # fsm_preparse.go validateFollowOnRequest fails the flow at load without it.
+          #
+          # IT ALSO REMOVES A CONFOUND THAT MADE THE BASELINE UNREADABLE. free5gc sent a
+          # UEContextReleaseCommand 344 ms after the ErrorIndication and this row scored it
+          # `failed` — "the AMF tore down the association" — but with the FOR bit CLEAR that
+          # release is exactly what §5.5.1.2.4 permits an AMF to do the moment the registration
+          # finishes, ErrorIndication or no ErrorIndication. With the bit set, an immediate
+          # release is no longer explained by the registration itself, so a release that still
+          # arrives is genuinely about the error report (and is followed through below as the
+          # §10.5/§10.6 local-error-handling branch rather than scored as an outage).
+          - type: send
+            message: InitialUEMessage
+            params: { follow_on_request: true }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_tolerance
+        actions:
+          # The state that must survive the ERROR INDICATION has to exist first: an AS security
+          # context the AMF installed, and a UE-associated logical NG-connection with an
+          # AMF-UE-NGAP-ID on it. Without both there is nothing for the error report to tear
+          # down and the row would measure nothing.
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # Abnormal UE-associated ErrorIndication on the live association.
+          - type: send
+            message: ErrorIndication
+
+  wait_tolerance:
+    # THE ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. §8.7.5 places no positive duty on the
+    # receiver, so a conformant AMF may well say nothing here. Falling out of the window is not a
+    # verdict — it is the cue to go and ASK whether the subscriber is still served.
+    on_timeout:
+      duration: 6s
+      target: probe_ue_still_served
+      actions:
+        - type: send
+          message: DeregistrationRequest
+    transitions:
+      # THE RELEASE IS NOT A FAILURE — see the header. §10.5 mandates local error handling and
+      # §10.6 mandates local release for the AP-ID case, so releasing the UE-associated
+      # connection is a defensible reaction and free5gc measurably takes it (344 ms). What must
+      # still hold is that the SUBSCRIBER is not lost, so the flow completes the release and
+      # proves it on a fresh connection over the same association.
+      - event: UEContextReleaseCommand
+        target: probe_fresh_connection
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+          - type: ngap_realloc
+          - type: send
+            message: InitialUEMessage
+      # The AMF bouncing an ERROR INDICATION back is a spec-valid reaction (§8.7.5.1 permits
+      # either node to initiate the procedure) and it proves the AMF is alive — but not that the
+      # UE is still served. Straight to the probe, which is the observation that decides.
+      - event: ErrorIndication
+        target: probe_ue_still_served
+        actions:
+          - type: send
+            message: DeregistrationRequest
+      # A CONFIGURATION UPDATE COMMAND arriving here is the tail of the registration, not an
+      # answer to the ERROR INDICATION, and it arrived on open5gs and free5gc in the baseline
+      # with no transition to name it — so the bus refused it and the row's own silence was
+      # partly ours. Named and answered per TS 24.501 §5.4.4.2, and then THE FLOW STAYS PUT: it
+      # arrives within a few hundred milliseconds of registration, so jumping to the probe on it
+      # would collapse the absence window to nothing and the ERROR INDICATION would have had no
+      # time to have an effect. Re-entering the state restarts the window, which is the point.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_tolerance
+        actions:
+          - type: send
+            message: ConfigurationUpdateComplete
+
+  probe_ue_still_served:
+    # Silence here is silence to a message TS 24.501 §5.5.2.2.2 obliges the AMF to answer. It
+    # says nothing about §8.7.5 tolerance and it must never read as a pass.
+    on_timeout:
+      duration: 8s
+      target: unproven
+    transitions:
+      # THE DISCRIMINATOR FIRING — the register's criterion verbatim, "a following uplink NAS
+      # still draws a downlink NAS response". §5.5.2.2.2: "the AMF shall send a DEREGISTRATION
+      # ACCEPT message to the UE" for a non-switch-off de-registration.
+      #
+      # The two checks are on the message that fired the branch, not annotations: after security
+      # activation every downlink NAS message must be integrity protected (§4.4.4.2), so an
+      # accept that arrives protected and MAC-verified proves the AMF answered UNDER THE VERY
+      # SECURITY CONTEXT the ERROR INDICATION did not disturb. `equals true` fails on a field
+      # that does not resolve, so neither passes by absence.
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: tolerated
+        actions:
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+      # THE SAME CLAIM, ON A DIFFERENT DOWNLINK NAS MESSAGE. The criterion asks for "a downlink
+      # NAS response", not specifically for the accept, and an AMF that answers a de-registration
+      # with a 5GMM STATUS or a reject has still processed an uplink NAS message from this UE on
+      # this connection. Each one carries the same protection assertion, so no branch here can
+      # reach the pass without asserting on the message that got it there.
+      - event:
+          or:
+            - NASDownlinkTransport.5GMMStatus
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.ConfigurationUpdateCommand
+        target: tolerated
+        actions:
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+      # The release taken as local error handling, arriving after the probe rather than before
+      # it — same reading as in wait_tolerance, same follow-through.
+      - event: UEContextReleaseCommand
+        target: probe_fresh_connection
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+          - type: ngap_realloc
+          - type: send
+            message: InitialUEMessage
+      # An ERROR INDICATION in answer to a de-registration says our message was not processed as
+      # sent — the "never received it as sent" branch of the failure list, not evidence that the
+      # UE is still served.
+      - event: ErrorIndication
+        target: unproven
+
+  probe_fresh_connection:
+    # The §10.5/§10.6 branch: the AMF released the UE-associated connection, which it is entitled
+    # to do, so the question becomes whether the SUBSCRIBER survived. Silence to a fresh INITIAL
+    # UE MESSAGE means it did not — or means something we cannot tell apart from that, which is
+    # the same verdict.
+    on_timeout:
+      duration: 6s
+      target: unproven
+    transitions:
+      # A fresh INITIAL UE MESSAGE carrying a SUCI must draw a primary authentication
+      # (TS 24.501 §5.4.1.3). The RAND is mandatory in AUTHENTICATION REQUEST (§8.2.1), so the
+      # branch asserts on the message that fired it.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: tolerated
+        actions:
+          - { type: check, field: nas.authentication_param_rand, op: ie_present }
+      # Any other downlink NAS answer is the criterion satisfied too — the association still
+      # carries this subscriber's signalling to a downlink NAS response. No check: neither an
+      # IDENTITY REQUEST nor a bare 5GMM STATUS carries an IE this runner reads by a name we can
+      # justify here, and a gate that cannot be justified is a gate that silently discards
+      # observations. The AUTHENTICATION REQUEST branch above and the four registration checks
+      # carry the row's assertions.
+      - event:
+          or:
+            - NASDownlinkTransport.IdentityRequest
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+            - NASDownlinkTransport.SecurityModeCommand
+        target: tolerated
+      - event: ErrorIndication
+        target: unproven
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-856 (negative, expected_terminal: tolerated) —
+# After a UE-associated ERROR INDICATION carrying a Cause and the correct AMF UE NGAP ID
+# and RAN UE NGAP ID is sent on a live association, the SCTP association stays up, no NG
+# RESET and no association-wide teardown follows, and the AMF still serves the
+# interface: either (a) a following uplink NAS on that same UE-associated connection
+# still draws a downlink NAS response, or (b) the AMF locally released that one UE-
+# associated connection (a UEContextReleaseCommand, or an ERROR INDICATION in reply) and
+# a fresh InitialUEMessage on the same association is still carried through to a
+# downlink NAS response. (a) and (b) are both conformant local error handling under
+# §10.5; which occurred is recorded.
+#
+# A `negative` row whose CORRECT terminal is `tolerated` — the same shape as the piloted
+# error_indication_non_ue_associated_after_setup, and the reason no rule of the form
+# "negative rows end in rejected" can be applied to this half of the corpus. REG-856
+# accepts either (a) the UE-associated connection still drawing a downlink NAS response
+# or (b) that one connection being released locally and a fresh InitialUEMessage still
+# being carried through, and both of those are `tolerated`. `unproven` is the probe
+# unanswered or answered with an ERROR INDICATION, which proves liveness without proving
+# the interface was unaffected.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `tolerated` — the terminal this row claims
+    metric: final_state_counts.tolerated
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

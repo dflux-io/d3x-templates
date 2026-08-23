@@ -1,0 +1,91 @@
+# PFCP Session Establishment — unknown DNN negative (TS 29.244 §7.5.2).
+#
+# F-14 of docs/upf/sanity-tests.md (d3x-core). runner (SMF) brings up the
+# node-level association, then sends a SessionEstablishmentRequest whose
+# Create PDR carries a PDI NetworkInstance IE naming a DNN the UPF does not
+# serve ("nosuchdnn"). The standalone UPF resolves the DNN against its
+# per-family UE-IP pool registry, finds no pool, and rejects the whole
+# establishment before any side effect lands (upf/n4/session_handlers.go:127).
+#
+# PFCP has no dedicated "unknown DNN" cause, so the UPF answers
+# CAUSE_NO_RESOURCES_AVAILABLE ("No resources available", TS 29.244 §8.2.1).
+# Spec-correct success here = that reject Cause.
+
+kind: flow
+name: upf_pfcp_session_establish_unknown_dnn
+description: SMF establishes a session on an unknown DNN; UPF rejects with "No resources available" (N4 negative)
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "network_instance": {"value": "nosuchdnn"},
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  }
+                ]
+              }
+
+  wait_session:
+    # Silent drop (no reject Cause) lands on tolerated; the suite pins
+    # `rejected` so a UPF that fails to emit the explicit reject scores a FAIL.
+    on_timeout:
+      duration: 5s
+      target: tolerated
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "No resources available"

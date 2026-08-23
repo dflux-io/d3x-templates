@@ -1,0 +1,69 @@
+# PERSIST-03 (flow B — token after restart). See d3x-core
+# docs/nrf/sanity-tests.md §2.14 and §4.7.6.
+#
+# Run AFTER the harness restarts the NRF against the same -db-dsn.
+# Requests a client_credentials token for the consumer UUID that
+# persistence_oauth_consumer_registered registered before the restart.
+# A 200 + non-empty access_token proves the OAuth issuer reads consumer
+# identity from the persistent store, not an in-memory cache that the
+# restart would have cleared.
+#
+# Form params go in `query` (not body): runner serializes `body` as JSON,
+# and the NRF token handler reads r.FormValue, which covers URL query.
+# Verification requires the NRF to run with -jwt-key.
+#
+# Fixed UUID MUST match persistence_oauth_consumer_registered.yaml.
+
+kind: flow
+name: nrf_persistence_oauth_token_after_restart
+description: Issue a token for the fixed consumer UUID after restart (PERSIST-03 post-restart).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: requesting_token
+        actions:
+          - type: send
+            message: GetToken
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "aaaa0003-0000-4000-8000-000000000003",
+                  "nfType": "AMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  requesting_token:
+    transitions:
+      - event: rest.GetToken_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.token_type
+            op: equals
+            expected: Bearer
+          - type: check
+            field: rest.body.access_token
+            op: not_empty
+          - type: check
+            field: rest.body.expires_in
+            op: not_empty
+
+  done: {}
+  failed: {}

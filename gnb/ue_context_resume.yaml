@@ -1,0 +1,205 @@
+# Registration + suspend to RRC_INACTIVE + resume (3GPP TS 38.413 §8.13).
+#
+# Registers a UE, suspends it to RRC_INACTIVE via UEContextSuspendRequest,
+# then resumes the stored context with UEContextResumeRequest. The AMF must
+# re-activate the suspended UE context and reply with UEContextResumeResponse
+# (or UEContextResumeFailure if the context cannot be resumed).
+#
+# Sends:    UEContextSuspendRequest (suspend) then UEContextResumeRequest.
+# Expected-correct Open5GS behavior: the AMF restores the RRC_INACTIVE
+# context and answers with UEContextResumeResponse. Reaching context_resumed
+# is the compliance assertion.
+
+kind: flow
+name: ue_context_resume
+description: Registration, suspend to RRC_INACTIVE, then gNB-initiated resume (YAML)
+detail: |
+  Performs registration, suspends the UE to RRC_INACTIVE, then resumes the
+  stored context (3GPP TS 38.413 §8.13).
+
+  Phase 1 — Registration: standard auth/security/context-setup establishes a
+  UE context and active NGAP UE association.
+  Phase 2 — Suspend: the gNB sends UEContextSuspendRequest, moving the UE to
+  RRC_INACTIVE — the RAN retains the stored RRC configuration but releases
+  dedicated radio resources. The AMF confirms with UEContextSuspendResponse.
+  Phase 3 — Resume: the gNB sends UEContextResumeRequest (e.g., mo-Data RRC
+  resume cause) to re-activate the stored context.
+
+  The AMF responds with either:
+  - UEContextResumeResponse: confirms the resume; the RAN context is
+    re-activated and UE-associated signalling resumes. This is the success
+    terminal (context_resumed).
+  - UEContextResumeFailure: rejects the resume with a cause code (e.g., the
+    stored context could not be found). This lands on failed.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - context_resumed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_suspend_response
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: UEContextSuspendRequest
+
+  wait_suspend_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextSuspendResponse
+        target: wait_resume_response
+        actions:
+          # Context now RRC_INACTIVE — resume it.
+          - type: send
+            message: UEContextResumeRequest
+      - event: UEContextSuspendFailure
+        target: failed
+
+  wait_resume_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextResumeResponse
+        target: context_resumed
+      - event: UEContextResumeFailure
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-264).
+#
+# REG-264 — UEContextResumeResponse received on N2, and the UE-associated logical NG-
+# connection is usable for a subsequent uplink NAS message
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `context_resumed`
+    metric: final_state_counts.context_resumed
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: one UE CONTEXT RESUME REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RESUME_REQUEST
+    op: equals
+    value: 1
+  - name: one UE CONTEXT SUSPEND REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_SUSPEND_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RESUME RESPONSE arrived
+    metric: rx_events.UEContextResumeResponse
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT SUSPEND RESPONSE arrived
+    metric: rx_events.UEContextSuspendResponse
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

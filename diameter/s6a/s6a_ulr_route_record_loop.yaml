@@ -1,0 +1,54 @@
+# S6a ULR/ULA negative scenario — DIAMETER_LOOP_DETECTED (3005).
+#
+# A relay that finds its own Origin-Host already present in the request's
+# Route-Record AVP must reject with Result-Code 3005 rather than forward
+# (RFC 6733 §6.1.8). Mirrors dsr-sim's S6a_ULR_RouteRecordLoop_3005.json.
+#
+# This flow doesn't manipulate Route-Record itself — it just exercises the
+# answer-side handling: build a ULA carrying Result-Code=3005 and assert
+# the answer leg sees it.
+
+kind: flow
+name: diameter_s6a_ulr_route_record_loop
+description: S6a ULR/ULA error — DIAMETER_LOOP_DETECTED (3005)
+category: negative
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ulr_echo
+        actions:
+          - type: send
+            message: ULR
+
+  wait_ulr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULR
+        target: wait_ula_echo
+        actions:
+          - type: send
+            message: ULALoopDetected
+
+  wait_ula_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 3005

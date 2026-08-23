@@ -1,0 +1,99 @@
+# PFCP Session on a secondary DNN (F-06) — UE-IP from a second pool.
+#
+# runner (SMF) establishes a session whose uplink PDR pins PDI NetworkInstance
+# to a secondary DNN ("sanity2") and requests a UE IP via CHOOSE (chv4). The
+# standalone UPF resolves the DNN to its secondary pool and allocates a UE-IP
+# from it, then accepts; delete tears it down. Complements the unknown-DNN
+# negative (F-14): a *configured* DNN is accepted where an unknown one is
+# rejected, proving the per-DNN pool routing discriminates.
+#
+# REQUIRES the UPF launched with the secondary pool:
+#   ./bin/upf -datapath stub -n4-addr 127.0.0.1:8805 -node-id upf.sanity.local \
+#     -dnn-pool sanity2=10.46.0.0/24
+# Run via the upf_n4_multidnn mini-suite, not the default upf_n4.
+#
+# Sanity scope: asserts the establish/delete are accepted (Cause "Request
+# accepted"). Asserting the allocated UE-IP falls inside 10.46.0.0/24 needs a
+# pfcp.ue_ip_address resolver path runner doesn't expose (gap G7,
+# docs/upf/sanity-tests.md §9); the allocation itself is still exercised.
+
+kind: flow
+name: upf_pfcp_session_multi_dnn
+description: SMF establishes a session on a secondary DNN with a UE-IP CHOOSE; UPF allocates + accepts (N4)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - deleted
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "network_instance": {"value": "sanity2"},
+                      "local_f_teid": {"ch": true},
+                      "ue_ip_address": {"chv4": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  }
+                ],
+                "create_far": [
+                  { "far_id": {"value": 1}, "apply_action": {"flags": 2},
+                    "forwarding_parameters": {"destination_interface": 2} }
+                ]
+              }
+
+  wait_session:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_delete
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionDeletionRequest
+
+  wait_delete:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: pfcp.PFCPSessionDeletionResponse
+        target: deleted
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

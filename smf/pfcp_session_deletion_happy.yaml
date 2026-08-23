@@ -1,0 +1,68 @@
+# N4/PFCP — Session Deletion happy path (compliance).
+# 3GPP TS 29.244 §7.5.6 / §7.5.7.
+#
+# runner (SMF) associates, establishes a session, then sends a
+# PFCPSessionDeletionRequest (header + RemoteSEID auto-stamped). The UPF replies
+# with PFCPSessionDeletionResponse; with the pfcp.cause resolver we assert the
+# spec-correct success cause (Request accepted).
+#
+# RUNTIME RISK: depends on a successful Establishment (see
+# pfcp_session_establishment_happy for the no-PDR/FAR caveat). Structurally
+# valid; asserts the spec happy-path cause.
+kind: flow
+name: smf_pfcp_session_deletion_happy
+description: SMF deletes an established PFCP session — expect Cause Request accepted
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: smf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_delete
+        actions:
+          - type: send
+            message: PFCPSessionDeletionRequest
+
+  wait_delete:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionDeletionResponse
+        target: released
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

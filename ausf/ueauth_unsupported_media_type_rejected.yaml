@@ -1,0 +1,47 @@
+# Nausf_UEAuthentication — unsupported media type (security / negative).
+# 3GPP TS 29.509 §6.1.7.3 (415); TS 29.500 §5.2.2.
+# runner sends a valid-looking initiate body but with Content-Type: text/plain.
+# The AUSF must REJECT with 415 Unsupported Media Type and STAY UP.
+
+kind: flow
+name: ausf_ueauth_unsupported_media_type_rejected
+description: POST ue-authentications with Content-Type text/plain is rejected 415
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: ausf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nausf-auth/v1/ue-authentications",
+                "headers": {"Content-Type": "text/plain"},
+                "raw_body": "{\"supiOrSuci\":\"imsi-001010000000001\",\"servingNetworkName\":\"5G:mnc001.mcc001.3gppnetwork.org\"}"
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 415

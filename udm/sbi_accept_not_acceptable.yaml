@@ -1,0 +1,48 @@
+# Request with an unacceptable Accept header — security/negative.
+# 3GPP TS 29.500 §6.1; RFC 7231 406 Not Acceptable.
+# GET am-data with Accept: application/xml — UDM either returns 406 or ignores
+# the header and serves JSON (200); either way it must answer and stay live.
+# Uses SBI_Request headers override — unlocked by the new generic SBI message.
+
+kind: flow
+name: udm_sbi_accept_not_acceptable
+description: GET am-data with Accept application/xml — UDM answers spec-correctly and stays live
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/am-data",
+                "query": {"dataset-names": "AM"},
+                "headers": {"Accept": "application/xml"}
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: tolerated
+        actions:
+          # Liveness: a well-formed HTTP status (406 or 200), not a hang/crash.
+          - type: check
+            field: sbi.status
+            op: exists

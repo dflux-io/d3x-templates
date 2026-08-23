@@ -1,0 +1,49 @@
+# AMF-side server-mode wiring stub.
+#
+# YAML mirror of the built-in `registration_amf` flow defined in
+# runner/flows/amf/flow_registration_amf.go.
+#
+# Server-mode flow: receives an InitialUEMessage from any admitted gNB,
+# replies with UEContextReleaseCommand, and lands in the terminal
+# "released" state. Wiring-validation only — no auth, no security mode,
+# no real registration accept.
+
+kind: flow
+name: registration_amf
+description: "AMF-side stub: receives InitialUEMessage, responds with UEContextReleaseCommand (YAML)"
+detail: |
+  Wiring-validation flow for server-mode AMF runs (#171, #182). Accepts the
+  first NGAP InitialUEMessage from any admitted gNB, sends back a
+  UEContextReleaseCommand carrying the standard NGAP IDs and a default
+  NAS Cause, and transitions to a terminal state. Proves the full server
+  pipeline: amfs: config → SCTP listen → auto-admission NGSetup → bus
+  PostInbound → demux spawn-on-unknown → FSM dispatch → AMF-side TX
+  through the unified NGAP TX bus → SCTP write to the admitted gNB.
+
+  Realistic AMF responders (DownlinkNASTransport + RegistrationAccept,
+  SecurityModeCommand, InitialContextSetupRequest, NAS PDU builders) land
+  as follow-ups when an AMF flow needs them.
+category: functional
+type: server
+protocol: ngap
+nf: amf
+initial_state: idle
+final_states:
+  - released
+
+states:
+  idle:
+    transitions:
+      # The demux resolves NAS-bearing frames to the dotted form
+      # (InitialUEMessage.RegistrationRequest when the gNB includes a real
+      # NAS Registration Request, e.g. runner's registration* flows) and
+      # NAS-less frames to the bare name. Event matching is exact, so
+      # accept both.
+      - event:
+          or:
+            - InitialUEMessage
+            - InitialUEMessage.RegistrationRequest
+        target: released
+        actions:
+          - type: send
+            message: UEContextReleaseCommand

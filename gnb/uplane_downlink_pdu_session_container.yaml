@@ -1,0 +1,287 @@
+# REG-904 — the downlink encapsulation actually carries the QoS marking, and the
+# marking is the one this session was granted.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 38.415 §5.5.2.1 — DL PDU SESSION INFORMATION (PDU Type 0), the frame the
+#   NG-RAN receives "control information elements which are associated with the
+#   transfer of a packet over the interface" in.
+#
+#   TS 38.415 §5.4.1.1 / §5.5.3.3 — the QFI field of that frame and what it
+#   means: it identifies the QoS flow the packet belongs to.
+#
+#   TS 23.501 §5.7.1.6 — the QFI is carried in the encapsulation header over N3
+#   and is what the NG-RAN maps to a radio bearer.
+#
+#   TS 29.281 §5.2.2.7 — the container the frame rides in: the PDU Session
+#   Container extension header, type 0x85, which requires the E flag set.
+#
+#   TS 24.501 §9.11.4.13 — the Authorized QoS rules IE and its DQR bit: exactly
+#   one QoS rule of a PDU session is the default one, and each rule names the
+#   QFI of the QoS flow it binds to.
+#
+# WHY THIS ROW COULD NOT BE WRITTEN BEFORE #248. The uspace reader parsed
+# tpd.ExtensionHeaders and only log.Debug()'d them, so nothing about the
+# downlink encapsulation reached UplaneReport and no check could see it. A core
+# that marked NOTHING and a core that marked correctly produced the identical
+# green cell on every user-plane row — which is precisely the vacuity the
+# register exists to remove.
+#
+# ZERO IS NOT ABSENT, AND THAT IS WHY THE FIELDS BEHAVE DIFFERENTLY.
+# dl_gpdu_rx / dl_ext_rx / dl_ext_seen are ALWAYS published and zero is a
+# finding ("no downlink arrived", "none of it was marked"). dl_ext_type /
+# dl_pdu_type / dl_qfi / dl_ext_hex are published ONLY when a readable PDU
+# SESSION INFORMATION frame was parsed, because PDU type 0 is exactly what a
+# CONFORMANT downlink frame carries and QFI 0 is a real six-bit value —
+# publishing them unconditionally would let `dl_pdu_type equals 0` pass against
+# a core that sent no extension header at all. So on this flow's failure path
+# those four paths MISS and every op on them fails, which is the intended
+# behaviour and not an accident of ordering.
+#
+# THE QFI IS COMPARED AGAINST THE WIRE, NOT AGAINST A CONSTANT. The register's
+# criterion names "the QoS Flow Setup List the core sent over n2". THAT LIST IS
+# NOT DECODABLE HERE: decodePDUSessionResourceSetupRequestTransfer
+# (proto/ngap5g/decode_pdu_session_resource.go) reads the AMBR, the UL NG-U
+# tunnel and the PDU session type and then says, in a comment, "Skip other IEs
+# (QoS flows, security indication, etc.)" — so `qfi_lis` and `qos_flows` are
+# never populated on RX and a check on them would resolve to a miss.
+#
+# The equivalent statement that IS on the wire and IS decoded is the Authorized
+# QoS rules IE of the PDU SESSION ESTABLISHMENT ACCEPT: the DQR-flagged default
+# rule names the QFI the network granted this session (TS 24.501 §9.11.4.13),
+# and exposePduSessionAcceptParams projects it as
+# ue.Params.pdu_accept_default_qos_rule_qfi. That is the same QoS flow by a
+# different signalling path — arguably the better anchor, since it is the
+# authorisation the UE itself was given — and it is the one this flow uses.
+# Closing the n2 half is a codec change and has not been done.
+#
+# "EVERY DOWNLINK G-PDU" IS A COMPARISON, SO IT IS WRITTEN AS ONE.
+# `dl_ext_rx equals {{ue.UplaneReport.dl_gpdu_rx}}` is a field-to-field
+# equality evaluated over the same report in the same instant: every G-PDU that
+# arrived carried a PDU Session Container. `dl_ext_rx greater_than 0` would pass
+# on a core that marked one packet in fifty.
+#
+# VACUITY, EVERY CLASS, CHECKED.
+#   * `not_contains` — not used.
+#   * `exists` — not used. `ie_present` appears once, on dl_ext_hex, purely so
+#     the raw frame lands in the trace; it is never the verdict.
+#   * pkt_tx — deliberately NOT asserted as evidence. It counts sends on an
+#     unconnected socket and is non-zero with no datapath at all. pkt_rx is
+#     asserted because a downlink G-PDU count of zero would otherwise be
+#     indistinguishable from "the core never sent anything to this UE", and
+#     dl_gpdu_rx is asserted for the same reason one level down.
+#   * `not_empty` on a raw ue.<Scalar> — not used. ue.UplaneReport is a map and
+#     `not_empty` there is a genuine nil test; every numeric assertion below
+#     uses `equals` or `greater_than`.
+#   * zero checks evaluated — impossible: `dl_container_verified` is reachable
+#     only through the chain below, fourteen checks deep.
+#
+# NOT A BARE TIMER: every non-`failed` terminal is reached by a message or an
+# UplaneComplete arriving.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; another
+# agent holds Docker (xp-234) and this flow has never been executed.
+
+kind: flow
+name: uplane_downlink_pdu_session_container
+description: Registration, one PDU session and a user-plane window; assert every downlink G-PDU carries a PDU Session Container holding a DL PDU SESSION INFORMATION frame whose QFI is the one the session was granted (TS 38.415 §5.5.2.1)
+detail: |
+  Registration, one PDU session establishment, one user-plane window.
+
+  The PDU SESSION ESTABLISHMENT ACCEPT is read for the Authorized QoS rules: a
+  session must carry exactly one default (DQR) rule, and that rule names the
+  QFI of the QoS flow it binds to (TS 24.501 §9.11.4.13).
+
+  The window then measures the downlink encapsulation the core actually sent.
+  Every G-PDU that arrived must have carried a PDU Session Container extension
+  header (type 0x85, TS 29.281 §5.2.2.7), the container must hold a readable DL
+  PDU SESSION INFORMATION frame (PDU Type 0, TS 38.415 §5.5.2.1), and its QFI
+  must be the QFI the network granted this session.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - dl_container_verified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration (the PDU SESSION
+          # ESTABLISHMENT REQUEST below), so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7) or the AMF may release the N1 connection the
+          # moment registration completes.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_setup_request
+        actions:
+          - { type: check, field: security_key, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_setup_request:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_window
+        actions:
+          # There is a tunnel to drive at all. `greater_than 0`, never
+          # `not_empty`: ue.UpfTeid resolves to a RAW uint32 and
+          # `any(uint32(0)) != any(float64(0.0))` in Go, so `not_empty` passes
+          # on the zero TS 29.281 §5.1 forbids.
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          # ---- THE REFERENCE VALUE, TAKEN OFF THE WIRE. TS 24.501 §9.11.4.13:
+          # exactly one Authorized QoS rule carries the DQR bit, and it names
+          # the QFI of the QoS flow the session was granted. Asserting the count
+          # first is what makes the QFI below unambiguous AND makes the -1
+          # "IE absent" sentinel unreachable. ----
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_count, op: equals, expected: 1 }
+          # A QFI is 1-63; TS 23.501 §5.7.1.5 reserves 0. `greater_than 0` also
+          # rejects the -1 absent sentinel, so this cannot pass on an accept
+          # that carried no QoS rules.
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_qfi, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          - type: uplane_start
+
+  uplane_window:
+    # 12s against a configured 3s traffic duration (gnb.uplane.duration).
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: dl_container_verified
+        actions:
+          # The report OBJECT exists. Absence here is the whole report being
+          # nil, which would make every path below miss.
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # Downlink reached the UE at all. Without this, a zero G-PDU count
+          # below could not be told apart from a dead datapath.
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UplaneReport.dl_gpdu_rx, op: greater_than, expected: 0 }
+          # ---- THE ROW, part 1. "EVERY downlink G-PDU carries a PDU Session
+          # Container" — written as the comparison it is, over one report in one
+          # instant. `dl_ext_rx greater_than 0` would pass on a core that marked
+          # one packet in fifty. ----
+          - { type: check, field: ue.UplaneReport.dl_ext_rx, op: equals, expected: "{{ue.UplaneReport.dl_gpdu_rx}}" }
+          # A container that was too short to hold the two mandatory octets
+          # counts toward dl_ext_rx and does NOT set dl_ext_seen, so this
+          # separates "marked" from "marked readably".
+          - { type: check, field: ue.UplaneReport.dl_ext_seen, op: equals, expected: true }
+          # ---- THE ROW, part 2. The container is the right one and the frame
+          # is the downlink one. 133 == 0x85, TS 29.281 §5.2.2.7; PDU Type 0 is
+          # DL PDU SESSION INFORMATION, TS 38.415 §5.5.2.1. Both paths MISS
+          # unless a frame was actually parsed, so neither can pass on absence.
+          - { type: check, field: ue.UplaneReport.dl_ext_type, op: equals, expected: 133 }
+          - { type: check, field: ue.UplaneReport.dl_pdu_type, op: equals, expected: 0 }
+          # ---- THE ROW, part 3. TS 38.415 §5.5.3.3 / TS 23.501 §5.7.1.6: the
+          # QFI identifies the QoS flow, and the QoS flow this session has is
+          # the one its default QoS rule named. Field-to-field, both operands
+          # read off the wire. ----
+          - { type: check, field: ue.UplaneReport.dl_qfi, op: equals, expected: "{{ue.Params.pdu_accept_default_qos_rule_qfi}}" }
+          # The raw frame octets, so the trace carries the evidence rather than
+          # only the verdict. Never the verdict itself.
+          - { type: check, field: ue.UplaneReport.dl_ext_hex, op: ie_present }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-904).
+#
+# REG-904 — Downlink G-PDUs observed on n3 have E=1, next-extension-header type 0x85,
+# PDU Type field 0, and a QFI equal to one of the QFIs in the QoS Flow Setup List the
+# core sent over n2
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `dl_container_verified`
+    metric: final_state_counts.dl_container_verified
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 16 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 16 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 16
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

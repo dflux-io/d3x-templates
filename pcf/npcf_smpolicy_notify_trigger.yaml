@@ -1,0 +1,153 @@
+# Npcf_SMPolicyControl — UpdateNotify trigger (client, NOTIFY half).
+# The client half of the notify round-trip (paired with
+# npcf_smpolicy_update_notify_receiver). Creates an SM policy whose
+# notificationUri points at the runner REST listener
+# (http://127.0.0.1:39998/sm-policy-notify), installs an AF app-session, then
+# PATCHes the app-session marBwDl 20→40 Mbps. The decision change makes dpf's
+# PolicyNotifier POST an SmPolicyNotification to {notificationUri}/update — the
+# assertion of record lives in the receiver flow.
+#
+# Notify is async/fire-and-forget (R14): these client steps assert only their
+# own immediate SBI statuses, never the notify effect (which the receiver
+# observes out-of-band). Runs in the foreground while the receiver listens;
+# scripts/dpf-sanity-run.sh step 06-pcf-notify orchestrates both halves.
+# supi is the dash-less seed form (E15); the component carries fDescs (E5).
+
+kind: flow
+name: npcf_smpolicy_notify_trigger
+description: Create sm-policy (notifUri→listener) → install app-session → PATCH marBwDl→40 Mbps
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_sm_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:39998/sm-policy-notify",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_sm_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_appsession
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-policyauthorization/v1/app-sessions",
+                "body": {
+                  "ascReqData": {
+                    "supi": "imsi-001010000000001",
+                    "dnn": "internet",
+                    "sliceInfo": {"sst": 1, "sd": "000001"},
+                    "notifUri": "http://127.0.0.1:1/af-unused",
+                    "suppFeat": "0",
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "20 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_appsession:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_patch
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: app_sess_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "PATCH",
+                "path": "{{ue.Params.app_sess_loc}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "ascReqData": {
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "40 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_patch:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200

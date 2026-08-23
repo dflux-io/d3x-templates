@@ -1,0 +1,119 @@
+# NFM-15 — NFListRetrieval default shape (3gppHal UriList + _links paging).
+#
+# Register one AMF, then GET the collection with NO Accept header and assert the
+# spec-compliant default per 3GPP TS 29.510 §5.2.2.6:
+#   - Content-Type: application/3gppHal+json
+#   - body._links.item is an array of nf-instance URIs (>= 1)
+#   - body._links.self.href points back at the collection
+#   - body.totalItemCount is present (>= 1)
+# Catches a regression to the legacy bare-array default (which the console and
+# scripts still get by sending Accept: application/json — see NFM-04).
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-15. Runs in nrf_smoke.
+
+kind: flow
+name: nrf_nfm_list_hal
+description: NFListRetrieval returns a 3gppHal UriList with _links + paging by default.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterAmf
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "AMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "amf-hal-list-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterAmf_Answer
+        target: listing_hal
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: amf
+          - type: send
+            message: ListHal
+            peer: nrf-peer
+            # No Accept header → spec default (application/3gppHal+json UriList).
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances"
+              }
+
+  listing_hal:
+    transitions:
+      - event: rest.ListHal_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/3gppHal+json"
+          # HAL envelope: _links.item is an array of nf-instance URIs.
+          - type: check
+            field: rest.body._links.item.length
+            op: greater_or_equal
+            expected: 1
+          - type: check
+            field: rest.body._links.self.href
+            op: contains
+            expected: "/nnrf-nfm/v1/nf-instances"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "/nnrf-nfm/v1/nf-instances/"
+          - type: check
+            field: rest.body.totalItemCount
+            op: greater_or_equal
+            expected: 1
+          - type: send
+            message: DeregisterAmf
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.amf}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterAmf_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

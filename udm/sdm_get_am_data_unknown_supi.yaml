@@ -1,0 +1,43 @@
+# Nudm_SDM Get am-data for an unprovisioned SUPI — security/negative.
+# 3GPP TS 29.503 §6.1.7.3 (USER_NOT_FOUND / DATA_NOT_FOUND ProblemDetails).
+# UDM must reject an unknown subscriber with 404 and stay live.
+
+kind: flow
+name: udm_sdm_get_am_data_unknown_supi
+description: GET am-data for a non-provisioned SUPI is rejected with 404
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nudm_SDM_GetSubscriptionData
+            peer: udm
+            message_body: |
+              {
+                "path": "/nudm-sdm/v2/imsi-999999999999999/am-data"
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.Nudm_SDM_GetSubscriptionData_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404

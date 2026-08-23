@@ -1,0 +1,56 @@
+# Npcf_SMPolicyControl — Create for an unprovisioned slice → 403 (negative).
+# 3GPP TS 29.512 §4.2.2. dpf keys SmPolicySnssaiData by snssaiKey (sst hex +
+# sd); the seed provisions only "01000001" ({sst:1,sd:"000001"}). A request
+# with {sst:2} (or sd "999999") has no provisioned SM-policy data → 403. The
+# deterministic negative companion to the {sst:1,sd:"000001"} positive case.
+
+kind: flow
+name: npcf_smpolicy_create_unprovisioned_slice_403
+description: POST sm-policies for an unprovisioned slice {sst:2} → 403
+category: negative
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 2},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 403

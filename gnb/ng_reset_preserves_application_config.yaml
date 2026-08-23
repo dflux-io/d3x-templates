@@ -1,0 +1,303 @@
+# REG-847 — NG RESET must NOT erase the application-level configuration.
+#
+# Clauses, retrieved with matrix/scripts/spec-clause.py 38.413 <clause>:
+#
+#   §8.7.4.1 (NG Reset, General) "The purpose of the NG Reset procedure is to initialise or
+#            re-initialise the RAN, or part of RAN NGAP UE-related contexts, in the event of a
+#            failure in the 5GC or vice versa. THIS PROCEDURE DOES NOT AFFECT THE APPLICATION
+#            LEVEL CONFIGURATION DATA EXCHANGED DURING, E.G., THE NG SETUP PROCEDURE. The
+#            procedure uses non-UE associated signalling."
+#
+#   §8.7.1.1 (NG Setup, General) is the contrast that gives the row its point: NG SETUP "erases
+#            any existing application level configuration data in the two nodes, replaces it by
+#            the one received ... If the NG-RAN node and AMF do not agree on retaining the UE
+#            contexts this procedure also re-initialises the NGAP UE-related contexts (if any)".
+#            NG Setup erases configuration AND contexts; NG Reset erases contexts ONLY. A core
+#            that treats the two alike makes every stuck subscriber cost the whole interface.
+#
+# THE SHAPE OF THE PROBE. One flow, one association, in order:
+#
+#   1. a full registration, so there is a UE-associated context for the reset to have something
+#      to do — a reset against an empty AMF proves nothing about what it spares;
+#   2. NG RESET (global) and its NG RESET ACKNOWLEDGE;
+#   3. a RAN CONFIGURATION UPDATE sent WITHOUT re-running NG Setup. §8.7.2 updates the
+#      configuration of an EXISTING association: if the reset had erased the application-level
+#      configuration, the AMF would hold no association to update and must answer RAN
+#      CONFIGURATION UPDATE FAILURE — which is exactly what tinycore does when it cannot resolve
+#      the sending gNB (tinycore/dmf/amf/config_update.go: unresolved association →
+#      sendRANConfigUpdateFailure). So the ACKNOWLEDGE is a positive, message-level observable
+#      of the configuration having survived, not an absence of complaint;
+#   4. a SECOND registration, again with NO NG SETUP REQUEST anywhere in this flow. It reaches
+#      REGISTRATION ACCEPT on a NEW RAN UE NGAP ID, which is the row's "a new registration
+#      succeeds without a new NGSetupRequest".
+#
+# NO NG SETUP IS SENT BY THIS FLOW AT ALL. The only NG Setup in the run is the one the transport
+# performs when it opens the SCTP association (runner/runner/transport.go), before any flow
+# starts and therefore before the reset. Everything after step 2 rides configuration that
+# predates the reset — which is precisely the claim under test.
+#
+# Every wait lands on `failed` on timeout. There is no quiet-window terminal here: each step of
+# the claim is a message that must arrive.
+#
+# MEASURED against tinycore 2026-08-11: PASS, terminal `config_survived`, 6/6 checks. The NG
+# RESET (17 bytes) was acknowledged (7 bytes), the RAN CONFIGURATION UPDATE that followed it
+# with no re-setup was acknowledged (7 bytes), and the second registration reached REGISTRATION
+# ACCEPT on RAN UE NGAP ID 2 with a new AMF UE NGAP ID (42 -> 43). No NG SETUP REQUEST appears
+# anywhere in the flow's message log.
+
+kind: flow
+name: ng_reset_preserves_application_config
+description: Register, NG RESET, then RAN CONFIGURATION UPDATE and a second registration with no new NG SETUP — assert the application-level configuration survived the reset (TS 38.413 §8.7.4.1)
+detail: |
+  TS 38.413 §8.7.4.1 says the NG Reset procedure "does not affect the application level
+  configuration data exchanged during, e.g., the NG Setup procedure" — it re-initialises
+  UE-related contexts and nothing else. §8.7.1.1 says NG Setup, by contrast, erases that
+  configuration and replaces it. Confusing the two means a reset triggered by one stuck
+  subscriber takes the whole interface's configuration with it.
+
+  The flow registers a UE, sends a global NG RESET, and then — without ever sending an NG SETUP
+  REQUEST — does two things that can only work if the configuration survived: a RAN
+  CONFIGURATION UPDATE, which updates the configuration of an existing association and must be
+  ACKNOWLEDGED rather than failed, and a second full registration on a freshly allocated RAN UE
+  NGAP ID, which must reach REGISTRATION ACCEPT.
+
+  Reaching `config_survived` means both happened. A RAN CONFIGURATION UPDATE FAILURE, a refused
+  second registration, or silence at any step lands on `failed`.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - config_survived
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # The RAN UE NGAP ID of the connection the reset is going to clear.
+          # Captured before any send, because `d3x-run lint` refuses an extract
+          # that follows a send.
+          - type: extract
+            field: ue.RanUeNgapId
+            store: pre_reset_ran_ue_ngap_id
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  # A UE-associated context now exists on this association. The reset has
+  # something to re-initialise, and the configuration has something to survive.
+  wait_context_setup:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_ng_reset_ack
+        actions:
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # Global NG Reset: ResetType = ng-Interface, every UE-associated
+          # logical NG-connection on this association (§8.7.4.2.2).
+          - type: send
+            message: NGReset
+
+  wait_ng_reset_ack:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NGResetAcknowledge
+        target: wait_config_update_ack
+        actions:
+          # Step 3: configuration update on an association that was never
+          # re-set-up. §8.7.2.2 — the AMF can only acknowledge this if it still
+          # holds the application-level configuration for this gNB.
+          - type: send
+            message: RANConfigurationUpdate
+
+  wait_config_update_ack:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: RANConfigurationUpdateAcknowledge
+        target: wait_second_auth_request
+        actions:
+          # Step 4: a new UE-associated logical NG-connection needs a new RAN UE
+          # NGAP ID — the reset released the old one (§8.7.4.2.1).
+          - type: ngap_realloc
+          - type: send
+            message: InitialUEMessage
+      # The AMF cannot update a configuration it no longer has. That is the
+      # §8.7.4.1 violation this row exists to catch, named rather than left to
+      # time out so the trace says which failure it was.
+      - event: RANConfigurationUpdateFailure
+        target: failed
+
+  wait_second_auth_request:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_second_security_mode
+        actions:
+          - type: send
+            message: AuthResponse
+
+  wait_second_security_mode:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_second_context_setup
+        actions:
+          - type: send
+            message: SecurityModeComplete
+
+  wait_second_context_setup:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: config_survived
+        actions:
+          # The second registration completed on THIS association with no NG
+          # SETUP REQUEST between the reset and here.
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          # ... and on a genuinely new UE-associated logical NG-connection:
+          # GnbContext.AllocateUE is a monotonic counter, so "greater than the
+          # id captured before the reset" is exactly "not the pre-reset
+          # connection". The right-hand side comes from an extract taken before
+          # the first InitialUEMessage — not from the message under test.
+          - type: check
+            field: ran_ue_ngap_id
+            op: greater_than
+            expected: "{{ue.Params.pre_reset_ran_ue_ngap_id}}"
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-847).
+#
+# REG-847 — After NGResetAcknowledge, a RANConfigurationUpdate sent without repeating NG
+# Setup is still acknowledged, and a new registration succeeds without a new
+# NGSetupRequest
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `config_survived`
+    metric: final_state_counts.config_survived
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: two INITIAL CONTEXT SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 2
+  - name: two INITIAL UE MESSAGE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 6
+  - name: one NG RESET was sent
+    metric: msg_types.tx.ngap.NGAP_NG_RESET
+    op: equals
+    value: 1
+  - name: one RAN CONFIGURATION UPDATE was sent
+    metric: msg_types.tx.ngap.NGAP_RAN_CONFIGURATION_UPDATE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: two REGISTRATION ACCEPT messages arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 2
+  - name: two AUTHENTICATION REQUEST messages arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 2
+  - name: two SECURITY MODE COMMAND messages arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 2
+  - name: an NG RESET ACKNOWLEDGE arrived
+    metric: rx_events.NGResetAcknowledge
+    op: greater_or_equal
+    value: 1
+  - name: a RAN CONFIGURATION UPDATE ACKNOWLEDGE arrived
+    metric: rx_events.RANConfigurationUpdateAcknowledge
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

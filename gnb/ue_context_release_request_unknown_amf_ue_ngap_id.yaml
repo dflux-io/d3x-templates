@@ -1,0 +1,105 @@
+# UEContextReleaseRequest carrying an UNKNOWN AMF-UE-NGAP-ID
+# (3GPP TS 38.413 §8.3.2 / §10 — inconsistent UE identity).
+#
+# Registers, then sends a gNB-initiated UEContextReleaseRequest whose
+# AMF-UE-NGAP-ID is a bogus value the AMF cannot match to a context (injected via
+# message_body; the RAN id is left for the enricher to fill from the live UE).
+# A correct AMF detects the mismatch and ignores / errors rather than releasing
+# an unrelated context or crashing.
+#
+# No new enricher: EnrichUEContextReleaseRequest only back-fills AMFUeNgapId when
+# zero, so the bogus value survives. Lenient terminals: `handled`
+# (UEContextReleaseCommand / ErrorIndication), `tolerated` (silent ignore),
+# `failed` on transport error.
+kind: flow
+name: ue_context_release_request_unknown_amf_ue_ngap_id
+description: gNB release request with a bogus AMF-UE-NGAP-ID; assert AMF detects/ignores (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - handled
+  - tolerated
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reaction
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # Bogus AMF-UE-NGAP-ID; RAN id left for the enricher to fill.
+          - type: send
+            message: UEContextReleaseRequest
+            message_body: |
+              { "amf_ue_ngap_id": 8388607 }
+  wait_reaction:
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: handled
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+      - event: ErrorIndication
+        target: handled
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-247 (robustness, expected_terminal: null) —
+# ErrorIndication received on N2 quoting the offending AP IDs, the NG association stays
+# up, and a concurrently registered UE's connection is unaffected
+#
+# REG-247 declares `expected_terminal: null`; its criterion names a message anyway:
+# "ErrorIndication received on N2 quoting the offending AP IDs". `tolerated` is the bare
+# 10 s timer, and §10.6 places a positive duty on the receiving node here, so silence is
+# a deviation rather than the answer. NOT ASSERTED: "a concurrently registered UE's
+# connection is unaffected" — this flow runs one UE.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `handled` — the terminal this row claims
+    metric: final_state_counts.handled
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

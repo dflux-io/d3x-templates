@@ -1,0 +1,64 @@
+# N4/PFCP — Session Modification with unknown SEID (negative/security).
+# 3GPP TS 29.244 §7.5.4 / §7.5.6; §8.2.1 (Cause 66 — Session context not found).
+#
+# runner (SMF) associates, then sends a PFCPSessionModificationRequest whose header
+# SEID points at a session that does not exist (bogus RemoteSEID injected via
+# message_body). A spec-correct UPF MUST reject with Cause="Session context not
+# found" (asserted via the pfcp.cause resolver) and stay up.
+#
+# RUNTIME NOTE: the modification enricher only fills the header when message_body
+# leaves it nil; here we supply the header so the bogus SEID survives. The codec
+# field path is Header.Seid with SeidFlag set.
+kind: flow
+name: smf_pfcp_session_mod_unknown_seid
+description: SMF modification with bogus SEID — expect Cause Session context not found
+category: negative
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: smf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_modify
+        actions:
+          - type: send
+            message: PFCPSessionModificationRequest
+            message_body: |
+              {
+                "Header": {
+                  "SeidFlag": true,
+                  "Seid": 18446744073709551615
+                }
+              }
+
+  wait_modify:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionModificationResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Session context not found"

@@ -1,0 +1,190 @@
+# REG-715 — a REGISTRATION REQUEST that carries a UE STATE INDICATION in its
+# Payload container IE is accepted normally.
+#
+# THE CLAUSES (retrieved with matrix/scripts/spec-clause.py).
+#
+# TS 24.501 §D.2.2.2, on how this message reaches the network at all:
+#   "In order to initiate the UE-initiated UE state indication procedure, the UE
+#   shall create a UE STATE INDICATION message. … The UE shall send the UE STATE
+#   INDICATION message. The UE shall transport the created UE STATE INDICATION
+#   message using the registration procedure (see subclause 5.5.1)."
+#
+# So this is not an exotic capability probe: it is what every handset that has
+# ever stored a UE policy section does on every registration, and the network's
+# only obligation is to register the UE anyway. §D.2.2.4 is explicit that apart
+# from the accepted case "no abnormal cases have been identified" — there is no
+# licence anywhere for rejecting a registration over this container.
+#
+# WHAT IS IN THE CONTAINER, octet by octet, from table D.5.4.1.1:
+#   01     PTI                                     §9.6, format V, 1 octet
+#   04     UE STATE INDICATION message identity    §D.6.1, format V, 1 octet
+#   00 00  UPSI list, LV-E: length 0, no contents  §D.6.4
+#   01 00  UE policy classmark, LV: len 1, no caps §D.6.5
+# The empty UPSI list is the encoding §D.2.2.2 NOTE 1 prescribes for a UE that
+# holds no UE policy section ("the UE sets the Length of UPSI list contents field
+# … to zero"), which is true of a simulated UE that has never been provisioned
+# one — and it is also the shape §D.6.4's own NOTE warns older PCFs about, so it
+# is the interesting encoding rather than a lazy one.
+#
+# WHERE THE CONTAINER TRAVELS. Neither the Payload container type IE nor the
+# Payload container IE is on TS 24.501 §4.4.6's cleartext list for a
+# REGISTRATION REQUEST, so on an initial registration with no security context
+# they must NOT ride on the unprotected INITIAL UE MESSAGE. §4.4.6 a)1) puts
+# them in "the entire REGISTRATION REQUEST message … in the NAS message
+# container IE" of SECURITY MODE COMPLETE, and that is where this flow sends
+# them (EnrichInitialUEMessage splits the two copies; see its §4.4.6 block).
+# "Carried in the REGISTRATION REQUEST payload container", which is the row's
+# title, is therefore satisfied by the message the network is required to read,
+# not by the trimmed copy §4.4.6 forbids from carrying it.
+#
+# WHAT THE CHECKS ASSERT.
+#   1. `ue.Params.reg_payload_container_type equals 5` — the Payload container
+#      type IE really is "UE policy container" (§9.11.3.39 value 5) and not some
+#      other container that happened to encode.
+#   2. `ue.Params.reg_ue_policy_container equals "010400000100"` — the exact six
+#      octets above went into the message. Both keys are written by
+#      EnrichInitialUEMessage only on the branch that actually set the IEs, so a
+#      dropped param cannot leave this row quietly testing a plain registration
+#      and calling the resulting accept a pass. They are checked on the FIRST
+#      transition, before anything can be concluded from the network's answer.
+#   3. The row's own criterion: a REGISTRATION ACCEPT arrives and the flow ends
+#      in `registered`, after REGISTRATION COMPLETE. `nas.registration_result
+#      ie_present` guards that the accept decoded as an accept rather than
+#      resolving vacuously.
+#
+# The wire proof for (1) and (2) is in -trace: the SECURITY MODE COMPLETE NAS
+# message container carries the replayed REGISTRATION REQUEST with IEI 0x80
+# (Payload container type, value 5) and IEI 0x7B (Payload container) holding
+# 01 04 00 00 01 00.
+#
+# Terminals are (registered, failed) only and every on_timeout targets `failed`.
+
+kind: flow
+name: ue_policy_state_indication_in_registration
+description: REG-715 — initial registration carrying a UE STATE INDICATION in the payload container is accepted normally (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessageUEStateIndication
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          # (1) + (2) — the precondition, asserted before the answer is read.
+          - { type: check, field: ue.Params.reg_payload_container_type, op: equals, expected: 5 }
+          - { type: check, field: ue.Params.reg_ue_policy_container, op: equals, expected: "010400000100" }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      # This is the message that delivers the container: SECURITY MODE COMPLETE
+      # replays ue.NGAP.RegNasPdu, the full REGISTRATION REQUEST including the
+      # non-cleartext IEs (§4.4.6 a)1)).
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          # (3) THE ROW — accepted, not rejected, not ignored.
+          - { type: check, field: nas.registration_result, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      # A core that answered the container with a rejection has broken §D.2.2.4.
+      # Routed to `failed` through the explicit event rather than a timeout so
+      # the message log names the reason.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-715).
+#
+# REG-715 — REGISTRATION ACCEPT is received and the UE reaches the registered terminal
+# state, with the payload container present in the request
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent (InitialUEMessageUEStateIndication)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The five `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all five declared checks ran
+    metric: checks_total
+    op: equals
+    value: 5
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

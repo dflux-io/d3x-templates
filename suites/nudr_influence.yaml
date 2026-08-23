@@ -1,0 +1,42 @@
+# runner -> dpf Nudr application-data/influenceData SBI suite — one execution per
+# flow.
+#
+# Drives dpf's UDR application-data facade
+# (/nudr-dr/v2/application-data/influenceData, TS 29.519) with runner acting as
+# the SBI consumer (the AF→NEF→UDR provisioning role). Every step is a single
+# deterministic execution scored on its own spec-correct terminal.
+#
+# SCOPE (be honest): these validate the Nudr influenceData SBI ROUND-TRIPS
+# ONLY — PUT (201+Location), GET (body dnn/snssai round-trip), the ?dnn=
+# collection filter, subs-to-notify create (201+Location), and the deletes
+# (204). The influence→SMF DNAI/FAR application (trafficRoutes acted on at PDU
+# establishment) and the TrafficInfluDataNotif fan-out both need the docker lab
+# + a live SMF and stay Go-gated.
+#
+# Run (script step 10-nudr-influence in d3x-core scripts/dpf-sanity-run.sh):
+#   d3x-run run-suite -suite nudr-influence \
+#       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
+#
+# Requires the lab config to declare a `udr` NF binding at the dpf base URL
+# (the seeded dpf serves the UDR facade on the same port as PCF). Empty
+# expected-fail list — every step must pass against the seeded dpf.
+
+kind: suite
+name: nudr-influence
+description: One-execution-per-flow Nudr application-data/influenceData SBI conformance pass against dpf's UDR facade (SBI round-trips only).
+steps:
+  - name: influence_crud_ok
+    flow: nudr_influence_crud_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: influence_subs_ok
+    flow: nudr_influence_subs_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed

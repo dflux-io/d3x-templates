@@ -1,0 +1,297 @@
+# REG-519 — what the AMF hands the target to key AS security with.
+#
+# TS 38.413 §8.4.2.2 makes both IEs the target's inputs: on receipt of the
+# HANDOVER REQUEST the target NG-RAN node shall "store the received UE Security
+# Capabilities in the UE context" and "store the received Security Context in
+# the UE context and take it into use as defined in TS 33.501".
+#
+# THE NCC VALUE IS NOT ARBITRARY. TS 33.501 §6.9.2.1.1: "At initial setup, the
+# KgNB is derived directly from KAMF, and is then considered to be associated
+# with a virtual NH parameter with NCC value equal to zero. At initial setup,
+# the derived NH value is associated with the NCC value one." This UE has had
+# exactly one AS security context established (the INITIAL CONTEXT SETUP, NCC
+# 0) and no prior handover, so the fresh {NH, NCC} the AMF computes for this
+# handover must carry NCC 1 — one greater than the value the UE context was
+# last associated with. Anything else means the chain was not advanced (reuse
+# of the same NH defeats the backward key separation the chain exists for) or
+# was advanced more than once.
+#
+# THE CAPABILITIES ARE THE UE'S OWN. 65024 == 0xFE00 is the NGAP 16-bit bitmap
+# for the seven non-null NR algorithms this simulated UE advertises in its
+# REGISTRATION REQUEST (NEA1..NEA7 / NIA1..NIA7); it is the identical value the
+# INITIAL CONTEXT SETUP REQUEST row asserts, because both IEs are the AMF's
+# copy of the same capability set.
+#
+# THIS FLOW OWNS THE TARGET SIDE. Declaring a `HandoverRequest` transition
+# suppresses the runner's fire-and-forget target auto-reply and hands the
+# decoded HANDOVER REQUEST to this flow, which then answers as the target
+# NG-RAN node — on the TARGET association (`peer:`), because that is who a
+# HANDOVER REQUEST ACKNOWLEDGE / HANDOVER FAILURE is from (TS 38.413 §8.4.2).
+# A reply on the source leg would arrive on the association the AMF already
+# has the UE on, and a conformant AMF ignoring it would score as a defect.
+#
+# NEEDS TWO gNBs (register preconditions.gnbs: 2). With one gNB the HANDOVER
+# REQUIRED names a target the AMF has never seen and the row measures "unknown
+# target" instead of handover.
+
+kind: flow
+name: n2_handover_request_security_context_and_caps
+description: N2 handover; assert the HANDOVER REQUEST carries a Security Context with NCC one greater than the UE's current AS NCC, and the UE Security Capabilities the UE advertised
+detail: |
+  Registration, one PDU session, HANDOVER REQUIRED. The flow acts as the
+  target NG-RAN node and asserts, on the HANDOVER REQUEST it receives:
+
+    - the Security Context IE is present, carries a Next Hop, and its NCC is 1
+      — one greater than the NCC 0 associated with the initial KgNB
+      (TS 33.501 §6.9.2.1.1);
+    - the UE Security Capabilities IE is present and equals the algorithms the
+      UE advertised at registration (0xFE00 in each NR bitmap).
+
+  It then admits the handover so a pass also means the reply was consumed.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - handover_request_security_verified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_handover_request
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: HandoverRequired
+
+  wait_handover_request:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: HandoverRequest
+        target: wait_handover_command
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # --- TS 38.413 §8.4.2.2 + TS 33.501 §6.9.2.1.1: the {NH, NCC} pair ---
+          - type: check
+            field: security_context
+            op: ie_present
+          - type: check
+            field: security_context.next_hop_nh
+            op: not_empty
+          - type: check
+            field: security_context.next_hop_chaining_count
+            op: equals
+            expected: 1
+          # --- TS 38.413 §8.4.2.2: the UE's own capabilities, unmodified ---
+          - type: check
+            field: ue_security_capabilities
+            op: ie_present
+          - type: check
+            field: ue_security_capabilities.nr_encryption_algorithms
+            op: equals
+            expected: 65024
+          - type: check
+            field: ue_security_capabilities.nr_integrity_protection_algorithms
+            op: equals
+            expected: 65024
+          - type: send
+            message: HandoverRequestAcknowledge
+            peer: "{{ue.Params.target_gnb_name}}"
+
+  wait_handover_command:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: HandoverCommand
+        target: handover_request_security_verified
+      - event: HandoverPreparationFailure
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-519).
+#
+# REG-519 — The decoded HANDOVER REQUEST on the target association contains a Security
+# Context IE whose NCC is exactly one greater than the NCC the UE context was last
+# associated with, and UE Security Capabilities equal to those the UE advertised at
+# registration.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `handover_request_security_verified`
+    metric: final_state_counts.handover_request_security_verified
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one HANDOVER ACKNOWLEDGE was sent (HandoverRequestAcknowledge)
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_ACKNOWLEDGE
+    op: equals
+    value: 1
+  - name: one HANDOVER REQUIRED was sent
+    metric: msg_types.tx.ngap.NGAP_HANDOVER_REQUIRED
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a HANDOVER COMMAND arrived
+    metric: rx_events.HandoverCommand
+    op: greater_or_equal
+    value: 1
+  - name: a HANDOVER REQUEST arrived
+    metric: rx_events.HandoverRequest
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 14 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 14 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 14
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

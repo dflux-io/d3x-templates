@@ -1,0 +1,48 @@
+# PFCP Association Setup (3GPP TS 29.244 §6.2.6.2 / §7.4.4).
+#
+# runner plays the SMF/CP-function peer and establishes a node-level PFCP
+# association with a real Open5GS UPF over N4. The enricher auto-fills our
+# NodeID (from the binding config) and a RecoveryTimeStamp; the UPF replies
+# with PFCPAssociationSetupResponse carrying Cause "Request accepted".
+#
+# Spec-correct success = an AssociationSetupResponse whose Cause IE is
+# "Request accepted" (TS 29.244 §8.2.1, value 1).
+
+kind: flow
+name: upf_pfcp_association_setup
+description: SMF establishes a PFCP association against a real UPF (N4)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - associated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: associated
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.node_id
+            op: not_empty

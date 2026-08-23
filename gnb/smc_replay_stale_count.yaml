@@ -1,0 +1,234 @@
+# Secured/abnormal NAS probe — Re-emit a secured uplink NAS at a stale NAS COUNT after security activation (3GPP TS 33.501 / TS 24.501 abnormal cases).
+#
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE (xp-245 negative-probe audit).
+#
+# The probe is genuine. After SECURITY MODE COMPLETE at COUNT 0 and REGISTRATION
+# COMPLETE at COUNT 1, the replay goes out as
+#
+#     7e 02 f2 4b 16 0e 00 | 66 1b 3b
+#     ^EPD ^hdr ^MAC       ^SN = 0, a COUNT this context has already spent
+#
+# and tinycore answered `nas: MAC mismatch: received f24b160e, expected
+# e0349cb0` — it computed the MAC over the COUNT it still expects, not the one
+# the UE claimed, which is exactly how TS 24.501 §4.4.3.2 ("a given NAS COUNT
+# value shall be accepted at most one time") and TS 33.501 §6.4.3.2 replay
+# protection are supposed to work — and discarded the message.
+#
+# A discard emits nothing, the flow had no transition for nothing, and so it
+# timed out into `tolerated` and recorded working replay protection as missing
+# replay protection.
+#
+# WHY SILENCE ALONE IS NOT ENOUGH HERE, AND WHAT IS.
+# A replayed REGISTRATION COMPLETE draws no downlink whether it is discarded or
+# swallowed, so inverting the timer on its own would leave a row that cannot
+# fail. The discriminator is the NAS COUNT itself. An AMF that DISCARDED the
+# replay still expects COUNT 2; an AMF that ACCEPTED it has moved its expected
+# uplink COUNT back to 1. So the window is followed by a legitimate, correctly
+# counted DEREGISTRATION REQUEST at COUNT 2:
+#
+#   DEREGISTRATION ACCEPT comes back  -> the AMF's COUNT was never moved -> rejected
+#
+# (This needed EnrichSecuredUplinkStaleCount to restore the UE's own COUNT after
+# the rewind; before that fix the follow-up was unsendable — see that enricher.)
+#
+# ============================================================================================
+# AN ACCEPTANCE TERMINAL REACHED BY A TIMER IS AS INADMISSIBLE AS A PASS REACHED BY ONE.
+# ============================================================================================
+#
+# The line struck out above used to read "nothing comes back -> the replay poisoned it ->
+# tolerated", and `tolerated` was the TIMEOUT target of prove_count_intact. So the row's SECURITY
+# FINDING — "this core has no NAS replay protection" — rested on nothing but our own patience.
+# Measured on the 50effc0 baseline, Open5GS landed there: "timed out in state=prove_count_intact
+# after 10.0s — terminal target=tolerated", terminal_via_timeout {"tolerated": 1}, and
+# lib/outcome.py DEFENCE 11 voided it. `inconclusive`, against tinycore's and free5GC's passes on
+# a message.
+#
+# DEFENCE 11 IS RIGHT AND THE ROW WAS WRONG. Silence to the DEREGISTRATION REQUEST is consistent
+# with a poisoned uplink COUNT, and equally with a crashed AMF, a released association, a message
+# that never arrived, or an answer our FSM names no transition for. Publishing "no replay
+# protection" on that evidence is the most expensive wrong answer this harness can produce.
+#
+# ============================================================================================
+# THE DISCRIMINATOR FOR THE FINDING: A CHANNEL THE COUNT CANNOT REACH.
+# ============================================================================================
+#
+# The claim behind `tolerated` is specifically that the AMF's UPLINK NAS COUNT STATE was moved by
+# the replay. That claim has an observable, and it is the difference between two channels:
+#
+#   NAS  is COUNT-protected. A correctly counted DEREGISTRATION REQUEST at the next COUNT fails
+#        its MAC — and draws nothing — precisely when the AMF's expected COUNT has been disturbed.
+#   NGAP is not. A UE CONTEXT RELEASE REQUEST (TS 38.413 §8.3.2) carries no NAS PDU and no MAC, so
+#        the AMF's NAS COUNT state cannot affect it. §8.3.2.2: on receipt "the AMF shall initiate
+#        the UE Context Release procedure", i.e. answer with a UE CONTEXT RELEASE COMMAND.
+#
+# So after the NAS silence the flow asks the same AMF, about the same UE, over the channel the
+# COUNT cannot touch:
+#
+#   `tolerated`  the UE CONTEXT RELEASE COMMAND comes back. The association is up, the AMF is
+#                alive, and it still holds this UE's context — every alternative reading of the
+#                NAS silence is excluded, and what is left is the one thing the two channels
+#                differ in: the AMF's uplink NAS COUNT no longer accepts a correctly counted
+#                message. The finding, on a message.
+#   `unproven`   neither channel answers. Then the AMF is simply not reachable for this UE and
+#                the row has learned nothing about §4.4.3.2. Reached on a timer DEFENCE 11
+#                renders it `inconclusive`, which is the honest verdict.
+#
+# MEASURED, not hoped for: a UE CONTEXT RELEASE REQUEST draws a UE CONTEXT RELEASE COMMAND from
+# all three cores in this baseline — REG-455's `wait_release_cmd` and REG-457's do exactly this
+# and every one of the six cells got its release command.
+#
+# THE RESIDUAL AMBIGUITY, STATED RATHER THAN HIDDEN. An AMF that answers NGAP but has released
+# the NAS-level 5GMM context for an unrelated reason would also land on `tolerated`. Nothing on
+# this wire separates that from a poisoned COUNT; what the probe does establish is that the
+# silence was not an outage, which is the reading that used to be indistinguishable and is the
+# one that made the terminal worthless.
+kind: flow
+name: smc_replay_stale_count
+description: Re-emit a secured uplink NAS at a stale NAS COUNT after security activation (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions: [{ type: send, message: InitialUEMessage, params: { follow_on_request: true } }]  # FOR bit: uplink NAS pending (TS 24.501 §9.11.3.7)
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reaction
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: SecuredUplinkStaleCount
+            params: { force_uplink_count: 0 }
+  wait_reaction:
+    # The §4.4.3.2 absence window (register absent_after_s: 6). Nothing is
+    # expected; what the window buys is the chance for something to arrive
+    # before the COUNT-integrity probe muddies the trace.
+    on_timeout:
+      duration: 6s
+      target: prove_count_intact
+      actions: [{ type: send, message: DeregistrationRequest }]
+    transitions:
+      - { event: NASDownlinkTransport.AuthenticationReject, target: rejected }
+      - { event: NASDownlinkTransport.SecurityModeReject, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+  prove_count_intact:
+    # No answer to a message the AMF *can* verify is CONSISTENT with its uplink
+    # COUNT having moved backwards with the replay — and with four other things,
+    # none of which is a finding. So this window ends in a second question, not in
+    # the verdict it used to end in.
+    on_timeout:
+      duration: 8s
+      target: prove_association_live
+      actions:
+        # THE DISCRIMINATOR FOR THE FINDING: NGAP, which the NAS COUNT cannot
+        # reach. TS 38.413 §8.3.2.2 obliges the AMF to answer a UE CONTEXT RELEASE
+        # REQUEST with a UE CONTEXT RELEASE COMMAND, and this message carries no
+        # NAS PDU and no MAC, so no COUNT state can suppress it.
+        - { type: send, message: UEContextReleaseRequest }
+    transitions:
+      - event:
+          or:
+            - NASDownlinkTransport.DeregistrationAccept
+            - UEContextReleaseCommand
+        target: rejected
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+  prove_association_live:
+    # Neither channel answered. The AMF is not reachable for this UE at all, so
+    # nothing was learned about §4.4.3.2 — and reading that as "no replay
+    # protection" is exactly the publishable falsehood this row was producing.
+    on_timeout: { duration: 6s, target: unproven }
+    transitions:
+      # THE FINDING, ON A MESSAGE. NGAP answers for this very UE while a correctly
+      # counted NAS message drew nothing: the association is up, the AMF is alive
+      # and still holds the context, and the only thing the two channels differ in
+      # is the uplink NAS COUNT state the replay moved.
+      #
+      # NO CHECK ON THIS BRANCH, DELIBERATELY: a check is a GATE, and a failing
+      # gate on the branch whose target is the security finding is a way for the
+      # finding to vanish into `wrong-response`.
+      - event: UEContextReleaseCommand
+        target: tolerated
+        actions: [{ type: send, message: UEContextReleaseComplete }]
+      # A late DEREGISTRATION ACCEPT — or any late NAS answer — means the COUNT was
+      # never moved after all, so the row passes and the verdict does not depend on
+      # which side of the window boundary the core's own timer falls.
+      - event:
+          or:
+            - NASDownlinkTransport.DeregistrationAccept
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+      # An NGAP ERROR INDICATION says our release request was not processed as
+      # sent, which proves nothing about the NAS COUNT either way.
+      - { event: ErrorIndication, target: unproven }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-439 (negative, expected_terminal: rejected) — A
+# SECURITY MODE COMPLETE replayed with an already-used NAS COUNT draws no downlink NAS
+# message and no N2 message; the registration outcome reached by the first, genuine
+# completion is unchanged, PROVED by a correctly counted DEREGISTRATION REQUEST at the
+# next NAS COUNT still drawing its DEREGISTRATION ACCEPT. The converse finding is
+# equally message-backed — where that accept does not come, the row reports the replay
+# as accepted only if the AMF then answers an NGAP UE CONTEXT RELEASE REQUEST for the
+# same UE, a channel carrying no NAS PDU and no MAC so that no COUNT state can suppress
+# it, which proves the silence was a COUNT state and not an outage. Silence on both
+# channels is neither the pass nor the finding.
+#
+# REG-439: the replayed completion draws nothing, PROVED by a correctly counted
+# DEREGISTRATION REQUEST still drawing its ACCEPT — prove_count_intact -> `rejected`.
+# `tolerated` is the AMF answering the NGAP UE CONTEXT RELEASE REQUEST after the NAS
+# channel went quiet (the criterion's converse finding); `unproven` is silence on both
+# channels, "neither the pass nor the finding".
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 2
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,83 @@
+# Multi-application S6a + Rx flow with mid-flow Rx drop.
+#
+# Mirrors dsr-sim's s6a_rx_edge_drops_aar.json: the S6a half (ULR/ULA)
+# completes normally, then we send AAR but edge is configured to drop
+# Rx requests. The Rx receive-step times out — `on_timeout` routes to
+# `completed` so the timeout is treated as the expected outcome rather
+# than a flow failure.
+#
+# When edge is in default echo mode, the AAR comes back as expected and
+# the AAR transition fires, taking the flow through AAA echo to completion.
+# Either path lands at `completed`; the doc-string is what marks intent.
+#
+# Run with config/lab-diameter-multiapp.yaml so CER advertises both apps.
+
+kind: flow
+name: diameter_s6a_rx_edge_drops_aar
+description: Multi-app S6a+Rx with Rx drop — S6a completes, AAR times out
+category: negative
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ulr_echo
+        actions:
+          - type: send
+            message: ULR
+
+  wait_ulr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULR
+        target: wait_ula_echo
+        actions:
+          - type: send
+            message: ULA
+
+  wait_ula_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULA
+        target: wait_aar_echo
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+          - type: send
+            message: AAR
+
+  # The Rx leg: edge drop mode means no AAR echo arrives, on_timeout fires
+  # and the flow lands at completed (S6a half already succeeded). When edge
+  # is in default echo mode, the AAR transition catches the echo and the
+  # flow continues through AAA to the same terminal state.
+  wait_aar_echo:
+    on_timeout:
+      duration: 2s
+      target: completed
+    transitions:
+      - event: AAR
+        target: wait_aaa_echo
+        actions:
+          - type: send
+            message: AAA
+
+  wait_aaa_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: AAA
+        target: completed

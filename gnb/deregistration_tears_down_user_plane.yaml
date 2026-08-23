@@ -1,0 +1,338 @@
+# REG-177 — de-registration must take the DATA PATH with it, not just the
+# signalling.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 24.501 §5.5.2.1 (De-registration, general) — "The de-registration
+#   procedure ... is used ... to release the N1 NAS signalling connection and
+#   all the established PDU sessions", i.e. the PDU sessions are IN SCOPE of the
+#   procedure, not a side effect of it.
+#
+#   TS 23.502 §4.2.2.3.2 steps 2-4 (UE-initiated De-registration) — the AMF
+#   invokes Nsmf_PDUSession_ReleaseSMContext for EACH of the UE's PDU sessions,
+#   the SMF releases the session and the N4 resources, and only then does the
+#   AMF release the N2 context. The UPF's PDRs and FARs for that session go with
+#   it, which is the thing this row observes from the outside.
+#
+# WHAT THE ROW ASSERTS, AND WHY IT IS NOT AN "IT WENT QUIET" ROW.
+#
+# The register's criterion is an ABSENCE — "a packet sent into the previously
+# established N3 tunnel produces no response on N6". An absence is the easiest
+# assertion in this harness to satisfy vacuously, so it is fenced on three sides
+# and NONE of the three is a timer:
+#
+#   1. THE TUNNEL IS PROVED LIVE FIRST. Before any de-registration the flow runs
+#      a full user-plane window and requires pkt_rx > 0. If the core never had a
+#      data path — tinycore ran its UPF with `-datapath stub` for weeks, and
+#      REG-900/901 record what that looked like — the row fails HERE, on a check
+#      that names the first window, instead of sailing through to a silent
+#      second window and reporting a teardown that never happened because there
+#      was nothing to tear down.
+#
+#   2. THE SECOND PROBE IS PROVED TO HAVE BEEN SENT. `pkt_tx > 0` in the second
+#      window is the only thing pkt_tx is ever good for: UspaceExecutor
+#      .startWriter increments it immediately after WriteToGTP on an
+#      UNCONNECTED UDP socket, so it says "our generator ran" and NOTHING about
+#      the far end — it is non-zero against no UPF at all. That is exactly the
+#      question here: without it, an executor that failed to start would report
+#      pkt_rx == 0 and the row would call a harness fault a clean teardown.
+#
+#   3. THE CORE IS PROVED TO HAVE ACTED. The UE CONTEXT RELEASE COMMAND on N2 is
+#      the positive acceptance observable: the AMF completed the procedure and
+#      released the N2 resources (§4.2.2.3.2 step 5), which is the second half
+#      of the register's criterion. The flow reaches its terminal through that
+#      message arriving, never through a clock.
+#
+# THE TWO WINDOWS REALLY ARE TWO MEASUREMENTS, and this is load-bearing enough
+# to record. UspaceExecutor.AddTeid stores a FRESH teidEntry with a fresh
+# newTeidStats() for the tunnel each time uplane_start runs
+# (runner/runner/uplane_uspace.go), and ReportForTeid prefers the live registry
+# entry, falling back to retiredStats only after DelTeid has retired it. So the
+# second UplaneComplete carries the SECOND window's counters alone — it is not a
+# running total, and `pkt_rx equals 0` is a statement about the packets sent
+# after de-registration, not about the difference between two cumulative
+# numbers. (Per-UE accounting itself arrived with the report fix: before it,
+# GetReport was executor-wide AND destructive, and the first UE to finish
+# drained everyone's.)
+#
+# A zero pkt_rx is a VALUE here, not a missing field: resolveUEField builds the
+# UplaneReport map explicitly rather than by marshalling the struct, precisely
+# so a zero counter survives instead of being dropped by `,omitempty`. Without
+# that, `equals 0` would be indistinguishable from "the report had no such key".
+#
+# WHAT THE OTHER ANSWER LOOKS LIKE. If the tunnel survives the de-registration
+# the second window returns pkt_rx > 0, that check fails, and the row lands in
+# the review queue naming it. There is no terminal that can be reached by the
+# tunnel still working and no terminal that can be reached by nothing happening,
+# so the row cannot report success for either.
+#
+# VACUITY, ALL FOUR CLASSES, CHECKED. No `not_contains` anywhere. No `exists`
+# anywhere. pkt_tx is used only as generator liveness and is never the gate —
+# pkt_rx carries both windows. Fourteen checks are evaluated on the path to the
+# terminal, none of them skippable.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; the
+# matrix was held by a concurrent run and this flow has never been executed.
+
+kind: flow
+name: deregistration_tears_down_user_plane
+description: Register, establish a PDU session, prove the N3 tunnel carries traffic, de-register, and assert the same tunnel carries nothing afterwards (TS 24.501 §5.5.2.1)
+detail: |
+  Registration, one PDU session, and a user-plane window that must succeed:
+  ICMP echo encapsulated in GTP-U on the UPF's TEID, answered on the DL TEID
+  this gNB signalled. That is the row's precondition — a tunnel that demonstrably
+  worked.
+
+  The UE then de-registers (TS 24.501 §5.5.2.1). The AMF releases the SM
+  contexts and the N2 resources (TS 23.502 §4.2.2.3.2), which the flow observes
+  as a UE CONTEXT RELEASE COMMAND and acknowledges.
+
+  A second user-plane window then drives the SAME tunnel again. The generator
+  must run (pkt_tx > 0) and nothing must come back (pkt_rx == 0). A tunnel that
+  still carries traffic for a de-registered subscriber is a data path for a
+  device that is supposed to be gone.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - user_plane_torn_down
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Four more uplink NAS messages follow registration here, so the
+            # Follow-On Request bit is mandatory (TS 24.501 §9.11.3.7) —
+            # without it free5GC releases the N1 connection immediately.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest }
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_before_dereg
+        actions:
+          # The three things the user-plane leg cannot run without, asserted
+          # here rather than discovered as a nil inside uplane_start.
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: uplane_start
+
+  # WINDOW ONE — the precondition. A tunnel that never carried a packet cannot
+  # demonstrate anything about being torn down.
+  uplane_before_dereg:
+    # 15s against a configured 3s traffic duration (gnb.uplane.duration). Sized
+    # to fire INSIDE the row's 40s budget so a stalled executor reaches `failed`
+    # with a terminal, rather than being killed by the flow timeout and scoring
+    # as "nothing was asserted".
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: UplaneComplete
+        target: wait_dereg_accept
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # Generator liveness only. See the header: pkt_tx counts sends on an
+          # unconnected socket and proves nothing about the core.
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          # THE PRECONDITION. Only pkt_rx proves N3 traversal: the reader
+          # increments it solely when an inbound G-PDU's TEID matches the
+          # localTeid this runner put in its own DL GTP Tunnel IE.
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+          - { type: send, message: DeregistrationRequest }
+
+  # Two orderings are both conformant and both are in the field: some AMFs send
+  # DEREGISTRATION ACCEPT and then the context release, others go straight to
+  # resource cleanup. deregistration.yaml accepts either and so does this.
+  wait_dereg_accept:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release
+      - event: UEContextReleaseCommand
+        target: uplane_after_dereg
+        actions:
+          # THE POSITIVE ACCEPTANCE OBSERVABLE, and the second half of the
+          # register's criterion: the N2 resources were released
+          # (TS 23.502 §4.2.2.3.2).
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+          - type: uplane_start
+
+  # Reached only when the AMF acknowledged the de-registration first. The
+  # timeout targets `failed`, NOT a success terminal: this row needs the N2
+  # release to have been observed, so an AMF that accepts and never releases
+  # leaves the row unable to say anything about the data path.
+  wait_release:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: uplane_after_dereg
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+          - type: uplane_start
+
+  # WINDOW TWO — the row. Same TEIDs, same UE address, same executor; a fresh
+  # teidStats, so these counters describe only what happened after the
+  # de-registration completed.
+  uplane_after_dereg:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: UplaneComplete
+        target: user_plane_torn_down
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # The probe WAS put on the wire. Without this a dead generator would
+          # look exactly like a clean teardown.
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          # ---- THE ROW. TS 24.501 §5.5.2.1 / TS 23.502 §4.2.2.3.2: the PDU
+          # sessions are released, so the tunnel answers nothing. ----
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: equals, expected: 0 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-177).
+#
+# REG-177 — After the de-registration completes, a packet sent into the previously
+# established N3 tunnel produces no response on N6 and the N2 resources are released
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `user_plane_torn_down`
+    metric: final_state_counts.user_plane_torn_down
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 5
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # The 14 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 14 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 14
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

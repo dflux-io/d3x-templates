@@ -1,0 +1,106 @@
+# Cross-protocol smoke flow — Phase 3 / Phase 4 of #217.
+#
+# Demonstrates that one FSM can interleave NGAP and Diameter sends on a
+# single UE. The first transition emits a mixed-protocol burst (InitialUE-
+# Message + ULR); the action executor groups by protocol and posts each
+# group to its own <protocol>.tx.enrich pipeline. Subsequent states wait
+# for either response to land first, then the other, completing only when
+# both have echoed back.
+#
+# Phase 4 ergonomic: events use protocol-prefixed names (`ngap.…`,
+# `diameter.…`) for visual disambiguation. EventDef.Matches strips the
+# prefix when comparing, so existing bare-name flows keep working — this
+# template uses the prefixed form purely for clarity.
+#
+# Run against:
+#   - a 5G core that echoes NGAP InitialUEMessage (e.g. Open5GS AMF), AND
+#   - edge in server mode for Diameter ULR/ULA (conf/edge-diameter-server.yaml)
+# with the lab-multinf env config:
+#
+#   ./bin/d3x-run run \
+#       -c config/lab-multinf.yaml \
+#       -s config/subscribers.yaml \
+#       -flow template/multinf/ngap_plus_diameter.yaml \
+#       -trace
+#
+# The env declares one gNB NF (NGAP client to AMF), one MME NF (Diameter
+# client to HSS), and one remote UDM NF (SBI stub). Only the gNB and MME
+# transports are exercised by this flow.
+
+kind: flow
+name: multinf_ngap_plus_diameter
+description: Mixed NGAP + Diameter burst on a single UE (Phase 3/4 smoke)
+category: functional
+type: client
+protocol: ngap        # primary protocol; Action.Protocol overrides per send
+nf: gnb               # primary NF — UE attaches to a gNB for NGAP demux
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_first
+        actions:
+          # NGAP send — protocol resolved from the enricher registry
+          # (InitialUEMessage is registered under "ngap").
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+          # Diameter send — explicit protocol override on the same burst.
+          # Phase 3's action executor groups frames by protocol; this
+          # frame routes to diameter.tx.enrich, the InitialUEMessage
+          # frame above routes to ngap.tx.enrich. Both UE contexts share
+          # ue.ContextID; Diameter session is initialized on first
+          # enricher call.
+          - type: send
+            protocol: diameter
+            message: ULR
+
+  # Either response can land first. Each transition consumes its own
+  # protocol's reply and advances to a state that waits for the other.
+  wait_first:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: ngap.NASDownlinkTransport.AuthenticationRequest
+        target: wait_diameter_only
+      - event: diameter.ULA
+        target: wait_ngap_only
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+
+  wait_ngap_only:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: ngap.NASDownlinkTransport.AuthenticationRequest
+        target: completed
+
+  wait_diameter_only:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: diameter.ULA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001

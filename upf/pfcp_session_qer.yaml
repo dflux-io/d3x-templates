@@ -1,0 +1,100 @@
+# PFCP Session with QER (F-08) — install + modify a QoS Enforcement Rule.
+#
+# runner (SMF) establishes a session whose uplink PDR is bound to a Create QER
+# carrying a Maximum Bitrate (MBR) and open gates, then sends a Session
+# Modification that updates the QER's MBR, then deletes. The standalone UPF
+# installs the QER into its datapath (upf/n4/session_handlers.go:228) and
+# accepts each step.
+#
+# Sanity scope: the QER is accepted and survives the lifecycle (Cause
+# "Request accepted" at establish / modify / delete). Actual rate
+# ENFORCEMENT is a datapath concern (Class B / load plan), not asserted here.
+
+kind: flow
+name: upf_pfcp_session_qer
+description: SMF installs and modifies a QER (MBR) on a session; UPF accepts the lifecycle (N4)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - modified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": { "source_interface": 1, "local_f_teid": {"ch": true} },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1},
+                    "qer_id": [ {"value": 1} ]
+                  }
+                ],
+                "create_far": [
+                  { "far_id": {"value": 1}, "apply_action": {"flags": 2},
+                    "forwarding_parameters": {"destination_interface": 2} }
+                ],
+                "create_qer": [
+                  { "qer_id": {"value": 1},
+                    "gate_status": {"ul_gate": 0, "dl_gate": 0},
+                    "maximum_bitrate": {"ul_mbr": 200000, "dl_mbr": 200000} }
+                ]
+              }
+
+  wait_session:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_modify
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionModificationRequest
+            message_body: |
+              {
+                "update_qer": [
+                  { "qer_id": {"value": 1},
+                    "maximum_bitrate": {"ul_mbr": 500000, "dl_mbr": 500000} }
+                ]
+              }
+
+  wait_modify:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: pfcp.PFCPSessionModificationResponse
+        target: modified
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

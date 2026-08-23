@@ -1,0 +1,206 @@
+# 5G UE initial registration procedure (3GPP TS 24.501 §5.5.1, TS 38.413 §8.6).
+#
+# Register row REG-100 (initial registration with SUCI, primary authentication
+# and NAS security activation) binds to this flow. Its pass criterion is "an
+# InitialContextSetupRequest carrying a NAS RegistrationAccept is received on N2
+# with a non-empty security key; the flow reaches terminal state 'registered'",
+# and its expected outcome adds "a 5G-GUTI is assigned".
+#
+# Clause behind the 5G-GUTI assertion added below (retrieved with
+# matrix/scripts/spec-clause.py, not recalled) — TS 24.501 §5.5.1.2.4:
+#   "The 5G-GUTI reallocation shall be part of the initial registration
+#   procedure. During the initial registration procedure, if the AMF has not
+#   allocated a new 5G-GUTI by the generic UE configuration update procedure,
+#   the AMF shall include in the REGISTRATION ACCEPT message the new assigned
+#   5G-GUTI together with the assigned TAI list."
+# See also TS 24.501 §5.3.3: "The AMF shall assign a new 5G-GUTI for a
+# particular UE: a) during a successful initial registration procedure".
+#
+# The terminal list is (registered, failed) only, and every on_timeout targets
+# `failed`, so this flow cannot end in a "didn't fail" state.
+#
+# YAML mirror of the built-in `registration` flow defined in
+# runner/flows/gnb/flow_registration.go. Run with:
+#
+#   ./bin/d3x-run run -flow template/gnb/registration.yaml \
+#       -c config/lab.yaml -s config/subscribers.yaml -trace
+#
+# Demonstrates `message_body` (#154) — the FSM author pre-populates a few
+# fields on the outgoing NGAP struct, the enricher fills in the rest at
+# send time. message_body JSON is parsed once at flow-load time; bad JSON
+# or unknown enricher names fail fast before the first send.
+
+kind: flow
+name: registration
+description: 5G UE initial registration with authentication and security activation (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Pre-populate criticality + RRC establishment cause via message_body.
+          # The enricher zero-gates each field, so what's set here survives;
+          # everything else (RanUeNgapId, UserLocationInformation, NasPdu) is
+          # filled by EnrichInitialUEMessage from UE state.
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          # A 5G-GUTI must have been assigned (§5.5.1.2.4, quoted above).
+          # `ie_present` — not `equals`/`not_empty` — because it is the only
+          # operator that fails on a path that does not resolve, so a typo in
+          # the field name cannot make this pass silently. identity_type 2 =
+          # 5G-GUTI (TS 24.501 §9.11.3.4), which stops a SUCI- or IMEI-shaped
+          # mobile identity from satisfying the check.
+          # Measured 2026-08-10: present on both tinycore and open5gs.
+          - type: check
+            field: nas.guti
+            op: ie_present
+          - type: check
+            field: nas.guti.identity_type
+            op: equals
+            expected: 2
+          # No message_body here — the enricher fills RanUeNgapId + AmfUeNgapId
+          # from ue.Ngap state. Empty body is the common case.
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what REG-100 claims, stated so the runner can answer
+# it without anything downstream reconstructing the verdict.
+#
+# TX is asserted EXACTLY: every one of these messages is ours, so the count is
+# a property of this flow, not of the core. RX is asserted with a FLOOR, because
+# a retransmission is the core's prerogative — TS 24.501 §5.4.2.7 lets the AMF
+# resend SECURITY MODE COMMAND on T3560 expiry, and a run that registered after
+# one retransmission registered. Pinning rx to `equals` would fail it.
+#
+# NAS INNER TYPES ON RX ARE NOW COUNTED, AND ASSERTED BY NAME. `rx_events.*`
+# counts each inbound message under the FSM event it resolved to, so
+# AUTHENTICATION REQUEST and SECURITY MODE COMMAND are separate keys instead of
+# two occurrences of NGAP_NAS_DOWNLINK_TRANSPORT. What this block used to say —
+# "at least two NAS downlinks arrived" — was satisfied by ANY two downlinks,
+# including two SECURITY MODE COMMANDs and no authentication at all. It now
+# names the two messages.
+#
+# TX STILL COLLAPSES. All three uplinks are NGAP_NAS_UPLINK_TRANSPORT, so
+# `equals 3` below still cannot say WHICH three. That direction is safe here in
+# a way RX is not: every uplink is ours, emitted by a send action on a
+# transition, and `registered` is reachable only by consuming the two downlink
+# events in order — which is why pinning the terminal state and the check count
+# stays load-bearing rather than decorative.
+#
+# Counts are derived from the FSM, not measured — no core was contacted in the
+# change that added this block.
+final_checks:
+  - name: the UE ended registered
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS uplinks went out (AUTH RESPONSE, SECURITY MODE COMPLETE, REGISTRATION COMPLETE)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: the context setup was answered
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # The three downlinks REG-100 names, each asserted by its own identity.
+  # Floors, not equals: TS 24.501 §5.4.1.3.7 / §5.4.2.7 let the AMF retransmit
+  # on T3560 expiry, and a run that registered after one retransmission
+  # registered.
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: the REGISTRATION ACCEPT arrived inside an INITIAL CONTEXT SETUP REQUEST
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  # …and the registration was not refused along the way. A REGISTRATION REJECT
+  # is an NGAP_NAS_DOWNLINK_TRANSPORT like any other, so the old block counted
+  # it as evidence of success. An rx_events key that did not occur reads 0
+  # (the name is checked against the event vocabulary at load time), so this
+  # asserts an absence rather than passing because the key is missing.
+  - name: and no REGISTRATION REJECT arrived
+    metric: rx_events.NASDownlinkTransport.RegistrationReject
+    op: equals
+    value: 0
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

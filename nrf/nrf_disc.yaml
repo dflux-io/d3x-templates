@@ -1,0 +1,81 @@
+# Nnrf_NFDiscovery service suite — filter matrix + ignored params + negatives.
+#
+# 8 flows total. Positives use stop_on_failure: true so the first broken
+# contract halts the suite for clear CI signal. Negatives use
+# stop_on_failure: false so a single missing 400 doesn't mask the other
+# negative — they're informational and the suite still gates pass/fail
+# via flows_failed + checks_failed in final_checks.
+#
+# Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.3):
+#   DISC-01  filter_matrix              — target-nf-type + service-names matrix
+#   DISC-02  filter_full_matrix         — instance-id + set-id + exclude-nfinst
+#   DISC-03  ignored_query_params       — body.ignoredQueryParams echo
+#   DISC-06  empty_result               — 200 + nfInstances:[] on no-match
+#   DISC-07  cache_control              — Cache-Control: max-age=N (N > 0)
+#   DISC-08  routing_indicator          — discover by SUCI routing-indicator (matching UDM only)
+#   DISC-04  missing_target_nf_type     — 400 on omitted required param
+#   DISC-05  invalid_target_nf_type     — 400 on target-nf-type=BOGUS
+
+kind: suite
+name: nrf_disc
+description: Nnrf_NFDiscovery — filter matrix + ignored params + edge cases + negatives.
+
+steps:
+  # --- Positives (stop_on_failure: true — first broken contract halts) ---
+
+  - name: filter_matrix
+    flow: nrf_disc_filter_matrix
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: filter_full_matrix
+    flow: nrf_disc_filter_full_matrix
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: ignored_query_params
+    flow: nrf_disc_ignored_query_params
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: empty_result
+    flow: nrf_disc_empty_result
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: cache_control
+    flow: nrf_disc_cache_control
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: routing_indicator
+    flow: nrf_disc_routing_indicator
+    repetitions: 1
+    stop_on_failure: true
+
+  # --- Negatives (stop_on_failure: false — informational; suite-level gate
+  #     is flows_failed + checks_failed in final_checks) ---
+
+  - name: missing_target_nf_type
+    flow: nrf_disc_missing_target_nf_type
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: invalid_target_nf_type
+    flow: nrf_disc_invalid_target_nf_type
+    repetitions: 1
+    stop_on_failure: false
+
+final_checks:
+  - name: all_flows_succeeded
+    metric: flows_succeeded
+    op: equals
+    value: 8
+  - name: no_failed_flows
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no_failed_checks
+    metric: checks_failed
+    op: equals
+    value: 0

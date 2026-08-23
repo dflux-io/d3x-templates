@@ -1,0 +1,154 @@
+# REG-802 — NG SETUP RESPONSE carries all four mandatory IEs.
+#
+# Clause: TS 38.413 §9.2.6.2 (NG SETUP RESPONSE), retrieved with
+#   matrix/scripts/spec-clause.py 38.413 9.2.6.2
+# The IE table marks exactly four IEs "M" besides Message Type:
+#
+#   AMF Name              M   9.3.3.21
+#   Served GUAMI List     M   range 1, >Served GUAMI Item 1..<maxnoofServedGUAMIs>,
+#                             >>GUAMI M 9.3.3.3
+#   Relative AMF Capacity M   9.3.1.32
+#   PLMN Support List     M   range 1, >PLMN Support Item 1..<maxnoofPLMNs>,
+#                             >>PLMN Identity M 9.3.3.5, >>Slice Support List M 9.3.1.17
+#                             ("Supported S-NSSAIs per PLMN or per SNPN")
+#
+# Why a separate flow from `ng_setup`: the engine treats the flow literally
+# NAMED "ng_setup" as non-UE-associated (runner/runner/engine.go
+# isUEAssociatedFSM). Any other name consumes a subscriber, which is harmless
+# here — nothing UE-associated is sent — and is what ng_setup_failure.yaml and
+# ng_setup_missing_supported_ta.yaml already do.
+#
+# NG Setup also runs once at ASSOCIATION time inside the transport
+# (runner/runner/transport.go), before any flow starts. That NG Setup is not
+# observable from a flow. The NGSetupRequest sent below is a second, in-flow
+# NG Setup on the established association, and its NG SETUP RESPONSE arrives on
+# the bus as a normal RX event — measured, not assumed.
+#
+# KNOWN LIMIT, stated rather than papered over: Relative AMF Capacity is
+# decoded into a non-pointer int32 with a json tag that has no `omitempty`
+# (proto/ngap5g/messages.go NGAPNgSetupResponse.RelativeAmfCapacity), so the
+# field is present in the JSON view whether or not the AMF sent IE 86. The
+# check below is therefore a VALUE check within the §9.3.1.32 range
+# INTEGER (0..255), not a presence check — presence of this one IE is not
+# observable without a runner change. The other three mandatory IEs are
+# genuinely absent from the JSON when omitted (they carry `omitempty`), so
+# their assertions below do fail when the AMF omits them.
+
+kind: flow
+name: ng_setup_response_mandatory_ies
+description: NG SETUP RESPONSE must carry AMF Name, Served GUAMI List, Relative AMF Capacity and PLMN Support List (TS 38.413 §9.2.6.2)
+detail: |
+  Sends an NG SETUP REQUEST and asserts every mandatory IE of the NG SETUP
+  RESPONSE named in TS 38.413 §9.2.6.2, including that the advertised Slice
+  Support List contains the S-NSSAI the gNB itself advertised in its
+  Supported TA List (SST 1 in both matrix core configs).
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ng_setup_response
+        actions:
+          - type: send
+            message: NGSetupRequest
+
+  wait_ng_setup_response:
+    # Row budget is 10s. Landing on `failed` is mandatory: a timeout here means
+    # no NG SETUP RESPONSE arrived at all.
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NGSetupResponse
+        target: completed
+        actions:
+          # --- Mandatory IE 1: AMF Name (9.3.3.21) ------------------------
+          - { type: check, field: amf_name, op: not_empty }
+
+          # --- Mandatory IE 2: Served GUAMI List (range 1, >=1 item) ------
+          # `served_guami_list` carries `omitempty`, so an omitted IE makes the
+          # path miss and `.length greater_or_equal 1` fails.
+          - { type: check, field: served_guami_list.length, op: greater_or_equal, expected: 1 }
+          # The Served GUAMI Item's own mandatory child is GUAMI (9.3.3.3):
+          # assert its parts rather than the item envelope, so an item present
+          # but empty is still a failure.
+          - { type: check, field: served_guami_list.0.guami.plmn_identity.mcc, op: not_empty }
+          - { type: check, field: served_guami_list.0.guami.plmn_identity.mnc, op: not_empty }
+          - { type: check, field: served_guami_list.0.guami.amf_region_id.value, op: not_empty }
+          - { type: check, field: served_guami_list.0.guami.amf_set_id.value, op: not_empty }
+
+          # --- Mandatory IE 3: Relative AMF Capacity (9.3.1.32) ----------
+          # Value check only — see the KNOWN LIMIT note in the header.
+          - { type: check, field: relative_amf_capacity, op: greater_or_equal, expected: 0 }
+          - { type: check, field: relative_amf_capacity, op: less_or_equal, expected: 255 }
+
+          # --- Mandatory IE 4: PLMN Support List (range 1, >=1 item) ------
+          - { type: check, field: plmn_support_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: plmn_support_list.0.plmn_identity.mcc, op: not_empty }
+          - { type: check, field: plmn_support_list.0.plmn_identity.mnc, op: not_empty }
+          # >>Slice Support List is itself M inside the PLMN Support Item and
+          # must contain the S-NSSAI the gNB advertised. Both matrix gNB
+          # configs advertise SST 1 (matrix/cores/*/gnb.yaml supported_tas),
+          # so the AMF that answers them must support SST 1 for this PLMN or
+          # the gNB has nothing it can select.
+          - { type: check, field: plmn_support_list.0.slice_support_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: plmn_support_list.0.slice_support_list.0.nssai_sst, op: equals, expected: 1 }
+
+      - event: NGSetupFailure
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-802).
+#
+# REG-802 — NGSetupResponse decodes with a non-empty AMF Name, at least one Served GUAMI
+# Item, a Relative AMF Capacity IE, and a PLMN Support List whose Slice Support List
+# contains the S-NSSAI the gNB advertised
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one NG SETUP REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_NG_SETUP_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an NG SETUP RESPONSE arrived
+    metric: rx_events.NGSetupResponse
+    op: greater_or_equal
+    value: 1
+  # The 13 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 13 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 13
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

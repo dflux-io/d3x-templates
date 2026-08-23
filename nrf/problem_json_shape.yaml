@@ -1,0 +1,320 @@
+# PROB-01 — RFC 7807 ProblemDetails contract on every 4xx response.
+#
+# Exercises 10 known negative paths in a single flow. Each request
+# asserts: HTTP status matches the expected 4xx; Content-Type is
+# application/problem+json; the body has a status field that equals
+# the HTTP status (RFC 7807 §3.1).
+#
+# This is a consolidated regression gate — if any handler regresses
+# its error shape (e.g. drops application/problem+json, omits status,
+# returns a non-RFC-7807 body), exactly one flow turns red.
+#
+# The 10 paths cover all four mutating verbs across NFM, Disc, and Sub:
+#   1.  PUT  /nf-instances/{uuid}  body.nfType="BOGUS"        → 400
+#   2.  PUT  /nf-instances/{uuid}  body omits nfType           → 400
+#   3.  PUT  /nf-instances/{uuid}  body.heartBeatTimer=5       → 400
+#   4.  GET  /nf-instances/{random-uuid}                       → 404
+#   5.  DELETE /nf-instances/{random-uuid}                     → 404
+#   6.  PATCH  /nf-instances/{random-uuid}                     → 404
+#   7.  GET  /nnrf-disc/v1/nf-instances (no target-nf-type)    → 400
+#   8.  GET  /nnrf-disc/v1/nf-instances?target-nf-type=BOGUS   → 400
+#   9.  POST /nnrf-nfm/v1/subscriptions body.uri="not-a-url"   → 400
+#   10. DELETE /nnrf-nfm/v1/subscriptions/{random-uuid}        → 404
+
+kind: flow
+name: nrf_problem_json_shape
+description: 10 negative paths — every 4xx body must be RFC 7807 ProblemDetails.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: prob_01_bogus_nftype
+        actions:
+          - type: send
+            message: BogusNfType
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {"nfType": "BOGUS", "nfStatus": "REGISTERED"}
+              }
+
+  prob_01_bogus_nftype:
+    transitions:
+      - event: rest.BogusNfType_Answer
+        target: prob_02_missing_nftype
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+          - type: send
+            message: MissingNfType
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {"nfStatus": "REGISTERED"}
+              }
+
+  prob_02_missing_nftype:
+    transitions:
+      - event: rest.MissingNfType_Answer
+        target: prob_03_bad_heartbeat
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+          - type: send
+            message: BadHeartbeat
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 5,
+                  "fqdn": "x.local",
+                  "ipv4Addresses": ["10.0.0.1"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  prob_03_bad_heartbeat:
+    transitions:
+      - event: rest.BadHeartbeat_Answer
+        target: prob_04_get_unknown_nf
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+          - type: send
+            message: GetUnknownNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}"
+              }
+
+  prob_04_get_unknown_nf:
+    transitions:
+      - event: rest.GetUnknownNF_Answer
+        target: prob_05_delete_unknown_nf
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 404
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 404
+          - type: send
+            message: DeleteUnknownNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}"
+              }
+
+  prob_05_delete_unknown_nf:
+    transitions:
+      - event: rest.DeleteUnknownNF_Answer
+        target: prob_06_patch_unknown_nf
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 404
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 404
+          - type: send
+            message: PatchUnknownNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [{"op": "replace", "path": "/nfStatus", "value": "REGISTERED"}]
+              }
+
+  prob_06_patch_unknown_nf:
+    transitions:
+      - event: rest.PatchUnknownNF_Answer
+        target: prob_07_disc_no_target
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 404
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 404
+          - type: send
+            message: DiscNoTarget
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances"
+              }
+
+  prob_07_disc_no_target:
+    transitions:
+      - event: rest.DiscNoTarget_Answer
+        target: prob_08_disc_bogus_target
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+          - type: send
+            message: DiscBogusTarget
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances",
+                "query": {"target-nf-type": "BOGUS", "requester-nf-type": "SMF"}
+              }
+
+  prob_08_disc_bogus_target:
+    transitions:
+      - event: rest.DiscBogusTarget_Answer
+        target: prob_09_sub_bad_callback
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+          - type: send
+            message: SubBadCallback
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-nfm/v1/subscriptions",
+                "headers": {"Content-Type": "application/json"},
+                "body": {"nfStatusNotificationUri": "not-a-url"}
+              }
+
+  prob_09_sub_bad_callback:
+    transitions:
+      - event: rest.SubBadCallback_Answer
+        target: prob_10_sub_delete_unknown
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+          - type: send
+            message: SubDeleteUnknown
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/subscriptions/{{$uuid}}"
+              }
+
+  prob_10_sub_delete_unknown:
+    transitions:
+      - event: rest.SubDeleteUnknown_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 404
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 404
+
+  done: {}
+  failed: {}

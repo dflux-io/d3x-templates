@@ -1,0 +1,123 @@
+# periodic registration updating (3GPP TS 24.501 §5.5.1.3).
+#
+# Completes an initial registration (establishing a NAS security context and a
+# 5G-GUTI), goes CM-IDLE via gNB-initiated release, then drives a second
+# RegistrationRequest with 5GS registration type = periodic updating,
+# identified by the stored 5G-GUTI and integrity-protected over the NAS context
+# (RegistrationUpdate enricher, registration_type=3).
+#
+# Event-level assertion only (decoded-NAS IE assertion is not supported): the AMF
+# must engage deterministically. Terminals: `updated` (RegistrationAccept),
+# `reaction` (AMF re-runs auth / security / identity — all valid for an update
+# whose GUTI it chooses to re-verify), `failed` on no reaction.
+kind: flow
+name: periodic_registration_updating
+description: periodic registration updating with the stored 5G-GUTI; assert AMF engages (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - updated
+  - reaction
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - type: send
+            message: RegistrationUpdate
+            params:
+              registration_type: 3
+  wait_update_reaction:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: updated
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: updated
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: reaction
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: reaction
+      - event: NASDownlinkTransport.IdentityRequest
+        target: reaction
+      - event: NASDownlinkTransport.RegistrationReject
+        target: reaction
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-156 (positive, expected_terminal: updated) — A
+# RegistrationAccept is received in response to the periodic update, or the AMF re-
+# verifies the identity and then accepts
+#
+# REG-156: "A RegistrationAccept is received in response to the periodic update, or the
+# AMF re-verifies the identity and then accepts." The accept is the only route into
+# `updated`. NOTE ON `reaction`: it collects the re-verification messages
+# (AUTHENTICATION REQUEST, SECURITY MODE COMMAND, IDENTITY REQUEST) AND a REGISTRATION
+# REJECT, and it TERMINATES on them — so it can neither satisfy the criterion's second
+# leg (which requires the accept that follows) nor separate it from the reject the
+# criterion forbids. Pinning it would be pinning a mixture.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `updated` — the terminal this row claims
+    metric: final_state_counts.updated
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

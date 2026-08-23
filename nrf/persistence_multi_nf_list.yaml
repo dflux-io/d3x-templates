@@ -1,0 +1,149 @@
+# PERSIST-04 (flow B — list + per-NF verify after restart). See
+# d3x-core docs/nrf/sanity-tests.md §2.14 and §4.7.6.
+#
+# Run AFTER the harness restarts the NRF against the same -db-dsn (this
+# pair has its own fresh DB, so exactly the 5 NFs from flow A exist).
+# First asserts the list count survived via the default 3gppHal UriList
+# (totalItemCount == 5, _links.item length == 5), then GETs each of the 5
+# fixed UUIDs and asserts nfType — order-independent, so it does not rely on
+# list ordering. Fixed UUIDs MUST match persistence_multi_nf_register.yaml.
+
+kind: flow
+name: nrf_persistence_multi_nf_list
+description: After restart, list returns exactly 5 NFs and each survives by UUID (PERSIST-04 post-restart).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: get1
+        actions:
+          - type: send
+            message: ListNFs
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances"
+              }
+
+  get1:
+    transitions:
+      - event: rest.ListNFs_Answer
+        target: get2
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.totalItemCount
+            op: equals
+            expected: 5
+          - type: check
+            field: rest.body._links.item.length
+            op: equals
+            expected: 5
+          - type: send
+            message: Get1
+            peer: nrf-peer
+            message_body: |
+              {"method": "GET", "url": "/nnrf-nfm/v1/nf-instances/aaaa0004-0000-4000-8000-000000000001"}
+
+  get2:
+    transitions:
+      - event: rest.Get1_Answer
+        target: get3
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: SMF
+          - type: send
+            message: Get2
+            peer: nrf-peer
+            message_body: |
+              {"method": "GET", "url": "/nnrf-nfm/v1/nf-instances/aaaa0004-0000-4000-8000-000000000002"}
+
+  get3:
+    transitions:
+      - event: rest.Get2_Answer
+        target: get4
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: AMF
+          - type: send
+            message: Get3
+            peer: nrf-peer
+            message_body: |
+              {"method": "GET", "url": "/nnrf-nfm/v1/nf-instances/aaaa0004-0000-4000-8000-000000000003"}
+
+  get4:
+    transitions:
+      - event: rest.Get3_Answer
+        target: get5
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: UPF
+          - type: send
+            message: Get4
+            peer: nrf-peer
+            message_body: |
+              {"method": "GET", "url": "/nnrf-nfm/v1/nf-instances/aaaa0004-0000-4000-8000-000000000004"}
+
+  get5:
+    transitions:
+      - event: rest.Get4_Answer
+        target: verifying_last
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: PCF
+          - type: send
+            message: Get5
+            peer: nrf-peer
+            message_body: |
+              {"method": "GET", "url": "/nnrf-nfm/v1/nf-instances/aaaa0004-0000-4000-8000-000000000005"}
+
+  verifying_last:
+    transitions:
+      - event: rest.Get5_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: UDM
+
+  done: {}
+  failed: {}

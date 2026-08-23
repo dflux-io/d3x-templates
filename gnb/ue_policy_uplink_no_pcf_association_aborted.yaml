@@ -1,0 +1,197 @@
+# REG-718 — an uplink UE policy container from a UE the AMF holds no PCF
+# association for is ABORTED SILENTLY: no answer, no error, no teardown.
+#
+# THE CLAUSE (TS 24.501 §5.4.5.2.5, "Abnormal cases on the network side",
+# retrieved with matrix/scripts/spec-clause.py):
+#
+#   d) If the Payload container type IE is set to "UE policy container" and:
+#      1) the AMF does not have a PCF address associated with the UE;
+#      2) the AMF cannot forward the content of the Payload container IE to the
+#         PCF associated with the PCF address available in the AMF; or
+#      3) … satellite NG-RAN …
+#      then the AMF shall abort the procedure.
+#
+# "Abort the procedure" is the whole requirement. The clause prescribes no
+# reject, no 5GMM STATUS, no error message and no release — so on a conformant
+# core SILENCE IS THE CORRECT ANSWER, and this row is scored the right way round:
+# an answer of any kind fails it.
+#
+# THE INVERTED-READING TRAP, AND HOW THIS FLOW AVOIDS IT. A flow whose only
+# evidence is "the timer expired" cannot tell a conformant abort from a core
+# that crashed, released the UE, or was never listening — it would score all
+# three identically, and it would score them PASS. So the passing terminal here
+# is NOT reachable from the timer: after the silence window the UE sends a
+# DEREGISTRATION REQUEST on the SAME N1 connection and the SAME NG-C UE
+# association the policy container went out on, and only its normal answer
+# reaches `policy_aborted`. That is the row's pass criterion literally — "a
+# subsequent mobility REGISTRATION REQUEST is answered" — with a deregistration
+# standing in for the mobility update because it exercises the connection that
+# has to have survived rather than building a new one.
+#
+# NOT A VACUOUS PROBE. `ue.Params.updp_container_len equals 6` proves the UE put
+# a real, complete UE STATE INDICATION on the wire: PTI, message identity 0x04,
+# an empty UPSI list (§D.2.2.2 NOTE 1) and a UE policy classmark — six octets,
+# 01 04 00 00 01 00, built from table D.5.4.1.1. A row that scored silence
+# without proving it sent anything would pass against a runner that sent nothing.
+# The container type is the other half: the AMF routes on the Payload container
+# type IE alone, so `updp_container` is asserted alongside to pin the bytes.
+#
+# WHAT COUNTS AS AN ANSWER. Every event the criterion names has its own failing
+# terminal so final_state_counts says WHICH obligation the core broke:
+#   NASDownlinkTransport.DLNASTransport[.UEPolicyContainer] -> policy_answered
+#   NASDownlinkTransport.5GMMStatus                          -> status_returned
+#   UEContextReleaseCommand                                  -> context_released
+#   ErrorIndication                                          -> error_indicated
+# The SMS and N1-SM DL NAS TRANSPORT sub-events are deliberately NOT enumerated:
+# this UE has no PDU session and no open SMS transaction, so neither is a
+# reachable answer to a UE-policy container, and listing them would only obscure
+# the four that are.
+#
+# WHY tinycore IS EXPECTED TO PASS, AND WHY THAT IS NOT A GIVEAWAY. tinycore's
+# AMF has no uplink UE-policy relay at all: handleULNASTransport
+# (tinycore/dmf/amf/registration.go:1419-1430) routes SMS containers to the SMSF,
+# N1-SM containers to the SMF, and logs "UL NAS Transport with non-N1_SM payload
+# — ignoring" for everything else. §5.4.5.2.5 d)1) is satisfied by an AMF that
+# has no PCF association and does nothing about it, which is exactly what the
+# v1 profile permits. The row's value is that the ignoring is SILENT and
+# NON-FATAL, and (2) + (4) are what establish that rather than assuming it.
+#
+# Terminals: policy_aborted (PASS); policy_answered / status_returned /
+# context_released / error_indicated / failed (FAIL).
+
+kind: flow
+name: ue_policy_uplink_no_pcf_association_aborted
+description: REG-718 — UL NAS TRANSPORT with a UE policy container and no PCF association is aborted silently, connection intact (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - policy_aborted
+  - policy_answered
+  - status_returned
+  - context_released
+  - error_indicated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params:
+              # TS 24.501 §5.5.1.2.2 — this UE HAS pending uplink signalling after
+              # the registration (the payload container this row is about), so the
+              # Follow-on request indicator belongs in the 5GS registration type IE.
+              # Without it §5.5.1.2.4 lets the AMF release the N1 connection the
+              # moment registration ends, and free5GC does exactly that; the row
+              # would then measure a release it asked for. FOR is a cleartext-IE bit
+              # (part of the 5GS registration type octet), so it travels on the
+              # first message with no §4.4.6 complication.
+              follow_on_request: true
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_policy_silence
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # CM-CONNECTED and registered: the §5.4.5.2.5 entry point. Sent from
+          # this transition rather than after a settle because, unlike SMS, no
+          # asynchronous network-side activation gates a UE-initiated policy
+          # container — §D.2.2.2 has the UE send it whenever it has one.
+          - { type: send, message: UEStateIndication }
+
+  wait_policy_silence:
+    on_timeout:
+      duration: 10s
+      target: wait_liveness_answer
+      actions:
+        # NOT-A-VACUOUS-PROBE, both halves.
+        - { type: check, field: ue.Params.updp_container_len, op: equals, expected: 6 }
+        - { type: check, field: ue.Params.updp_container, op: equals, expected: "010400000100" }
+        - { type: send, message: DeregistrationRequest }
+    transitions:
+      - { event: NASDownlinkTransport.DLNASTransport.UEPolicyContainer, target: policy_answered }
+      - { event: NASDownlinkTransport.DLNASTransport, target: policy_answered }
+      - { event: NASDownlinkTransport.5GMMStatus, target: status_returned }
+      - { event: UEContextReleaseCommand, target: context_released }
+      - { event: ErrorIndication, target: error_indicated }
+
+  # The positive acceptance observable — see the header. Reached only from the
+  # silence timer, and only ever leaves here on a real answer from the core.
+  wait_liveness_answer:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - { event: NASDownlinkTransport.DeregistrationAccept, target: policy_aborted }
+      - { event: UEContextReleaseCommand, target: policy_aborted }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-718 (abnormal, expected_terminal: policy_aborted)
+# — No DL NAS TRANSPORT, 5GMM STATUS, UEContextReleaseCommand or NGAP ErrorIndication
+# follows within 10 s, and a subsequent mobility REGISTRATION REQUEST is answered with
+# REGISTRATION ACCEPT
+#
+# REG-718: TS 24.501 §5.4.5.2.5 case d) has the AMF ABORT the procedure — no reject, no
+# error message, no teardown — so the pass is an absence, and `policy_aborted` is that
+# absence proved on a message by the liveness probe after the window. `policy_answered`,
+# `status_returned`, `context_released` and `error_indicated` are the four reactions the
+# criterion rules out by name. ONE DIVERGENCE, STATED: the criterion's proof is "a
+# subsequent mobility REGISTRATION REQUEST is answered with REGISTRATION ACCEPT"; this
+# flow proves liveness with a DEREGISTRATION REQUEST instead. Same purpose, different
+# message.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `policy_aborted` — the terminal this row claims
+    metric: final_state_counts.policy_aborted
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

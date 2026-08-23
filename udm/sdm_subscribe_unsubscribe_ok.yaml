@@ -1,0 +1,74 @@
+# Nudm_SDM Subscribe then Unsubscribe — compliance (multi-step chain).
+# 3GPP TS 29.503 §6.1.3.8 / §5.2.2.4 (POST {ueId}/sdm-subscriptions)
+#               §6.1.3.9            (DELETE {ueId}/sdm-subscriptions/{id}).
+# Subscribe -> extract Location -> Unsubscribe. Uses SBI_Request (POST/DELETE
+# with arbitrary SdmSubscription body), unlocked by the new generic SBI message.
+
+kind: flow
+name: udm_sdm_subscribe_unsubscribe_ok
+description: POST sdm-subscriptions (201) then DELETE the created subscription (204)
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_subscribe
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/sdm-subscriptions",
+                "body": {
+                  "nfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "callbackReference": "http://127.0.0.1:7777/sdm-notify",
+                  "monitoredResourceUris": ["http://example/am-data"]
+                }
+              }
+
+  wait_subscribe:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_unsubscribe
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: sdmSubRef
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "{{ue.Params.sdmSubRef}}"
+              }
+
+  wait_unsubscribe:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

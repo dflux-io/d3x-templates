@@ -1,0 +1,20 @@
+# gNB registration with AMF static Allowed NSSAI fallback (NSSF stopped).
+#
+# e2e-gnb-run.sh stops tinycore-nssf before this suite so the AMF degrades to
+# static -sst 1. Empty expected-fail list. Wired as 10-nssf-fallback.
+#
+# Run (with NSSF already stopped):
+#   ./bin/d3x-run run-suite -suite gnb-nssf-fallback \
+#       -templates <templates-dir> -c <lab-gnb.yaml> -s <subscribers.yaml> -trace
+
+kind: suite
+name: gnb-nssf-fallback
+description: Registration Accept Allowed NSSAI is AMF static single-slice fallback when NSSF is down.
+steps:
+  - name: registration_nssf_fallback
+    flow: registration_nssf_fallback
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: registered

@@ -1,0 +1,76 @@
+# SBI wire-fuzz driver — W2-F3.
+#
+# nssf/nnssf_nssaiavailability_put_select_ta.yaml reduced to its FIRST send (the
+# NSSAIAvailability PUT) with a `fuzz:` block and relaxed assertions. Fuzzes the
+# JSON request body of
+# PUT /nnssf-nssaiavailability/v1/nssai-availability/{nfId} against a live NSSF.
+#
+# For SBI the mutate stage does not touch the internal envelope
+# (method/path/headers). It mutates the envelope's BODY and re-marshals around
+# it, so a well-formed HTTP PUT carries a corrupt supportedNssaiAvailabilityData
+# — the real request that crosses the network. Structure-aware strategies are
+# PFCP/NGAP only, so bitflip is the strategy here.
+#
+# ORACLE
+#   survived  the NSSF answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400 on a corrupt body is CORRECT.
+# Only that a status EXISTS is checked.
+
+kind: flow
+name: fuzz_nssf_availability_put
+description: Wire-level fuzz of the Nnssf_NSSAIAvailability PUT request body against a live NSSF
+category: robustness
+type: client
+protocol: sbi
+nf: nssf
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [SBI_Request]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: nssf
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nnssf-nssaiavailability/v1/nssai-availability/amf-lab-1",
+                "body": {
+                  "supportedNssaiAvailabilityData": [
+                    {
+                      "tai": {"plmnId": {"mcc": "001", "mnc": "01"}, "tac": "000001"},
+                      "supportedSnssaiList": [{"sst": 1, "sd": "000001"}]
+                    }
+                  ]
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 200, 400, 403, 500 — means the NF
+    # parsed, decided and replied, which is what F3 asserts.
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: survived
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

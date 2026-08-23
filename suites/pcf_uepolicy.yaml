@@ -1,0 +1,36 @@
+# runner -> dpf Npcf_UEPolicyControl (URSP) SBI suite — one execution per flow.
+#
+# Drives dpf's PCF UE-policy surface (/npcf-ue-policy-control/v1, TS 29.525)
+# with runner acting as the SBI consumer. Every step is a single deterministic
+# execution scored on its own spec-correct terminal — a conformance pass.
+#
+# SCOPE (be honest): these validate the Npcf_UEPolicyControl SBI ROUND-TRIPS
+# ONLY — create (201+Location), the lab-only /deliver admin seam (200), delete
+# (204), and the unknown-id 404 negative. The URSP NGAP NAS-delivery leg (AMF
+# N1N2MessageTransfer → UE over N1) needs the docker lab and stays Go-gated.
+#
+# Run (script step 09-pcf-uepolicy in d3x-core scripts/dpf-sanity-run.sh):
+#   d3x-run run-suite -suite pcf-uepolicy \
+#       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
+#
+# Empty expected-fail list — every step must pass against the seeded dpf.
+
+kind: suite
+name: pcf-uepolicy
+description: One-execution-per-flow Npcf_UEPolicyControl (URSP) SBI conformance pass against dpf's PCF surface (SBI round-trips only).
+steps:
+  - name: uepolicy_crud_ok
+    flow: npcf_uepolicy_crud_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: uepolicy_delete_unknown_404
+    flow: npcf_uepolicy_delete_unknown_404
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed

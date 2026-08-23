@@ -1,0 +1,126 @@
+# OAUTH-06 — issued access_token has JWT structure (partial coverage).
+#
+# Full claim-level validation (iss == NRF instance id, sub == consumer
+# nfInstanceId, aud == requested NF type, exp - iat ≈ expires_in,
+# alg == RS256) requires a JWT decode helper in runner that is not yet
+# available. This flow asserts the structural / shape invariants that
+# do not need decoding:
+#   - access_token contains '.' (the JWT header.payload.signature
+#     segment separator)
+#   - access_token starts with 'eyJ' (base64-encoded header opens with
+#     `{"alg":"RS256",...`, base64('{"') == "eyI" → header starts with
+#     "ey", and the second char is "J" because the next encoded byte is
+#     "alg")
+#
+# When runner gains a `jwt-decode` action or `rest.body.access_token.jwt.*`
+# resolver, extend this flow with the iss/sub/aud/exp/alg assertions
+# called out in §4.7.4 OAUTH-06.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.4 OAUTH-06.
+
+kind: flow
+name: nrf_oauth_jwt_structure
+description: Issued access_token has JWT shape (header.payload.signature; starts with eyJ).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-oauth-jwt-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: requesting_token
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: GetToken
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  requesting_token:
+    transitions:
+      - event: rest.GetToken_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.access_token
+            op: not_empty
+          # Structural JWT checks: a compact-form JWT has the shape
+          # `<base64(header)>.<base64(payload)>.<base64(signature)>`,
+          # and the RS256 header begins with `{"alg":"RS256",...` which
+          # base64-encodes to a string starting with "eyJ".
+          - type: check
+            field: rest.body.access_token
+            op: contains
+            expected: "."
+          - type: check
+            field: rest.body.access_token
+            op: contains
+            expected: "eyJ"
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

@@ -1,0 +1,49 @@
+# UPF metrics scrape — assert upf_sessions_active == 1 (post-establish).
+#
+# Used as the final step of the upf_metrics suite, after exactly one
+# session has been established (and not deleted). Together with the
+# baseline (==0) this proves the session install is externally observable
+# via metrics — the F-20 → F-05 increment, expressed within runner's
+# single-protocol flow model by chaining flows in a suite.
+
+kind: flow
+name: upf_metrics_sessions_active_one
+description: Assert the UPF reports upf_sessions_active 1 after one establish
+category: functional
+type: client
+protocol: rest
+nf: external
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: ScrapeMetrics
+            peer: metrics
+            message_body: |
+              { "method": "GET", "url": "/metrics" }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: rest.ScrapeMetrics_Answer
+        target: completed
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "upf_sessions_active 1"

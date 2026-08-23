@@ -1,0 +1,111 @@
+# DISC-07 — discovery response carries Cache-Control: max-age=N (N > 0).
+#
+# Per TS 29.510 §6.2.3.2.4, NRF must return Cache-Control on discovery
+# responses so consumers can cache the result. Default validity is 86400 s
+# (one day); the test asserts the header is present and max-age is positive
+# without pinning the exact value (the handler reads it from config —
+# `result.ValidityPeriod` in handler_disc.go).
+#
+# Catches a handler that forgot to emit the header (consumers would
+# re-query NRF on every request) or set max-age=0 by accident.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.3 DISC-07.
+
+kind: flow
+name: nrf_disc_cache_control
+description: "Discovery response has Cache-Control: max-age=N (N > 0)."
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering_fixture
+        actions:
+          - type: send
+            message: RegisterFixtureSmf
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-cache-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering_fixture:
+    transitions:
+      - event: rest.RegisterFixtureSmf_Answer
+        target: probing
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: fixtureId
+          - type: send
+            message: DiscoverWithCacheCheck
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances",
+                "query": {"target-nf-type": "SMF", "requester-nf-type": "AMF"}
+              }
+
+  probing:
+    transitions:
+      - event: rest.DiscoverWithCacheCheck_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          # Header must be present and carry a positive max-age. The
+          # presence check + the "not max-age=0" check together rule out
+          # both an absent header and an accidental zero value (which
+          # would prevent consumer caching). A stricter "must be N >= 60"
+          # check would over-couple the test to a config default.
+          - type: check
+            field: rest.headers.Cache-Control
+            op: contains
+            expected: "max-age="
+          - type: check
+            field: rest.headers.Cache-Control
+            op: not_contains
+            expected: "max-age=0"
+          - type: send
+            message: DeregisterFixture
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.fixtureId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterFixture_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

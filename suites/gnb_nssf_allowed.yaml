@@ -1,0 +1,21 @@
+# gNB registration with NSSF-derived Allowed NSSAI content check.
+#
+# Drives registration_nssf_allowed against the full docker lab with NSSF up.
+# Empty expected-fail list — the single step must pass. Wired as
+# 09-nssf-allowed in scripts/e2e-gnb-run.sh.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite gnb-nssf-allowed \
+#       -templates <templates-dir> -c <lab-gnb.yaml> -s <subscribers.yaml> -trace
+
+kind: suite
+name: gnb-nssf-allowed
+description: Registration Accept Allowed NSSAI matches NSSF plan (seed ∩ configured).
+steps:
+  - name: registration_nssf_allowed
+    flow: registration_nssf_allowed
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: registered

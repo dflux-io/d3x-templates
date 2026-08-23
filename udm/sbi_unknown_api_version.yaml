@@ -1,0 +1,46 @@
+# Request against an unknown apiVersion — security/negative.
+# 3GPP TS 29.501 §4.4; TS 29.500 ProblemDetails (400/404).
+# GET /nudm-sdm/v99/{supi}/am-data — UDM must reject the unrouteable version and
+# stay live. Uses SBI_Request with a verbatim path — unlocked by the new generic
+# SBI message.
+
+kind: flow
+name: udm_sbi_unknown_api_version
+description: GET am-data on a nonexistent apiVersion (v99) is rejected with 4xx
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v99/imsi-001010000000001/am-data"
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399

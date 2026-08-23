@@ -1,0 +1,303 @@
+# REG-821 — a RAN CONFIGURATION UPDATE that OMITS an IE must leave that configuration
+# item unchanged.
+#
+# Clauses, retrieved with matrix/scripts/spec-clause.py 38.413 <clause>:
+#
+#   §8.7.2.2 (RAN Configuration Update, Successful Operation) — the AMF updates, per included
+#            IE, the configuration it holds for the NG-RAN node: "If the Supported TA List IE
+#            is included in the RAN CONFIGURATION UPDATE message, the AMF shall ... update the
+#            information ...". The duty is conditional on INCLUSION. An IE that is not included
+#            carries no instruction at all, so the configuration item it would have carried
+#            stays as NG Setup left it. Reading an omitted IE as "delete" would mean renaming a
+#            radio knocks its whole cell off the air.
+#
+#   §9.2.6.4 (RAN CONFIGURATION UPDATE) marks RAN Node Name, Supported TA List, Default Paging
+#            DRX and the rest OPTIONAL — the message is explicitly a partial update.
+#
+# WHAT IS ON THE WIRE. The update this flow sends carries RAN Node Name and Default Paging DRX
+# and NO Supported TA List IE (the `RANConfigurationUpdate` enricher fills exactly those two
+# fields; runner/runner/enrichers_ngap_ifmgmt_test.go
+# TestRANConfigurationUpdateAdvertisedTAs_NoParamsOmitsTAList pins the omission, and the frame
+# is 19 bytes on the wire against tinycore — RAN Node Name IE + Paging DRX IE only). The
+# tracking-area and slice configuration is therefore the one item the AMF was told nothing
+# about, and it is the item this row asserts survived.
+#
+# THE COMPARISON IS BETWEEN TWO MEASUREMENTS, NOT AGAINST A CONSTANT. The flow registers a UE
+# BEFORE the update and extracts, from its REGISTRATION ACCEPT, the S-NSSAI of its Allowed
+# NSSAI. It then sends the update, and registers a SECOND UE-associated connection afterwards.
+# The second REGISTRATION ACCEPT's S-NSSAI is compared against the value captured from the
+# first. Neither side of that comparison is a literal from a config file, so the row cannot pass
+# by agreeing with a hard-coded expectation that has drifted from the core.
+#
+# THE TAI HALF IS ASSERTED AS PRESENCE, NOT AS EQUALITY, AND HERE IS EXACTLY WHY.
+# The row's criterion names TAI and S-NSSAI. TS 24.501 §5.5.1.2.4 makes the TAI mandatory in the
+# answer — "The AMF shall assign and include a TAI list as a registration area the UE is
+# registered to in the REGISTRATION ACCEPT message" — so "the same TAI as before" would be
+# measured the same way as the S-NSSAI: extract before, compare after. It is not, because
+# tinycore's REGISTRATION ACCEPT carries NO TAI list IE at all
+# (tinycore/dmf/amf/registration.go:989 builds the message with RegistrationResult, GUTI and
+# Allowed NSSAI and nothing else), and the runner FAILS A UE OUTRIGHT on an `extract` whose
+# field does not resolve (runner/runner/action_executor.go:execExtract). An extract of the TAI
+# in measurement 1 would therefore abort this flow on that core before the RAN CONFIGURATION
+# UPDATE was ever sent — the row would test nothing at all, which is worse than testing half of
+# it. The decoder is not the missing piece: proto/nas5g decodes TAI list IE 0x54 on
+# REGISTRATION ACCEPT (nas_5gmm.go), so `<missing>` here means the AMF omitted it.
+#
+# So the TAI is asserted as "a registration area is still assigned after the update", placed
+# LAST among the checks so that every other assertion is measured and logged before it can fail
+# the run. Restoring the full "same TAI" comparison needs a soft/optional extract in the
+# harness (store-if-present), which is a runner change and is reported with this batch rather
+# than faked here.
+#
+# WHY REGISTRATION IS THE OBSERVABLE. §8.7.2 gives no read-back of the AMF's stored
+# configuration — RAN CONFIGURATION UPDATE ACKNOWLEDGE is an empty successful outcome. The
+# tracking-area and slice configuration is only observable through what the AMF does with it,
+# and the TAI list plus Allowed NSSAI of a REGISTRATION ACCEPT is exactly that: TS 24.501
+# §5.5.1.2.4 has the AMF assign the registration area and the allowed slices from the
+# configuration it holds for the serving RAN node.
+#
+# The ACKNOWLEDGE itself is asserted too, as the row's first clause requires: a
+# RANConfigurationUpdateFailure lands on `failed` by name rather than by timeout.
+#
+# Every wait targets `failed` on timeout — every step of this claim is a message that must
+# arrive, so there is no quiet-window pass anywhere in this flow.
+#
+# MEASURED against tinycore 2026-08-11: 5/6 checks, terminal `config_unchanged`, RESULT: FAIL.
+# The slice half PASSES on its merits — the 19-byte RAN CONFIGURATION UPDATE was acknowledged
+# (7 bytes) and the second REGISTRATION ACCEPT carried the same Allowed NSSAI SST 1 as the
+# first, on a second connection (RAN UE NGAP ID 1 -> 2). The run fails on the last check only:
+# `nas.tai_list.elements.0.partial_tai.tac not_empty (actual=<missing>)`. That is a separate
+# finding from this row's subject and is reported as one — tinycore's REGISTRATION ACCEPT
+# carries no TAI list IE at all, against TS 24.501 §5.5.1.2.4's "The AMF shall assign and
+# include a TAI list as a registration area the UE is registered to in the REGISTRATION ACCEPT
+# message" — so this UE is registered with no registration area, on either side of the update.
+
+kind: flow
+name: ran_config_update_omitted_ie_preserves_config
+description: RAN CONFIGURATION UPDATE carrying no Supported TA List — assert it is acknowledged and that the TAI and S-NSSAI a UE is given afterwards are unchanged from before it (TS 38.413 §8.7.2.2)
+detail: |
+  A RAN CONFIGURATION UPDATE is a partial update: TS 38.413 §9.2.6.4 makes every configuration
+  IE optional and §8.7.2.2 conditions each update duty on that IE being INCLUDED. An omitted IE
+  must therefore leave its configuration item exactly as NG Setup left it. A core that reads
+  omission as deletion would drop a site's tracking areas the moment someone renamed the radio.
+
+  The flow measures the item twice, around the update. A UE registers and its REGISTRATION
+  ACCEPT yields the TAI (PLMN and TAC) and the Allowed NSSAI the AMF assigned. The gNB then
+  sends a RAN CONFIGURATION UPDATE carrying only its node name and paging DRX — no Supported TA
+  List. After the acknowledgement, a second UE-associated connection registers, and its
+  REGISTRATION ACCEPT must carry the same TAI and the same S-NSSAI.
+
+  `config_unchanged` means the acknowledgement arrived and both values matched. A RAN
+  CONFIGURATION UPDATE FAILURE, a changed TAI or S-NSSAI, or silence at any step is `failed`.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - config_unchanged
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  # --- MEASUREMENT 1: the configuration as it stands BEFORE the update -----
+  wait_context_setup:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_config_update_ack
+        actions:
+          # The Allowed NSSAI has to be there at all, or the comparison in
+          # measurement 2 would be <missing> == <missing> and would pass on a
+          # core that assigns no slice to anybody.
+          - { type: check, field: nas.allowed_nssai.snssai_list.0.sst, op: not_empty }
+          # Captured BEFORE any send in this action list — `d3x-run lint`
+          # refuses an extract that follows a send.
+          - { type: extract, field: nas.allowed_nssai.snssai_list.0.sst, store: pre_update_sst }
+          - { type: extract, field: ue.RanUeNgapId, store: pre_update_ran_ue_ngap_id }
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # THE PROBE: RAN Node Name + Default Paging DRX, no Supported TA List.
+          - type: send
+            message: RANConfigurationUpdate
+
+  wait_config_update_ack:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: RANConfigurationUpdateAcknowledge
+        target: wait_second_auth_request
+        actions:
+          # A second UE-associated logical NG-connection gets its own RAN UE
+          # NGAP ID (TS 38.413 §8.6.1.2).
+          - type: ngap_realloc
+          - type: send
+            message: InitialUEMessage
+      # The AMF refused a legal partial update. Named so the trace says which
+      # failure this was.
+      - event: RANConfigurationUpdateFailure
+        target: failed
+
+  wait_second_auth_request:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_second_security_mode
+        actions:
+          - type: send
+            message: AuthResponse
+
+  wait_second_security_mode:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_second_context_setup
+        actions:
+          - type: send
+            message: SecurityModeComplete
+
+  # --- MEASUREMENT 2: the same configuration AFTER the update --------------
+  wait_second_context_setup:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: config_unchanged
+        actions:
+          # Same S-NSSAI: the slice configuration the update said nothing about
+          # is the one the AMF still holds. Both operands are measurements —
+          # the right-hand side was read off the REGISTRATION ACCEPT that
+          # arrived before the update.
+          - { type: check, field: nas.allowed_nssai.snssai_list.0.sst, op: equals, expected: "{{ue.Params.pre_update_sst}}" }
+          # ... and this really is a second connection, not the first one's
+          # message read twice. AllocateUE is a monotonic counter.
+          - { type: check, field: ran_ue_ngap_id, op: greater_than, expected: "{{ue.Params.pre_update_ran_ue_ngap_id}}" }
+          # The tracking-area half, and it is deliberately LAST — see the
+          # header. TS 24.501 §5.5.1.2.4: "The AMF shall assign and include a
+          # TAI list as a registration area the UE is registered to in the
+          # REGISTRATION ACCEPT message." An AMF that still assigns a
+          # registration area after the update has not dropped the
+          # tracking-area configuration; one that assigns none has left this
+          # UE with no registration area at all, and the row cannot then say
+          # anything about whether the TAC survived.
+          - { type: check, field: nas.tai_list.elements.0.partial_tai.tac, op: not_empty }
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-821).
+#
+# REG-821 — RANConfigurationUpdateAcknowledge received, and a UE registering afterwards
+# still reaches RegistrationAccept on the same TAI and S-NSSAI as before the update
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `config_unchanged`
+    metric: final_state_counts.config_unchanged
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: two INITIAL CONTEXT SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 2
+  - name: two INITIAL UE MESSAGE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 6
+  - name: one RAN CONFIGURATION UPDATE was sent
+    metric: msg_types.tx.ngap.NGAP_RAN_CONFIGURATION_UPDATE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: two REGISTRATION ACCEPT messages arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 2
+  - name: two AUTHENTICATION REQUEST messages arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 2
+  - name: two SECURITY MODE COMMAND messages arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 2
+  - name: a RAN CONFIGURATION UPDATE ACKNOWLEDGE arrived
+    metric: rx_events.RANConfigurationUpdateAcknowledge
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

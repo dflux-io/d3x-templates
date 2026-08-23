@@ -1,0 +1,116 @@
+# PFCP Session Modification removing a non-existent rule
+# (3GPP TS 29.244 §7.5.4 / §8.2.1 / §7.6).
+#
+# Security/negative: runner establishes an association + a session (one PDR/FAR),
+# then sends a PFCPSessionModificationRequest that asks the UPF to Remove FAR
+# id 88 and Remove PDR id 88 — rule IDs that were never installed. A
+# spec-correct UPF must reject the dangling removal (Cause "Rule
+# creation/modification Failure" 73 or "Mandatory IE incorrect" 69) while
+# leaving the existing rules intact, and stay up. A UPF that idempotently
+# accepts the no-op removal (Cause "Request accepted") is also a spec-tolerated
+# reaction — both are scored as the session surviving.
+#
+# Spec-correct success = a SessionModificationResponse arrives (reject with a
+# rule-failure cause, or tolerated accept) and the UPF stays up.
+
+kind: flow
+name: upf_pfcp_session_modify_remove_nonexistent_rule
+description: Session Modification removing absent rules; UPF reacts spec-correctly
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  }
+                ]
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_modify
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          # Remove rules that were never installed.
+          - type: send
+            message: PFCPSessionModificationRequest
+            message_body: |
+              {
+                "remove_far": [
+                  {"far_id": {"value": 88}}
+                ],
+                "remove_pdr": [
+                  {"pdr_id": {"value": 88}}
+                ]
+              }
+
+  wait_modify:
+    on_timeout:
+      duration: 5s
+      target: tolerated
+    transitions:
+      # Reject with a rule-failure cause is the strict reaction.
+      - event: pfcp.PFCPSessionModificationResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: contains
+            expected: "Rule creation/modification Failure"

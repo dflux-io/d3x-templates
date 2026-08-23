@@ -1,0 +1,92 @@
+# Nsmf_PDUSession_UpdateSMContext — UE-requested PDU session modification (compliance).
+# 3GPP TS 29.502 §5.2.2.3; TS 23.502 §4.3.3.
+#
+# runner (AMF) creates an SM context, extracts its ref, then POSTs a
+# SmContextUpdateData to {ref}/modify conveying a UE-originated N1 SM message
+# (PDU Session Modification Request). A spec-correct SMF replies 200 OK.
+#
+# RUNTIME RISK: the modify carries a binary n1SmMsg part (multipart/related)
+# that single-part JSON can't express, and depends on a created context; the
+# live run is expected to expose the N1 multipart transport gap. Structurally
+# valid; asserts spec 200.
+kind: flow
+name: smf_nsmf_update_smcontext_modification_request
+description: AMF Update SM context with UE PDU-session-modification — expect 200 OK
+category: functional
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - updated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 17,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_update
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: smCtxRef
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.smCtxRef}}/modify",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "n1SmMsg": {"contentId": "n1SmMsg"}
+                }
+              }
+
+  wait_update:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: updated
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200

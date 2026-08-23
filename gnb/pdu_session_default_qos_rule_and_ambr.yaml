@@ -1,0 +1,220 @@
+# PDU session establishment asserted on what the ACCEPT and the N2 TRANSFER
+# must carry for the session to have any QoS at all: an authorized default QoS
+# rule on N1, and a PDU Session Aggregate Maximum Bit Rate on N2.
+#
+# REG-316 — Establishment Accept carries an authorized default QoS rule and a
+# Session-AMBR.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §6.4.1.3 (UE-requested PDU session establishment accepted):
+#     "The SMF shall set the Authorized QoS rules IE of the PDU SESSION
+#      ESTABLISHMENT ACCEPT message to the authorized QoS rules of the PDU
+#      session […]"
+#     "The SMF shall set the Session-AMBR IE of the PDU SESSION ESTABLISHMENT
+#      ACCEPT message to the Session-AMBR of the PDU session."
+#
+#   TS 23.501 §5.7.1.1 (QoS Flow) — why a DEFAULT rule, not just any rule:
+#     "Within the 5GS, a QoS Flow associated with the default QoS rule is
+#      required to be established for a PDU Session and remains established
+#      throughout the lifetime of the PDU Session."
+#   The default QoS rule is the one whose DQR bit is set (TS 24.501
+#   §9.11.4.13), and a PDU session has exactly one — hence
+#   `pdu_accept_default_qos_rule_count equals 1` below rather than a
+#   "at least one rule exists" check that a core could satisfy with a
+#   non-default rule.
+#
+# THE N2 HALF. The criterion also requires the PDU Session Resource Setup
+# Request Transfer IE to carry a PDU Session Aggregate Maximum Bit Rate
+# (TS 38.413 §9.3.1.20, protocol IE id 130 — what the ngap5g decoder projects
+# as pdu_session.max_bit_rate_DL / _UL). MEASURED on tinycore: DL 5000000000,
+# UL 1000000000. Asserted as `greater_than 0` on both directions, because a
+# rate of zero is an AMBR the gNB cannot schedule with — it is the IE being
+# there in name only.
+#
+# NOTE — the two AMBRs are NOT the same number and are not asserted to be.
+# The Session-AMBR in the N1 accept (MEASURED on tinycore: unit 6 = Mbps,
+# DL 400 / UL 200) is the UE-facing limit; the N2 PDU Session AMBR is what the
+# gNB enforces. This row asserts each is present and usable on its own side,
+# which is what its criterion says.
+#
+# HARNESS NOTE — the accept's IEs are read from ue.Params, not `nas.*`: the
+# accept rides on the per-item NAS-PDU IE that extractNasPdu() never sees (see
+# pdu_session_setup.yaml). exposePduSessionAcceptParams
+# (runner/runner/enrichers_pdu_session_accept.go) projects the decoded accept
+# there, writing -1 for an ABSENT optional IE so "absent" and "zero" stay
+# distinguishable.
+
+kind: flow
+name: pdu_session_default_qos_rule_and_ambr
+description: PDU session establishment — Accept carries a default QoS rule and Session-AMBR, and the N2 transfer carries a PDU Session AMBR (YAML)
+detail: |
+  Registration followed by a UE-requested PDU session establishment, asserted
+  on the QoS content of the answer rather than on the session merely coming up.
+
+  On N1 (TS 24.501 §6.4.1.3, TS 23.501 §5.7.1.1) the PDU SESSION ESTABLISHMENT
+  ACCEPT must carry a non-empty Authorized QoS rules IE containing exactly one
+  rule marked as the default QoS rule (DQR bit set), and a Session-AMBR IE.
+
+  On N2 (TS 38.413 §9.3.1.20) the PDU Session Resource Setup Request Transfer
+  must carry a PDU Session Aggregate Maximum Bit Rate with usable (non-zero)
+  uplink and downlink values.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest }
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          # The accept is actually carried and decoded.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+
+          # --- N1: Authorized QoS rules with a DEFAULT rule (§6.4.1.3,
+          #     TS 23.501 §5.7.1.1) ---------------------------------------
+          - { type: check, field: ue.Params.pdu_accept_qos_rule_count, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_count, op: equals, expected: 1 }
+          # The default rule identifies a real QoS flow: a QFI is "unique
+          # within a PDU session" and 0 is not an assigned QFI value
+          # (TS 24.501 §9.11.4.12 reserves 0), so 0 or the -1 "IE absent"
+          # sentinel both fail here.
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_qfi, op: greater_than, expected: 0 }
+
+          # --- N1: Session-AMBR (§6.4.1.3) ------------------------------
+          # -1 means the IE was not carried at all; 0 means it was carried
+          # with a rate of zero. Both fail, and the trace says which.
+          - { type: check, field: ue.Params.pdu_accept_session_ambr_dl_value, op: greater_than, expected: 0 }
+          - { type: check, field: ue.Params.pdu_accept_session_ambr_ul_value, op: greater_than, expected: 0 }
+
+          # --- N2: PDU Session Aggregate Maximum Bit Rate in the transfer -
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.max_bit_rate_DL, op: greater_than, expected: 0 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.max_bit_rate_UL, op: greater_than, expected: 0 }
+
+          # Context: this QoS belongs to a session that was really set up.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-316).
+#
+# REG-316 — PDUSessionEstablishmentAccept decodes with a non-empty Authorized QoS rules
+# IE containing a rule marked as the default QoS rule, and the
+# PDUSessionResourceSetupRequest transfer IE contains a PDU Session Aggregate Maximum
+# Bit Rate
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `established`
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 13 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 13 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 13
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,171 @@
+# REGISTRATION ACCEPT carries the T3512 periodic registration update timer
+# (register row REG-104).
+#
+# WHY THIS IS A SEPARATE FLOW FROM `registration`.
+# The shared `registration` flow asserts that the procedure completes. T3512 is
+# a content question about one optional-format IE inside the accept, and nothing
+# about completing the procedure establishes it. Bound to `registration`, REG-104
+# scored green against a core that never sends the IE.
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.3.7 — "The registration procedure for periodic registration
+#   update is used over 3GPP access to periodically notify the availability of
+#   the UE to the network. The procedure is controlled in the UE by the periodic
+#   registration update timer, T3512." and "The value of timer T3512 is sent by
+#   the network to the UE in the REGISTRATION ACCEPT message. The UE shall apply
+#   this value in all tracking areas of the list of tracking areas assigned to
+#   the UE until a new value is received."
+#
+#   TS 24.501 §5.5.1.2.4 — "The AMF shall include the T3512 value IE in the
+#   REGISTRATION ACCEPT message only if the REGISTRATION REQUEST message was
+#   sent over the 3GPP access."
+#
+# HOW STRONG IS THIS "SHALL"? Honestly: §5.5.1.2.4's sentence is a RESTRICTION
+# ("only if 3GPP access"), not on its own an obligation, and it is §5.3.7 that
+# states the value is sent in the REGISTRATION ACCEPT and that the UE has no
+# other source for it. Together they are what the row rests on: over 3GPP access
+# — which is the only access this harness drives — a UE that receives no T3512
+# has no periodic registration update timer to run, and §5.3.7's "the UE shall
+# apply this value" has no value to apply. The register scores this row P1, not
+# P0, for exactly that reason, and this comment is here so nobody upgrades the
+# finding beyond what the clauses carry.
+#
+# WHAT THE CHECKS ASSERT.
+#   1. `nas.t3512_value ie_present` — the IE is carried. `ie_present` because it
+#      is the only operator that fails on a path that does not resolve, so a
+#      typo cannot make the row pass silently.
+#   2. `nas.t3512_value.value exists` — the GPRS timer 2 octet decoded, rather
+#      than an IE whose value the decoder could not reach. `exists`, not
+#      `not_empty`: §5.3.7 says "If timer T3512 received by the UE in a
+#      REGISTRATION ACCEPT message contains an indication that the timer is
+#      deactivated or the timer value is zero, then timer T3512 is deactivated"
+#      — so a zero is a legitimate network choice, and `not_empty` would fail on
+#      a conformant deactivation. Presence is the criterion; the value is not.
+#
+# MEASURED AGAINST tinycore 2026-08-11: FAIL — the accept carries
+# `registration_result`, `guti` and `allowed_nssai` only, and check (1) reports
+# `<missing>`. Not a decoder artefact: the same build decodes free5gc's accept
+# into `t3512_value.value = 6` (matrix/traces/free5gc/
+# registration_guti_reallocation-REG-102/runner.json), so IEI 0x5E parses. The
+# check stays as written.
+#
+# Terminals are (registered, failed) only and every on_timeout targets `failed`.
+kind: flow
+name: registration_accept_t3512
+description: Initial registration; assert the REGISTRATION ACCEPT carries the T3512 periodic registration update timer (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          # THE row assertions — see the header.
+          - { type: check, field: nas.t3512_value, op: ie_present }
+          - { type: check, field: nas.t3512_value.value, op: exists }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-104).
+#
+# REG-104 — nas.t3512_value is present in the decoded RegistrationAccept
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

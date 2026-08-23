@@ -1,0 +1,28 @@
+# Demo suite — exercises the suite runner end-to-end against the existing
+# gNB registration / deregistration flows.
+#
+# Each step independently acquires its own subscribers from the pool (no
+# subscriber sharing across steps in v1), so step 1 registers N UEs and
+# step 2 deregisters a separate batch of N UEs. The deregistration step
+# is marked always_run so it executes even if the registration burst
+# aborts mid-cycle — useful as a template for cleanup steps in real load
+# tests.
+#
+# Run with:
+#   ./bin/d3x-run run-suite -suite gnb-register-deregister \
+#       -templates template -c config/lab.yaml -s config/subscribers.yaml
+#
+# Outer-loop options (run the full cycle multiple times):
+#   -repetitions 5
+#   -duration 2m
+kind: suite
+name: gnb-register-deregister
+description: Demo — register a small batch of UEs, then deregister.
+steps:
+  - name: register
+    flow: registration
+    repetitions: 5
+  - name: deregister
+    flow: deregistration
+    repetitions: 5
+    always_run: true

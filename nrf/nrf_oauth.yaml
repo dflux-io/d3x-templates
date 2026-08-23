@@ -1,0 +1,80 @@
+# Nnrf_AccessToken service suite — happy path + headers + negatives + structural JWT.
+#
+# 7 flows total. Positives use stop_on_failure: true so the first broken
+# contract halts the suite for clear CI signal. Negatives use
+# stop_on_failure: false so a single missing 400 doesn't mask the others
+# — they're informational and the suite still gates pass/fail via
+# flows_failed + checks_failed in final_checks.
+#
+# OAUTH-08 (token_expired ~35 s wall-clock) is omitted — cross-listed
+# in nrf_longrun. Full claim-level OAUTH-06 and concurrent-burst
+# OAUTH-07 are partial here pending runner JWT-decode + parallel-send
+# features (see flow-level comments).
+#
+# Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.4):
+#   OAUTH-01  token                    happy-path token issuance
+#   OAUTH-02  token_headers            Cache-Control: no-store + invalid_client
+#   OAUTH-03  invalid_grant_type       400 on password / empty grant_type
+#   OAUTH-04  invalid_scope            400 invalid_scope on scope=BOGUS
+#   OAUTH-05  missing_client_id        400 on omitted nfInstanceId / nfType
+#   OAUTH-06  jwt_structure            access_token has JWT shape (partial)
+#   OAUTH-07  token_serial_burst       5 tokens; distinct from prior (partial)
+
+kind: suite
+name: nrf_oauth
+description: Nnrf_AccessToken — happy path + headers + negatives + structural JWT.
+
+steps:
+  # --- Positives (stop_on_failure: true — first broken contract halts) ---
+
+  - name: token
+    flow: nrf_oauth_token
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: token_headers
+    flow: nrf_oauth_token_headers
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: jwt_structure
+    flow: nrf_oauth_jwt_structure
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: token_serial_burst
+    flow: nrf_oauth_token_serial_burst
+    repetitions: 1
+    stop_on_failure: true
+
+  # --- Negatives (stop_on_failure: false — informational; suite-level gate
+  #     is flows_failed + checks_failed in final_checks) ---
+
+  - name: invalid_grant_type
+    flow: nrf_oauth_invalid_grant_type
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: invalid_scope
+    flow: nrf_oauth_invalid_scope
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: missing_client_id
+    flow: nrf_oauth_missing_client_id
+    repetitions: 1
+    stop_on_failure: false
+
+final_checks:
+  - name: all_flows_succeeded
+    metric: flows_succeeded
+    op: equals
+    value: 7
+  - name: no_failed_flows
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no_failed_checks
+    metric: checks_failed
+    op: equals
+    value: 0

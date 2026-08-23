@@ -1,0 +1,55 @@
+# Npcf_SMPolicyControl — Create for an unknown SUPI → 404 (negative).
+# 3GPP TS 29.512 §4.2.2 / TS 29.500 problem-details. dpf validates the supi
+# against its subscriber store (pcf_handlers.go) and 404s an unknown one. The
+# seed provisions imsi-001010000000001..5; imsi-001019999999999 is not seeded.
+
+kind: flow
+name: npcf_smpolicy_create_unknown_supi_404
+description: POST sm-policies for an unseeded SUPI → 404
+category: negative
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001019999999999",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404

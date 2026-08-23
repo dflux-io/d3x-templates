@@ -1,0 +1,204 @@
+# Initial registration asserting the AMF selects a NON-NULL NAS ciphering
+# algorithm (3GPP TS 33.501 §6.7.1.1 / §5.3.2 — confidentiality protection
+# of NAS signalling).
+#
+# The UE advertises the full NEA0-NEA3 / NIA0-NIA3 capability set (the
+# default EnrichInitialUEMessage capability IE), so a core whose ciphering
+# policy prefers a real algorithm MUST NOT pick NEA0. The Security Mode
+# Command's selected-ciphering IE is checked directly:
+#
+#   NAS_CipheringAlgorithm: EA_NONE=0, EA_NEA0=1, EA_NEA1=2, EA_NEA2=3, EA_NEA3=4
+#
+# so "greater_than 1" == "not null ciphering". d3x dmf defaults to
+# nea2,nea1,nea3 (null ciphering is opt-in via -nas-ciphering ...,nea0).
+#
+# The subscriber's `ciphering:` MUST match what the core selects — the
+# runner UE keys its NAS context from the subscriber entry, not from this
+# message — NAS ciphering is not negotiated by the runner.
+#
+#   ./bin/d3x-run run-flow -flow registration_ciphering_non_null \
+#       -templates . -c config/lab.yaml \
+#       -s config/lab-subscribers.yaml -trace
+
+kind: flow
+name: registration_ciphering_non_null
+description: Initial registration; assert the Security Mode Command selects a non-null NAS cipher (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # The IE must be present at all...
+          #
+          # ...asserted as `>= 1`, not `ie_present` (xp-255). This is a
+          # non-pointer scalar enum whose ZERO value is the decoder's EA_NONE
+          # "IE absent" sentinel (a real selection is wire-nibble+1, i.e. 1..8).
+          # It used to carry `,omitempty`, so an absent IE dropped the key and
+          # `ie_present` failed. xp-255 removed `,omitempty` from non-pointer
+          # fields — a Go value field cannot be absent, and omitting it on zero
+          # made "IE absent" and "IE present carrying 0" the same observation —
+          # so the key is now always emitted and `ie_present` could no longer
+          # fail here.
+          - type: check
+            field: nas.selected_nas_security_algorithms_ciphering
+            op: greater_or_equal
+            expected: 1
+          # ...and must not be EA_NEA0 (=1), i.e. NOT null ciphering.
+          - type: check
+            field: nas.selected_nas_security_algorithms_ciphering
+            op: greater_than
+            expected: 1
+          # Integrity is likewise non-null (IA_NIA0 = 1) — the AMF has
+          # always preferred NIA2; assert it did not regress.
+          - type: check
+            field: nas.selected_nas_security_algorithms_integrity
+            op: greater_than
+            expected: 1
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          # --- THE SECOND HALF OF THE CRITERION: "the following REGISTRATION
+          # --- ACCEPT payload is not readable as plaintext NAS until decrypted
+          # --- with the derived KNASenc."
+          #
+          # NOT `nas.security.header_type == 2`, and that is the whole point. A
+          # core selecting 5G-EA0 stamps header type 2 and then applies the null
+          # cipher, so the header says "ciphered" while the payload is legible on
+          # the wire. REG-433 already asserts header type 2 on this very message
+          # and registration_accept_ciphered_after_smc records it MEASURED GREEN
+          # against Open5GS running NEA0-first. header_type, header_type_name,
+          # protected and ciphered are all functions of that one byte, so none of
+          # them can carry this sentence.
+          #
+          # `payload_reads_as_plaintext` is the only observable that can: TS
+          # 24.501 §9.1.1 puts the protected payload at offset 7, and it reports
+          # whether those bytes are still a legible plaintext 5GMM header (EPD
+          # 0x7E, inner security header type 0, a known message identity). Under
+          # NEA1/NEA2 they are not. Under NEA0 they are — and that is the finding
+          # this row exists to make.
+          - type: check
+            field: nas.security.payload_reads_as_plaintext
+            op: equals
+            expected: false
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-434).
+#
+# REG-434 — The SECURITY MODE COMMAND selects a ciphering algorithm other than 5G-EA0,
+# and the following REGISTRATION ACCEPT payload is not readable as plaintext NAS until
+# decrypted with the derived KNASenc.
+#
+# BOTH HALVES ARE NOW CHECKED, on the two messages they are about: the selected-algorithm
+# IE on the SECURITY MODE COMMAND, and `nas.security.payload_reads_as_plaintext` on the
+# REGISTRATION ACCEPT. Until 2026-08-17 the second half was quoted here and asserted
+# nowhere, so the row verified that the core SAID it would cipher and never that it DID.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The seven `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all seven declared checks ran
+    metric: checks_total
+    op: equals
+    value: 7
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

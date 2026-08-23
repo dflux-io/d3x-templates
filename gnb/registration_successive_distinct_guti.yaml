@@ -1,0 +1,283 @@
+# Successive registrations by the same subscriber receive distinct 5G-GUTIs
+# (register row REG-193).
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.3.3 — "The purpose of the 5G-GUTI and 5G-S-TMSI is to provide
+#   identity confidentiality, i.e., to protect a user from being identified and
+#   located by an intruder." and "The AMF shall assign a new 5G-GUTI for a
+#   particular UE: a) during a successful initial registration procedure; …"
+#
+#   TS 24.501 §5.5.1.2.4 — "The 5G-GUTI reallocation shall be part of the
+#   initial registration procedure. During the initial registration procedure,
+#   if the AMF has not allocated a new 5G-GUTI by the generic UE configuration
+#   update procedure, the AMF shall include in the REGISTRATION ACCEPT message
+#   the new assigned 5G-GUTI together with the assigned TAI list."
+#
+# WHAT IS BEING TESTED, AND WHY IT IS A SECURITY PROPERTY AND NOT A NICETY.
+# §5.3.3 states the 5G-GUTI's purpose outright: identity confidentiality. A
+# passive observer on the radio sees the temporary identity in the clear in
+# every INITIAL UE MESSAGE. If the AMF hands the same value back on the next
+# registration, that observer can link two sessions of the same subscriber
+# without ever learning the SUPI — which is precisely the tracking the temporary
+# identity exists to prevent. The failure is silent: every procedure completes,
+# every check about registration succeeding passes, and only a comparison ACROSS
+# registrations can see it.
+#
+# WHY THIS IS NOT `registration_after_deregistration` (REG-185).
+# That flow is register / de-register / register: its subject is that the
+# registration IMMEDIATELY AFTER a de-registration is served cleanly, and the
+# GUTI comparison is one of the things it checks along the way. This row's
+# subject is the sequence itself — TWO COMPLETE cycles, each ending with a
+# de-registration that the AMF acknowledges and a UE context release that
+# completes — and the distinctness of the identities those completed cycles were
+# given. The second de-registration is the difference on the wire, and it
+# matters: an AMF that recycles identities is most likely to do so when the
+# previous context was fully torn down and its 5G-TMSI returned to a pool.
+#
+# HOW THE COMPARISON IS MADE, AND THE TRAP IN IT.
+# The 5G-TMSI from cycle 1's REGISTRATION ACCEPT is snapshotted with `extract`,
+# and cycle 2's is asserted `not_contains` that value. Both sides are the base64
+# form of the same 4-octet field, so containment is equality here.
+#
+# THE TRAP: `not_contains` PASSES ON A MISSING FIELD. evaluateCheck
+# (runner/runner/action_executor.go) treats absence as "nothing to match
+# against, so vacuously satisfied", so an accept that omitted the 5G-GUTI IE
+# altogether — the more serious violation of §5.5.1.2.4 — would sail through a
+# bare `not_contains`. The inequality is therefore preceded by `nas.guti
+# ie_present`, `identity_type equals 2` and `nas.guti.tmsi_5g ie_present`, all of
+# which FAIL on absence. Do not remove them.
+#
+# Why the 5G-TMSI and not the whole 5G-GUTI: §5.3.3 makes the 5G-TMSI the
+# component that "provides an unambiguous identity of the UE within the AMF(s)
+# identified by the GUAMI". One AMF, one GUAMI — so the TMSI is the only part
+# that can change, and demanding a whole-GUTI difference would ask for a GUAMI
+# change this single-AMF test bed cannot produce.
+#
+# MEASURED AGAINST tinycore 2026-08-11: terminal `distinct_gutis`. Both cycles
+# ran end to end — register, DEREGISTRATION ACCEPT, UE CONTEXT RELEASE COMMAND,
+# twice — and the two 5G-TMSIs were `fTy6Aw==` and `SLmLZw==`. Conformant.
+#
+# ACCEPTANCE TEST for the check itself: re-running with the inequality flipped to
+# `contains` (scratchpad only, not committed) FAILED with
+# `nas.guti.tmsi_5g contains z/b/eQ== (actual=4d+pSA==)`. So the check is reading
+# two genuinely different live values across two completed cycles and is capable
+# of reporting the other verdict — it is not passing because the field is
+# missing or because both sides resolve to the same empty string.
+kind: flow
+name: registration_successive_distinct_guti
+description: Two complete register / de-register cycles for one subscriber; assert the two REGISTRATION ACCEPTs carry different 5G-GUTIs (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - distinct_gutis
+  - failed
+
+states:
+  # ---- cycle 1 ------------------------------------------------------------
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_1
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # The DEREGISTRATION REQUEST that ends this cycle is pending uplink
+            # NAS (TS 24.501 §9.11.3.7).
+            params: { follow_on_request: true }
+
+  wait_auth_1:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_smc_1
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_smc_1:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_accept_1
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_accept_1:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_dereg_1
+        actions:
+          # §5.3.3 a) / §5.5.1.2.4 — cycle 1 must itself have been assigned a
+          # 5G-GUTI, or there is no baseline to compare against.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: extract, field: nas.guti.tmsi_5g, store: tmsi_cycle1 }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: DeregistrationRequest }
+
+  # The cycle must COMPLETE, not merely be started — that is what distinguishes
+  # this row from REG-185. Both orderings the spec permits are handled: some
+  # AMFs send DEREGISTRATION ACCEPT then the release, some go straight to the
+  # release.
+  wait_dereg_1:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release_1
+      - event: UEContextReleaseCommand
+        target: wait_auth_2
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_release_1:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_auth_2
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          # Fresh RAN UE NGAP ID: cycle 2 is a new UE-associated logical
+          # NG-connection, as it would be for a UE that had powered down.
+          - { type: ngap_realloc }
+          # A plain SUCI-identified INITIAL registration — the UE was
+          # de-registered, so it presents itself from scratch.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  # ---- cycle 2 ------------------------------------------------------------
+  wait_auth_2:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_smc_2
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_smc_2:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_accept_2
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_accept_2:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_dereg_2
+        actions:
+          # THE row assertion. The presence trio is what stops `not_contains`
+          # from passing vacuously on an omitted 5G-GUTI IE — see the header.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: not_contains, expected: "{{ue.Params.tmsi_cycle1}}" }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # Cycle 2 is completed too, so the flow leaves the core in the same
+          # state it found it and the row's "two consecutive register /
+          # de-register cycles" is literally what ran.
+          - { type: send, message: DeregistrationRequest }
+
+  wait_dereg_2:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release_2
+      - event: UEContextReleaseCommand
+        target: distinct_gutis
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+
+  wait_release_2:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: distinct_gutis
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-193).
+#
+# REG-193 — Two consecutive register/de-register cycles for the same subscriber yield
+# two different nas.guti values in their RegistrationAccept messages
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `distinct_gutis`
+    metric: final_state_counts.distinct_gutis
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: two INITIAL CONTEXT SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 2
+  - name: two INITIAL UE MESSAGE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: eight NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 8
+  - name: two UE CONTEXT RELEASE COMPLETE messages went out
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 2
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: two REGISTRATION ACCEPT messages arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 2
+  - name: two AUTHENTICATION REQUEST messages arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 2
+  - name: two SECURITY MODE COMMAND messages arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 2
+  - name: two UE CONTEXT RELEASE COMMAND messages arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 2
+  # The 12 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 12 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 12
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

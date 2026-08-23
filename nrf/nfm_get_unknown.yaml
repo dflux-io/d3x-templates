@@ -1,0 +1,57 @@
+# NFM-06 — GET on never-registered nfInstanceId returns 404 + ProblemDetails.
+#
+# Catches a server that returns 200 with empty body, or 404 without
+# Content-Type: application/problem+json, or any 4xx without RFC 7807
+# keys. Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-06.
+#
+# Uses an inline {{$uuid}} that has never been PUT — vanishingly small
+# probability of collision with any existing registration. No setup, no
+# cleanup; this is purely a negative-path probe.
+
+kind: flow
+name: nrf_nfm_get_unknown
+description: GET non-existent nfInstanceId → 404 + ProblemDetails.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: probing
+        actions:
+          - type: send
+            message: GetUnknownNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}"
+              }
+
+  probing:
+    transitions:
+      - event: rest.GetUnknownNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 404
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 404
+          - type: check
+            field: rest.body.title
+            op: not_empty
+
+  done: {}
+  failed: {}

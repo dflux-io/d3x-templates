@@ -1,0 +1,202 @@
+# Mobile-originated SMS over NAS (TS 23.502 §4.13.3.3, TS 24.011).
+#
+# Registration preamble (mirrors gnb/ue_policy_delivery.yaml), a short settle
+# so the AMF's async Nsmsf SMS activation completes, then the UE submits one
+# SMS — CP-DATA(RP-DATA(SMS-SUBMIT)) in a NAS payload container of type SMS —
+# addressed to a NON-local number (no seeded subscriber owns it), so the SMSF
+# accepts and queues it with no onward route. Deliberate: the MO handshake is
+# identical either way, and a local destination would loop the message back as
+# an MT SMS-DELIVER that outlives this flow and races the next suite step
+# (sms_mo_loopback owns the loopback assertion).
+#
+# The SMSF answers with two downlink containers, each surfaced as its own FSM
+# event by the runner's SMS classifier (enrichers_sms.go):
+#   1. CP-ACK                              → …DLNASTransport.SMSCpAck
+#   2. CP-DATA(RP-ACK(SMS-SUBMIT-REPORT))  → …DLNASTransport.SMSSubmitReport
+# The UE closes the transaction with a CP-ACK (TS 24.011 §5.3) and terminates
+# in sms_sent. The RP-Message-Reference on the SUBMIT-REPORT must echo the one
+# the UE allocated on submit (matched via ue.Params).
+
+kind: flow
+name: sms_mo
+description: Mobile-originated SMS over NAS — submit, CP-ACK, RP-ACK(SUBMIT-REPORT), close (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - sms_sent
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: sms_activation_settle
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+  # CM-CONNECTED settle: the AMF activates SMS with the SMSF asynchronously on
+  # SecurityModeComplete; a submit racing that PUT would be rejected with
+  # CONTEXT_NOT_FOUND. Wait 2s, then send the MO SMS from the timeout actions.
+  sms_activation_settle:
+    on_timeout:
+      duration: 2s
+      target: wait_sms_cp_ack
+      actions:
+        - type: send
+          message: SMSSubmit
+          params:
+            destination: "19995550123"
+            text: "hello from d3x-run"
+
+  # First downlink leg: the SMSF acknowledges the CP-DATA with a bare CP-ACK.
+  #
+  # ORDER-TOLERANT (W5-A, xp-205). The SMSF emits the CP-ACK and the
+  # RP-ACK(SUBMIT-REPORT) back to back, and the UE sends nothing between them,
+  # so BOTH are in flight at once. The runner's EventBus gives per-UE mutual
+  # exclusion but not per-UE ORDERING, so it can present them either way round,
+  # and a state that does not name an event drops it silently — the exact
+  # mechanism that made sms_mo_loopback flaky for three waves. This flow has
+  # the identical exposure with two downlinks instead of three, and had it
+  # unguarded; the only reason it was never seen flaking is a narrower window.
+  # Fixed here rather than waited for.
+  wait_sms_cp_ack:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSCpAck
+        target: wait_submit_report
+      - event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+        target: wait_cp_ack_after_submit_report
+        actions:
+          - { type: check, field: ue.Params.sms_rp_ref, op: equals, expected: "{{ue.Params.sms_mo_rp_ref}}" }
+          - { type: send, message: SMSCPAck }
+
+  # Second downlink leg: RP-ACK(SMS-SUBMIT-REPORT) closes the relay-layer
+  # transaction — its RP-MR must echo the reference the UE sent. The UE
+  # answers with the closing CP-ACK and the MO procedure is complete.
+  wait_submit_report:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+        target: sms_sent
+        actions:
+          - { type: check, field: ue.Params.sms_rp_ref, op: equals, expected: "{{ue.Params.sms_mo_rp_ref}}" }
+          - { type: send, message: SMSCPAck }
+
+  # The SUBMIT-REPORT overtook the CP-ACK. Its RP-MR echo is already asserted
+  # and its CP-ACK already sent; the CP-ACK for OUR CP-DATA is still owed, and
+  # the flow still requires it — both downlinks are mandatory, only their order
+  # is not asserted.
+  wait_cp_ack_after_submit_report:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSCpAck
+        target: sms_sent
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-615).
+#
+# REG-615 — Both downlink SMS containers observed on N1 — a CP-ACK and an RP-ACK(SUBMIT-
+# REPORT) whose RP-MR equals the submitted RP-MR; terminal state 'sms_sent'
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `sms_sent`
+    metric: final_state_counts.sms_sent
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SMSCPAck, SMSSubmit, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 5
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: an SMS CP ACK arrived
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.SMSCpAck
+    op: greater_or_equal
+    value: 1
+  - name: an SMS SUBMIT REPORT arrived
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

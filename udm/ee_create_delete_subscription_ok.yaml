@@ -1,0 +1,76 @@
+# Nudm_EE Create then Delete an event-exposure subscription — compliance (multi-step).
+# 3GPP TS 29.503 §5.5.2.2 / §6.4.3.2 (POST {ueIdentity}/ee-subscriptions)
+#               §5.5.2.3 / §6.4.3.3 (DELETE {ueIdentity}/ee-subscriptions/{id}).
+# Subscribe -> extract Location -> Unsubscribe. Uses SBI_Request (POST/DELETE +
+# EeSubscription body) — unlocked by the new generic SBI message.
+
+kind: flow
+name: udm_ee_create_delete_subscription_ok
+description: POST ee-subscriptions (201) then DELETE the created subscription (204)
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-ee/v1/imsi-001010000000001/ee-subscriptions",
+                "body": {
+                  "callbackReference": "http://127.0.0.1:7777/ee-notify",
+                  "monitoringConfigurations": {
+                    "0": {"eventType": "LOSS_OF_CONNECTIVITY"}
+                  },
+                  "reportingOptions": {"reportMode": "ON_EVENT_DETECTION"}
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_delete
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: eeSubRef
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "{{ue.Params.eeSubRef}}"
+              }
+
+  wait_delete:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

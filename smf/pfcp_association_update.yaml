@@ -1,0 +1,57 @@
+# N4/PFCP — Association Update (compliance).
+# 3GPP TS 29.244 §6.2.7 / §7.4.5.
+#
+# runner (SMF) sets up a PFCP association, then sends a
+# PFCPAssociationUpdateRequest (NodeID auto-filled). The UPF replies with
+# PFCPAssociationUpdateResponse carrying Cause=Request accepted, asserted via
+# the pfcp.cause resolver. Exercises the new AssociationUpdate send.
+kind: flow
+name: smf_pfcp_association_update
+description: SMF updates an existing PFCP association — expect Cause Request accepted
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - updated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: smf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_update
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPAssociationUpdateRequest
+
+  wait_update:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationUpdateResponse
+        target: updated
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

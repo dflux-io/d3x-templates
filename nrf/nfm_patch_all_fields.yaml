@@ -1,0 +1,257 @@
+# NFM-05 — JSON-Patch replace per allowed top-level field; verify each persists.
+#
+# Catches a PATCH handler with a missing field case (silent no-op),
+# or a field that's accepted into the in-memory profile but never
+# persisted to the store.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-05.
+#
+# Fields probed (one PATCH each, followed by a GET that asserts the
+# new value):
+#   - priority   (number)
+#   - capacity   (number)
+#   - locality   (string)
+#   - fqdn       (string)
+#
+# (nfStatus is excluded because the server overwrites it on each PUT
+# but PATCH is intended for that field per TS 29.510 §5.2.2.3; covered
+# implicitly by NFM-01's heartbeat PATCH. load is implementation-
+# defined and not in NRF's response by default.)
+
+kind: flow
+name: nrf_nfm_patch_all_fields
+description: PATCH replace on each allowed top-level field; GET asserts each persists.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "priority": 10,
+                  "capacity": 100,
+                  "locality": "site-a",
+                  "fqdn": "smf-patch-fields-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: patching_priority
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: PatchPriority
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [{"op": "replace", "path": "/priority", "value": 99}]
+              }
+
+  patching_priority:
+    transitions:
+      - event: rest.PatchPriority_Answer
+        target: getting_after_priority
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: GetAfterPriority
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  getting_after_priority:
+    transitions:
+      - event: rest.GetAfterPriority_Answer
+        target: patching_capacity
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.priority
+            op: equals
+            expected: 99
+          - type: send
+            message: PatchCapacity
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [{"op": "replace", "path": "/capacity", "value": 777}]
+              }
+
+  patching_capacity:
+    transitions:
+      - event: rest.PatchCapacity_Answer
+        target: getting_after_capacity
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: GetAfterCapacity
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  getting_after_capacity:
+    transitions:
+      - event: rest.GetAfterCapacity_Answer
+        target: patching_locality
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.capacity
+            op: equals
+            expected: 777
+          - type: send
+            message: PatchLocality
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [{"op": "replace", "path": "/locality", "value": "rack-99"}]
+              }
+
+  patching_locality:
+    transitions:
+      - event: rest.PatchLocality_Answer
+        target: getting_after_locality
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: GetAfterLocality
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  getting_after_locality:
+    transitions:
+      - event: rest.GetAfterLocality_Answer
+        target: patching_fqdn
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.locality
+            op: equals
+            expected: rack-99
+          - type: send
+            message: PatchFqdn
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [{"op": "replace", "path": "/fqdn", "value": "smf-renamed.local"}]
+              }
+
+  patching_fqdn:
+    transitions:
+      - event: rest.PatchFqdn_Answer
+        target: getting_after_fqdn
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: GetAfterFqdn
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  getting_after_fqdn:
+    transitions:
+      - event: rest.GetAfterFqdn_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.fqdn
+            op: equals
+            expected: smf-renamed.local
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

@@ -1,0 +1,377 @@
+# REG-374 — the PDU session does not outlive the UE context.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 24.501 §6.4.1.6 d) — THE DECISIVE ONE, and the reason this row is
+#   observable from outside at all:
+#     "UE-requested PDU session establishment with request type 'existing PDU
+#      session' or 'existing emergency PDU session' for a PDU session that does
+#      not exist: If the SMF receives a PDU SESSION ESTABLISHMENT REQUEST
+#      message with request type set to 'existing PDU session' ... and the SMF
+#      does not have any information about that PDU session, then the SMF shall
+#      reject the PDU session establishment procedure with the 5GSM cause set to
+#      #54 'PDU session does not exist'".
+#   So #54 is a POSITIVE, ADDRESSED STATEMENT that the named session is gone.
+#
+#   TS 24.501 §6.4.1.6 c) is why the obvious alternative probe does not work:
+#     "If the SMF receives a PDU SESSION ESTABLISHMENT REQUEST message with a
+#      PDU session ID identical to ... an existing PDU session and with request
+#      type set to 'initial request', the SMF shall LOCALLY RELEASE the existing
+#      PDU session and proceed".
+#   An "initial request" for the same id therefore SUCCEEDS whether or not the
+#   old session was still there, so it cannot tell a core that reclaimed its
+#   resources from one that leaked them. Request type is the entire difference
+#   between a row that measures something and a row that cannot.
+#
+#   TS 23.502 §4.2.6 (AN Release) — "This procedure is used to release the
+#   logical NG-AP signalling connection for the UE ... and the associated N3 User
+#   Plane connections", and "The AN release causes all UP connections of the UE
+#   to be deactivated". DEACTIVATED, not released: an AN release on its own is
+#   the ordinary road to CM-IDLE and a conformant core keeps the PDU session so
+#   the UE can resume it with a SERVICE REQUEST.
+#
+#   TS 38.413 §8.2.2.1 — the PDU Session Resource Release procedure "enables the
+#   release of already established PDU session resources for a given UE".
+#
+# WHY THE FLOW RE-REGISTERS, AND WHAT THAT MAKES THE ROW MEAN. Because of §4.2.6
+# above, the UE context release alone is NOT expected to destroy the session —
+# so a row that asked for #54 straight after it would score a CONFORMANT core
+# red. The register's criterion says "after the UE context release AND A FRESH
+# REGISTRATION", and the fresh registration is what carries the obligation: this
+# is an INITIAL registration, from a UE that by construction holds no PDU
+# session, so a core that still holds session 1 for this subscriber afterwards
+# is holding state its subscriber has disclaimed. That is the leak the row is
+# named for, and it is the thing #54 makes visible.
+#
+# WHAT IS ASSERTED
+#   1. the first session really was established — PDU SESSION RESOURCE SETUP
+#      REQUEST for id 1 with a non-zero uplink TEID. Without this the whole row
+#      would be satisfied by a core that never created the session at all, which
+#      is the cheapest possible way to "pass" a leak test;
+#   2. the UE context really was released — UE CONTEXT RELEASE COMMAND observed
+#      and acknowledged;
+#   3. the fresh registration really completed — a second REGISTRATION ACCEPT
+#      inside an INITIAL CONTEXT SETUP REQUEST with a security key;
+#   4. THE ROW: the "existing PDU session" request for id 1 is answered with a
+#      PDU SESSION ESTABLISHMENT REJECT carrying 5GSM cause #54.
+#
+# THE OTHER VERDICT IS A NAMED TERMINAL, not a timeout. If the core answers the
+# "existing PDU session" request with a PDU SESSION RESOURCE SETUP REQUEST — or
+# with any PDU SESSION ESTABLISHMENT ACCEPT — it still holds the session it was
+# supposed to have reclaimed, and the flow lands on `old_session_survived`.
+# A reject with some OTHER 5GSM cause still lands on `old_session_gone` — but
+# with a FAILED `equals 54` check, which is the core's answer and not a harness
+# defect: the session may well be gone, yet the core did not say so in the way
+# §6.4.1.6 d) requires, and the trace records which cause it used instead. A
+# separate terminal for that would only hide the cause value behind a state
+# name.
+#
+# NOT A BARE TIMER: every terminal but `failed` is reached by a message arriving.
+#
+# MEASURED AGAINST tinycore 2026-08-11 (git-8523d93): terminal
+# `old_session_survived`. 8/8 checks passed up to the probe; the "existing PDU
+# session" request for id 1 was answered with a PDU SESSION RESOURCE SETUP
+# REQUEST, not a reject.
+#
+# WHAT THE TRACE AND THE CORE'S LOG TOGETHER SAY, and it is two findings rather
+# than one:
+#   1. the session outlived a UE context release AND a fresh initial
+#      registration — the row's headline;
+#   2. tinycore does not read the Request type IE at all. Its log records the
+#      probe as an ordinary establishment —
+#        procedure=PDUSessionEstablishment pdu_session_id=1 dnn=internet
+#      exactly as it recorded the first one — so §6.4.1.6 d) is unimplemented.
+# The second of these limits what the first can claim on THIS core: a core that
+# never distinguishes "existing PDU session" from "initial request" would answer
+# a resource setup whether the session had survived or not, so the terminal is
+# evidence of (2) with (1) as the most likely explanation, not proof of (1)
+# alone. Both belong in the report.
+
+kind: flow
+name: pdu_session_gone_after_ue_context_release
+description: Establish a PDU session, release the UE context, register afresh, then ask for the OLD session id as an "existing PDU session" — expect 5GSM cause #54 (YAML)
+detail: |
+  Registration, one PDU session, a gNB-initiated UE Context Release, a fresh
+  initial registration, and then a PDU SESSION ESTABLISHMENT REQUEST whose
+  Request type IE says "existing PDU session" (TS 24.501 §9.11.3.47) for the
+  PDU session id the first registration used.
+
+  TS 24.501 §6.4.1.6 d) obliges the SMF to answer that request with 5GSM cause
+  #54 "PDU session does not exist" when it holds no information about the
+  session — which is the only way an outside observer can tell a core that
+  reclaimed the session's resources from one that leaked them. Asking with
+  request type "initial request" instead would succeed either way (§6.4.1.6 c)),
+  so the request type is the whole probe.
+
+  A core that answers with a resource setup or an establishment accept is still
+  holding the session and lands on `old_session_survived`.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - old_session_gone
+  - old_session_survived
+  - failed
+
+# THE THIRD VERDICT VALUE, AND THE ROW THAT NEEDED IT. REG-374's criterion ends: "A core
+# that instead answers with a resource setup or an establishment accept HAS NOT
+# IMPLEMENTED the Request type IE and the row is UNDECIDED on that core, NOT FAILED."
+# `old_session_survived` is that branch, and until #278 no `final_check` could say so —
+# pinning `old_session_gone equals 1` reported a core the register calls undecided as
+# having FAILED, and pinning nothing reported it as having PASSED.
+#
+# Declaring it here makes the runner answer `unsupported` (exit 3, a JUnit skip) on that
+# branch and nothing else. It cannot excuse anything: the verdict is computed as before,
+# and only if EVERY leg of it holds is this declaration consulted at all — so the reject
+# arriving with a cause other than #54, or an undecodable one, or no answer at all, is
+# still `fail`. See runner/runner/verdict.go.
+#
+# NOTE WHAT THIS DOES NOT SAY. It is not "the session survived, and that is fine". The
+# file's own MEASURED AGAINST note above records why: tinycore does not read the Request
+# type IE at all, so on a core in that state the terminal is evidence that §6.4.1.6 d) is
+# unimplemented — the probe never reached the question. On a core that DOES read the IE
+# and still holds the session, the same terminal would be a real leak; that core is
+# distinguished by implementing the IE at all, which this flow cannot see from outside
+# and which is exactly why the register calls the row undecided rather than red.
+unsupported_states:
+  - state: old_session_survived
+    reason: >-
+      REG-374, verbatim: "A core that instead answers with a resource setup or an
+      establishment accept has not implemented the Request type IE and the row is
+      UNDECIDED on that core, not failed" (TS 24.501 §6.4.1.6 d) — without the Request
+      type IE the core cannot distinguish this probe from an ordinary establishment, so
+      the question the row asks was never put to it)
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration (the PDU session request),
+          # so the FOR bit must say so — TS 24.501 §9.11.3.7.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_session
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  # STEP 1 of the assertion set — the session this row is about must actually
+  # exist before anything can be said about it going away.
+  wait_first_session:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # STEP 2 — release the UE context from the RAN side (TS 23.502 §4.2.6).
+          - { type: send, message: UEContextReleaseRequest }
+
+  wait_release_command:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_second_auth
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          # A new UE-associated logical NG-connection needs a new RAN UE NGAP ID
+          # (TS 38.413 §8.6.1.2).
+          - { type: ngap_realloc }
+          # STEP 3 — a FRESH INITIAL registration. Not a mobility update: the
+          # row's premise is a UE that arrives holding no PDU session.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+      # A GUTI reallocation racing the release is unrelated and spec-legal
+      # (TS 24.501 §5.4.4); absorbed rather than answered.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_command
+
+  wait_second_auth:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_second_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: second_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_second_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_second_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_second_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_existing_session_answer
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # STEP 4 — THE PROBE. Request type "existing PDU session" for the id
+          # the first registration used.
+          - type: send
+            message: PDUSessionEstablishmentRequestExisting
+            params:
+              pdu_session_id: 1
+      # A rejected re-registration means the row never got to ask its question.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: failed
+
+  wait_existing_session_answer:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # THE ASSERTION. §6.4.1.6 d): #54 "PDU session does not exist".
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: old_session_gone
+        actions:
+          # ie_present before the comparison: the 5GSM cause is mandatory in a
+          # PDU SESSION ESTABLISHMENT REJECT (Table 8.3.3.1.1), and asserting
+          # its presence separately means an absent one is reported as absent
+          # rather than as a value mismatch against <missing>.
+          - { type: check, field: nas.payload_container.n1_sm_message.gsm_cause, op: ie_present }
+          - { type: check, field: nas.payload_container.n1_sm_message.gsm_cause, op: equals, expected: 54 }
+          - { type: check, field: nas.payload_container.n1_sm_message.header.pdu_session_id, op: equals, expected: 1 }
+
+      # The core still holds the session: it set resources up for it instead of
+      # saying it does not exist. This is the leak the row exists to catch.
+      # Fires on the FAILURE path on purpose: it is the evidence that the
+      # resources set up are for the OLD session id, which is what "the session
+      # survived" means. A setup for some other id would be a different fault.
+      - event: PDUSessionResourceSetupRequest
+        target: old_session_survived
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentAccept
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentAccept
+        target: old_session_survived
+
+      # PAGING — DECLINED, DELIBERATELY, and CONSUMED so the decision is on the
+      # record instead of on the floor.
+      #
+      # No runner-level default for PAGING exists and none may be added
+      # (runner/runner/fsm/events.go, EventPaging): with no RAN-UE-NGAP-ID in the
+      # message the demux BROADCASTS it to every UE on the gNB, and TS 24.501
+      # §5.6.2.2.1 obliges only the UE named by the UE Paging Identity IE, and
+      # only in 5GMM-IDLE. Which UE that is, and whether it answers, is a
+      # judgement only a template can make. Here it is.
+      #
+      # THIS FLOW DOES GO TO CM-IDLE — BUT NOT IN THIS STATE. STEP 2 releases the
+      # UE context in `wait_release_command`, and that is the idle window. By the
+      # time the flow is waiting HERE the fresh initial registration has
+      # COMPLETED: `wait_second_context_setup` took an INITIAL CONTEXT SETUP
+      # REQUEST carrying the second REGISTRATION ACCEPT, which IS the
+      # UE-associated logical NG-connection being re-established. The UE is
+      # CM-CONNECTED again and §5.6.2.2.1's precondition is gone.
+      #
+      # AND ANSWERING WOULD MEASURE OUR OWN REALLOC. REG-374 turns entirely on
+      # what comes back to the "existing PDU session" probe sent from
+      # `wait_second_context_setup` — 5GSM cause #54, a DLNASTransport with 5GMM
+      # cause #90, or a resource setup. A SERVICE REQUEST here would carry
+      # `ngap_realloc` and move the UE to a new RAN UE NGAP ID out from under
+      # that probe, so a core that answered correctly could still be scored on a
+      # 12 s timeout into `failed`. The row would be reporting on this template,
+      # not on the core.
+      #
+      # THE COST OF CONSUMING, PAID KNOWINGLY. dispatchFSMViaBus resets
+      # StateEntered and clears PendingEvents on every consumed event, so each
+      # page restarts this state's 12 s wait; nothing in this flow uses an AND
+      # compound, so the clear costs nothing. That is the price of the page being
+      # REPORTED as decided rather than counted in bus_audit.rx_refused, where
+      # this state was one of the three the v1 sweep found. No check actions: a
+      # declined page must not move `checks_total`, which the floor below reads.
+      - event: Paging
+        target: wait_existing_session_answer
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-374 (positive, expected_terminal:
+# old_session_gone) — After the UE context release and a fresh initial registration, a
+# PDUSessionEstablishmentRequest with request type 'existing PDU session' for the old
+# PDU session ID is answered EITHER with a PDUSessionEstablishmentReject carrying 5GSM
+# cause #54 (TS 24.501 §6.4.1.7 d) — the SMF holds no information about that PDU
+# session) OR with a DLNASTransport returning the unforwarded 5GSM message, the PDU
+# session ID IE set to that id and 5GMM cause #90 (TS 24.501 §5.4.5.2.5 a) 3) with
+# §5.4.5.3.1 case e) — the AMF holds no routing context for it, and that clause says the
+# AMF "may" answer this way, so a core that reclaimed the session is explicitly
+# permitted never to produce #54). Either answer proves no state survives. A core that
+# instead answers with a resource setup or an establishment accept has not implemented
+# the Request type IE and the row is UNDECIDED on that core, not failed
+#
+# NO TERMINAL IS PINNED HERE, AND SINCE #278 NONE NEEDS TO BE. The two non-`failed`
+# terminals now partition by declaration rather than by assertion: `old_session_survived`
+# is named in `unsupported_states:` above, so the only remaining way for this run to
+# satisfy every check and every final_check below is `old_session_gone` — which is the
+# pin, expressed structurally. Adding `final_state_counts.old_session_gone equals 1` on
+# top would be worse than redundant: a failed final_check outranks the declaration, so
+# the pin would turn the undecided branch back into the red the register forbids.
+#
+# What is asserted below is the part that is unambiguous on BOTH branches: the flow got
+# far enough to ask its question, and nothing it saw on the way contradicted the row.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` (the association or the preamble died)
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 8
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

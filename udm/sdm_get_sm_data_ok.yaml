@@ -1,0 +1,48 @@
+# Nudm_SDM Get SessionManagement subscription data — compliance.
+# 3GPP TS 29.503 §6.1.3.5 / §5.2.2.2 (GET /nudm-sdm/v2/{supi}/sm-data).
+# runner drives a real UDM; expects 200 with SessionManagementSubscriptionData.
+
+kind: flow
+name: udm_sdm_get_sm_data_ok
+description: GET sm-data for a provisioned SUPI returns 200
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/sm-data",
+                "query": {
+                  "single-nssai": "{\"sst\":1,\"sd\":\"010203\"}",
+                  "dnn": "internet"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200

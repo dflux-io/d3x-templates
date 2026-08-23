@@ -1,0 +1,58 @@
+# Diameter wire-fuzz driver — W2-F3.
+#
+# diameter/s6a/air_aia_success.yaml reduced to a single AIR send with a `fuzz:`
+# block and relaxed assertions. Fuzzes the encoded AIR (AVP body bytes) against
+# the edge echo.
+#
+# For Diameter the mutate stage corrupts the encoded AVP body bytes at the
+# diameter.tx.mutate seam. The malformed AIR is then echoed by the edge.
+#
+# ORACLE
+#   survived  the edge echoed the AIR at all — the frame round-tripped
+#   failed    no echo within the timeout: a hang/drop, which is a finding
+#
+# No AIA is sent — this is deliberately the minimal one-message shape. Only that
+# a User-Name field EXISTS on the echo is checked; no Result-Code is asserted.
+
+kind: flow
+name: fuzz_s6a_air
+description: Wire-level fuzz of the S6a Authentication-Information-Request against the edge echo
+category: robustness
+type: client
+protocol: diameter
+nf: mme
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [AIR]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: AIR
+
+  wait_response:
+    # A hang is the finding. Any echo means the frame round-tripped, which is
+    # what F3 asserts.
+    on_timeout:
+      duration: 6s
+      target: failed
+    transitions:
+      - event: AIR
+        target: survived
+        actions:
+          - type: check
+            field: User-Name
+            op: exists

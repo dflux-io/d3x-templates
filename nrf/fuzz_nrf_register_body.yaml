@@ -1,0 +1,76 @@
+# REST wire-fuzz driver — W2-F3.
+#
+# nrf/nfm_register_201_location.yaml reduced to a single NF-register PUT with a
+# `fuzz:` block and relaxed assertions. Fuzzes the JSON request body of
+# PUT /nnrf-nfm/v1/nf-instances/{uuid} against a live NRF.
+#
+# WHAT "WIRE-LEVEL" MEANS FOR REST — same as SBI: the mutate stage does not
+# touch the internal envelope (method/url/headers). It mutates the envelope's
+# BODY and re-marshals around it, so a well-formed HTTP PUT carries a corrupt
+# JSON profile — which is what actually crosses the network.
+#
+# ORACLE
+#   survived  the NRF answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400 on a corrupt profile is
+# CORRECT. Only that a status EXISTS is checked.
+
+kind: flow
+name: fuzz_nrf_register_body
+description: Wire-level fuzz of the Nnrf_NFManagement register request body against a live NRF
+category: robustness
+type: client
+protocol: rest
+nf: nrf
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [NFRegister]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: NFRegister
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-fuzz-test.local",
+                  "ipv4Addresses": ["10.0.0.30"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 201, 200, 400, 500 — means the NRF
+    # parsed, decided and replied, which is what F3 asserts.
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: rest.NFRegister_Answer
+        target: survived
+        actions:
+          - type: check
+            field: rest.status
+            op: exists

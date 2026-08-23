@@ -1,0 +1,279 @@
+# Two concurrent PDU sessions; release ONE of them. The release must name only
+# that session, and the other must still be there afterwards — provable by
+# releasing it too and getting a normal release command rather than an
+# invalid-identity reject.
+#
+# REG-372 — Releasing one of two active PDU sessions leaves the other intact.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 38.413 §8.2.2.2 (PDU Session Resource Release, Successful Operation):
+#     "The PDU SESSION RESOURCE RELEASE COMMAND message shall contain the
+#      information required by the NG-RAN node to release at least one PDU
+#      session resource, and include each PDU session resource to release in
+#      the PDU Session Resource to Release List IE."
+#   "each PDU session resource to release" — a release of one session that
+#   lists two is not a narrower reading of that sentence, it is a different
+#   release, and the gNB would tear down a session the UE never asked about.
+#
+#   TS 23.502 §4.3.4.2 (UE or network requested PDU Session Release for
+#   non-roaming and roaming with local breakout): the procedure is scoped to
+#   "the PDU Session" it was invoked for; nothing in it authorises releasing a
+#   sibling session of the same UE.
+#
+# HOW "THE OTHER IS INTACT" IS PROVEN, and why it needs a second release.
+# Absence of a teardown is not observable by waiting alone — the core may
+# simply be quiet. So the flow ASKS: after session 2 is released, it releases
+# session 1 and requires a normal PDU SESSION RESOURCE RELEASE COMMAND naming
+# session 1. A core that had already dropped session 1 (or had collapsed both
+# ids into one context) answers a release for it with a 5GSM reject — #43
+# "invalid PDU session identity" / #54 "PDU session does not exist" — or with
+# nothing at all. Both are failures here, and both are edges of
+# `wait_second_release_command`, so neither can be scored as a pass by a timer.
+#
+# The first release's command is ALSO asserted to be exactly one entry long:
+# `pdu_session_resource_to_release_list.length equals 1` plus the id equality.
+# A command that listed both sessions would satisfy "names the released id" and
+# is precisely the defect this row exists to catch.
+#
+# MEASURED ON tinycore (2026-08-11): the release of session 2 lists only
+# session 2; the follow-up release of session 1 is answered with a release
+# command naming session 1.
+#
+# NOT ASSERTED HERE: the PTI of the nested 5GSM release command. tinycore sends
+# PTI 0 where TS 24.501 §6.3.3.2 requires the UE's PTI (xp-251); that is
+# REG-360's finding, and asserting it here would fail this row for a reason its
+# criterion says nothing about.
+
+kind: flow
+name: pdu_session_release_one_of_two
+description: Two concurrent PDU sessions; releasing one names only that session and leaves the other releasable (YAML)
+detail: |
+  Registration, two concurrent PDU session establishments (ids 1 and 2), then a
+  UE-requested release of session 2 followed by a UE-requested release of
+  session 1 (TS 23.502 §4.3.4.2, TS 38.413 §8.2.2.2).
+
+  The first release must produce a PDU SESSION RESOURCE RELEASE COMMAND whose
+  to-release list contains exactly one entry, naming session 2. The second
+  release then proves session 1 survived: it must be answered with a normal
+  release command naming session 1, not with a 5GSM reject for an unknown
+  session and not with silence.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - both_released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_id: 1
+
+  wait_first_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_second_accept
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # Second session — explicit id, because the enricher reuses the UE's
+          # current PDU session id when the param is absent.
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_id: 2
+
+  wait_second_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_first_release_command
+        actions:
+          # Both sessions are up, and they are genuinely two: distinct ids and
+          # distinct uplink tunnels. Without this the rest of the row would be
+          # asserting about a second session that never existed.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 2 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # Release ONLY session 2.
+          - type: send
+            message: PDUSessionReleaseRequest
+            params:
+              release_pdu_session_id: 2
+
+  wait_first_release_command:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event:
+          or:
+            - PDUSessionReleaseCommand
+            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: settle_first_release
+        actions:
+          # --- THE row: the command names ONLY the session asked for ------
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: 2 }
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+
+  # The AMF completes the teardown asynchronously on the release response, so
+  # the second release goes out from this state's timeout action rather than
+  # racing it.
+  settle_first_release:
+    on_timeout:
+      duration: 3s
+      target: wait_second_release_command
+      actions:
+        - type: send
+          message: PDUSessionReleaseRequest
+          params:
+            release_pdu_session_id: 1
+
+  wait_second_release_command:
+    # Silence here means the surviving session was not there to release — the
+    # very collapse this row tests for. So the timer is a failure, never a pass.
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event:
+          or:
+            - PDUSessionReleaseCommand
+            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: both_released
+        actions:
+          # --- the survivor was really still there ------------------------
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+
+      # "…answered normally rather than with an invalid-identity reject": a
+      # 5GSM STATUS or a reject for session 1 says the core had already lost
+      # it when session 2 was released.
+      - event:
+          or:
+            - NASDownlinkTransport.5GMMStatus
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-372).
+#
+# REG-372 — The PDUSessionResourceReleaseCommand names only the released PDU session ID,
+# and a subsequent release of the second session is answered normally rather than with
+# an invalid-identity reject
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `both_released`
+    metric: final_state_counts.both_released
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: seven NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 7
+  - name: two PDU SESSION RESOURCE RELEASE RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
+    op: equals
+    value: 2
+  - name: two PDU SESSION RESOURCE SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 2
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: two PDU SESSION RESOURCE SETUP REQUEST messages arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 2
+  # The 11 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 11 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 11
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

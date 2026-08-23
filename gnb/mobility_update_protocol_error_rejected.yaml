@@ -1,0 +1,404 @@
+# REG-164 — a mobility registration update that is AUTHENTIC and MALFORMED at the
+# same time, and the enumerated 5GMM cause TS 24.501 §5.5.1.3.8 b) obliges the AMF
+# to answer it with.
+#
+# CLAUSES. The corpus is gitignored and was not present in the worktree this was
+# authored in, so every clause below is one this repo had already retrieved with
+# matrix/scripts/spec-clause.py and recorded in a committed template. The two that
+# decide this flow's shape are quoted from those records:
+#
+#   TS 24.501 §5.5.1.2.8 b) — the INITIAL-registration twin of §5.5.1.3.8 b),
+#   quoted verbatim in registration_empty_mandatory_identity.yaml: "If the
+#   REGISTRATION REQUEST message is received with a protocol error, the AMF shall
+#   return a REGISTRATION REJECT message with one of the following 5GMM cause
+#   values: #96 invalid mandatory information; #99 information element
+#   non-existent or not implemented; #100 conditional IE error; or #111 protocol
+#   error, unspecified." REG-164 cites §5.5.1.3.8 and its criterion transcribes
+#   exactly this set, so the two clauses are the same rule on the two paths — and
+#   that symmetry is the whole point of the row: "cores often only harden the
+#   first".
+#
+#   TS 24.501 §7.5.1, also quoted there: for a "syntactically incorrect mandatory
+#   IE" the network "shall either: 1) try to treat the message (the exact further
+#   actions are implementation dependent); or 2) ignore the message except that it
+#   should return a status message ... with cause #96".
+#
+#   TS 24.501 §7.6.1, quoted in registration_unknown_ie.yaml: "The UE shall ignore
+#   all IEs with an IEI unknown in a message which are not encoded as
+#   'comprehension required' ... The network shall take the same approach."
+#
+# ===========================================================================
+# THE RECORDED GAP FOR THIS ROW WAS HALF WRONG, AND CORRECTING IT IS WHAT MADE
+# THE ROW BINDABLE
+# ===========================================================================
+#
+# The deleted runner-missing-capabilities.md ledger and REG-164's own verification
+# note both said: "the `fuzz:` block mutates the encoded frame at random after NAS
+# integrity protection, which a conformant AMF discards on MAC failure (TS 24.501
+# §4.4.4.3)". TWO THINGS ABOUT THAT ARE NOT TRUE OF MalformedRegistrationRequest:
+#
+#   1. IT HAS NO INTEGRITY PROTECTION TO FAIL. EnrichMalformedRegistrationRequest
+#      calls nas5g.Encode and then corrupts the result; it never calls any of the
+#      EncodeSecure* entry points. The message goes out as PLAIN NAS under a SUCI,
+#      so there is no MAC and no MAC failure. The `fuzz:` block described is a
+#      separate, generic mechanism (bus_handlers_fuzz_tx.go, FuzzScopeWire) that
+#      mutates the outgoing NGAP frame; this enricher does not use it.
+#   2. THE MUTATION IS NOT RANDOM. negCorruptNas has had two SURGICAL modes since
+#      #248 — `empty_mandatory_identity` and `unknown_ie` — that leave a decodable
+#      REGISTRATION REQUEST with exactly one thing wrong, and REG-120 and REG-121
+#      are bound to flows that use them.
+#
+# WHAT IS ACTUALLY MISSING, and it is a different and sharper thing: the enricher
+# hardcodes REG_TYPE_INITIAL + SUCI + plain NAS, so it can only ever produce an
+# INITIAL registration. §5.5.1.3.8 is about a MOBILITY update, which identifies
+# the UE by 5G-GUTI and is protected with the existing context. Adding a
+# `registration_type` param to MalformedRegistrationRequest would NOT have fixed
+# it — it would let a template claim a mobility update while sending an
+# unprotected SUCI registration, which an AMF answers by running a fresh initial
+# registration, so §5.5.1.3.8 would never apply. That is the same trap
+# TestRegistrationUpdateAtTac_StaysAMobilityUpdate documents for `uli_tac`.
+#
+# So the row needed a new sendable: RegistrationUpdateProtocolError.
+#
+# ===========================================================================
+# WHY THE PROBE GOES OUT ON THE ESTABLISHED CONNECTION AND NOT FROM IDLE
+# ===========================================================================
+#
+# The malformation must be applied to the PLAINTEXT and the MAC computed OVER THE
+# MALFORMED BYTES, so the message is authentic and malformed together. A post-MAC
+# mutation can never provoke §5.5.1.3.8 b): §4.4.4.3 sends the AMF off to
+# authenticate, or lets it discard.
+#
+# That much was in the brief. The part that is not obvious is WHERE such a message
+# can be sent from:
+#
+#   From 5GMM-IDLE the update is an INITIAL NAS message, and the only mandatory
+#   IEs of a REGISTRATION REQUEST whose content can be malformed are the 5GS
+#   mobile identity, the 5GS registration type and the ngKSI. All three are
+#   exactly the material the AMF needs to FIND the security context and verify the
+#   MAC. Malform any of them and the message is back on the §4.4.4.3 discard path
+#   — the very thing being avoided. Every other IE of the message is OPTIONAL, and
+#   §7.6.1 licenses a receiver to ignore an unknown one: that is why
+#   registration_unknown_ie has two conformant terminals, and tinycore was
+#   measured taking the skip-and-proceed one. An optional-IE error therefore
+#   cannot compel a reject.
+#
+#   From 5GMM-CONNECTED the same REGISTRATION REQUEST is an ordinary protected
+#   uplink NAS message (wire security header type 0x02, integrity protected AND
+#   ciphered) and the AMF identifies the UE from the NGAP UE-associated signalling
+#   connection — the AMF-UE-NGAP-ID it allocated — not from the NAS identity. The
+#   5GS mobile identity is then free to be malformed without touching either the
+#   context lookup or the MAC. §4.4.6 does not apply at all, since this is not an
+#   initial NAS message, so no cleartext-IE question arises either.
+#
+# THE REGISTER ALREADY AGREED, BEFORE THE ENRICHER EXISTED. REG-164 is the only
+# one of the four mobility-update rows whose sendables_required names NO
+# UEContextRelease pair — REG-158, REG-159 and REG-162 all do. Its flow was always
+# meant to keep the connection up.
+#
+# ===========================================================================
+# THE CAUSE VALUE — WHAT THIS ROW CAN AND CANNOT SETTLE
+# ===========================================================================
+#
+# THE PREDICTION IN THIS HEADER CAME TRUE AND HAS BEEN ACTED ON. The check used
+# the criterion's set, `oneof [96, 99, 100, 111]`, and this paragraph recorded a
+# KNOWN RISK against it:
+#
+#   xp-269 had to widen REG-120's identical check to admit #95. open5gs answered
+#   the SAME surgical probe — an empty mandatory 5GS mobile identity — with
+#   REGISTRATION REJECT carrying 5GMM cause #95, logging "No Mobile Identity".
+#   TS 24.501 Annex A.4 splits the two on the axis this probe straddles: #95 "a
+#   message with semantically incorrect contents", #96 "a non-semantical mandatory
+#   IE error". A zero-length IE reads as "absent", which is a semantic diagnosis,
+#   and §5.5.1.2.7 d) proves a REGISTRATION REJECT carrying #95 is spec-foreseen.
+#
+# It said: "if a run shows a core answering this row with #95, THE CRITERION NEEDS
+# THE SAME WIDENING AND THE CORE IS NOT AT FAULT."
+#
+# MEASURED, 8a48fa1 sweep 2026-08-17. open5gs reached `rejected` with a
+# REGISTRATION REJECT carrying `nas.gmm_cause` actual=95, and its ONLY failure was
+# this check (`oneof [96 99 100 111]`, actual 95). So the criterion was too narrow
+# and the core was right. REG-164's `pass_criterion` and both `rejected` branches
+# below now admit #95, in the SAME form REG-120 has carried since xp-269 — and the
+# same form this flow's own `status_reported` branch already used, which is the
+# clearest sign the narrow set was the odd one out.
+#
+# THE WIDENING STILL DISCRIMINATES, and that was proven rather than asserted:
+# mutated to `oneof [100, 111]` — excluding every cause any core is known to send
+# — the row goes RED on open5gs's #95. The set still rules out every unrelated
+# cause (#3 illegal UE, #22 congestion, ...) and the observed value is recorded
+# either way, because a failed `oneof` prints it.
+#
+# WHAT THE SAME SWEEP FOUND ABOUT THE OTHER TWO CORES, and the widening does NOT
+# touch it: tinycore and free5gc both reached `no_report_context_alive` — they
+# answered the probe with NOTHING AT ALL, no REGISTRATION REJECT and no 5GMM
+# STATUS, and then answered the de-registration, so the context survived and the
+# AMF was alive. Neither sent a cause outside the widened set; neither sent a
+# cause. That is the §5.5.1.3.8 b) gap on both cores and it stays red, which is
+# the correct answer and not something a criterion should absorb.
+#
+# ===========================================================================
+# SILENCE, AND THE POSITIVE DISCRIMINATOR
+# ===========================================================================
+#
+# §5.5.1.3.8 b) is a "shall" with no discard limb, but §7.5.1 option 1's
+# "implementation dependent" is real latitude, and tinycore was measured taking it
+# all the way to saying nothing on the initial-registration twin. Silence is
+# therefore expected from at least one core, and silence is INADMISSIBLE as
+# evidence: it cannot tell "the AMF ignored one message" from "the AMF is gone"
+# from "the message never arrived".
+#
+# So no terminal here is reached on a bare timer. Every path out of the probe
+# window runs a POSITIVE DISCRIMINATOR that only a core in the asserted state can
+# answer, and it is chosen to assert this row's own must_run_reason — "a malformed
+# update must not be able to corrupt a live registered context":
+#
+#   a well-formed, protected, NORMAL (not switch-off) DEREGISTRATION REQUEST,
+#   which TS 24.501 §5.5.2.2 obliges the network to answer with a DEREGISTRATION
+#   ACCEPT. Answering it proves three things at once — the NAS security context
+#   still verifies our uplink, the UE is still REGISTERED, and the AMF is alive.
+#   A switch-off de-registration would have been useless here: §5.5.2.2 tells the
+#   network to send no accept for one, deleting the only observable.
+#
+# THE COUNT IS NOT REWOUND, which is what makes that probe possible at all.
+# encodeSecure increments whatever COUNT it is handed, and the probe uses the
+# UE's real, current uplink COUNT — TestRegistrationUpdateProtocolError_DoesNotRewindTheCount
+# pins it. A probe that rewound the COUNT would break every later uplink on the UE
+# and the de-registration would fail its MAC, turning a live context into an
+# apparent dead one.
+#
+# TERMINALS
+#   rejected                    §5.5.1.3.8 b): a REGISTRATION REJECT with a cause
+#                               from the enumerated set. THE ROW. Reached on the
+#                               message, never on a timer.
+#   status_reported             a 5GMM STATUS with such a cause instead. §7.5.1
+#                               option 2 permits it, but REG-164's criterion
+#                               names a REGISTRATION REJECT specifically, so this
+#                               is recorded as its own terminal rather than
+#                               folded into the pass. Reading it as a pass would
+#                               quietly rewrite the criterion.
+#   accepted_malformed          the AMF ACCEPTED an update whose mandatory
+#                               identity is empty. Explicit transitions, so it can
+#                               never drift into a timeout and be scored as "no
+#                               reject seen".
+#   no_report_context_alive     nothing came back, and the registered context
+#                               demonstrably survived. The §5.5.1.3.8 b) gap, not
+#                               a crash.
+#   failed                      the de-registration was not answered either: the
+#                               context did not survive, or the AMF did not.
+#
+# BUDGET. matrix/scripts/run passes the register row's `timeout_s` to d3x-run as
+# the GLOBAL engine timeout, so the silent path must fit inside it or NEITHER
+# `no_report_context_alive` NOR `failed` is reachable and the row records an empty
+# actual_terminals — our defect, not the core's, and exactly what xp-269 measured
+# on REG-120 at `timeout_s: 10`. This flow's silent path is the registration
+# preamble plus wait_reaction (8s) plus prove_context_alive (10s), so REG-164's
+# `timeout_s` is raised from 25 to 40. If either duration changes here, re-check
+# that sum against the row.
+#
+# MEASURED, 8a48fa1 sweep 2026-08-17 — this row was authored with no core
+# available and both open questions are now answered:
+#
+#   open5gs   `rejected`, REGISTRATION REJECT, nas.gmm_cause = 95
+#   tinycore  `no_report_context_alive` — no error report at all; the
+#             de-registration was answered, so the context survived
+#   free5gc   `no_report_context_alive` — same
+#
+# So the cause was #95 and the criterion has been widened to admit it (see THE
+# CAUSE VALUE above). tinycore's and free5gc's silence is the §5.5.1.3.8 b) gap
+# and remains a red row on both.
+kind: flow
+name: mobility_update_protocol_error_rejected
+description: NEGATIVE — an authentic (integrity-protected over the malformed plaintext) mobility registration update with an empty mandatory 5GS mobile identity; expect REGISTRATION REJECT with an enumerated protocol-error cause and a surviving registered context (YAML)
+detail: |
+  A complete initial registration, then — over the SAME NAS connection, so the
+  AMF identifies the UE from the NGAP UE-associated signalling connection rather
+  than from the NAS identity — a mobility REGISTRATION REQUEST whose mandatory
+  5GS mobile identity IE is rewritten to length zero BEFORE integrity protection.
+  The MAC is computed over the malformed plaintext, so the message is authentic
+  and malformed at once: TS 24.501 §4.4.4.3's discard path does not apply and
+  §5.5.1.3.8 b) does.
+
+  Every path out of the probe window sends a well-formed, protected
+  DEREGISTRATION REQUEST, which §5.5.2.2 obliges the network to answer. That is
+  the positive discriminator: it separates a silent AMF from a dead one and, at
+  the same time, asserts the row's premise that a malformed update cannot corrupt
+  a live registered context.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - status_reported
+  - accepted_malformed
+  - no_report_context_alive
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # follow_on_request: the UE has pending uplink signalling after
+          # registration (the probe itself), and §5.5.1.2.4 otherwise lets the AMF
+          # release the N1 connection the moment registration ends — free5GC does.
+          # Without it the probe would have no established connection to go out on
+          # and this flow would silently become the from-idle shape the header
+          # explains cannot work.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  # The registration must COMPLETE before the probe: §5.5.1.3 is about updating an
+  # EXISTING registration, and a malformed update against a half-built context
+  # would be a different, weaker probe.
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reaction
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # THE PROBE. Malformed on the PLAINTEXT, then integrity protected AND
+          # ciphered with the established context on the SAME connection — no
+          # ngap_realloc, no UEContextRelease.
+          - type: send
+            message: RegistrationUpdateProtocolError
+            params:
+              mode: empty_mandatory_identity
+              registration_type: 2
+
+  wait_reaction:
+    # Silence is a gap, not the spec's answer — §5.5.1.3.8 b) has no discard limb.
+    # It still goes on to the discriminator instead of terminating, so "the AMF
+    # ignored one message" and "the AMF is gone" can never be confused.
+    on_timeout:
+      duration: 8s
+      target: prove_context_alive_after_silence
+      actions:
+        - { type: send, message: DeregistrationRequest }
+    transitions:
+      # THE ROW — §5.5.1.3.8 b). The cause must come from the enumerated set; see
+      # the header on why #95 is a live risk against this and what to do about it.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [95, 96, 99, 100, 111] }
+      - event: InitialContextSetupRequest.RegistrationReject
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [95, 96, 99, 100, 111] }
+      # §7.5.1 option 2 — an error report, but not the message this row's criterion
+      # names. Its own terminal, and the cause is still asserted so a 5GMM STATUS
+      # carrying an unrelated cause cannot land here silently.
+      - event: NASDownlinkTransport.5GMMStatus
+        target: status_reported
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [95, 96, 99, 100, 111] }
+      # THE VIOLATION: the AMF accepted an update that identifies nobody.
+      - { event: NASDownlinkTransport.RegistrationAccept, target: accepted_malformed }
+      - { event: InitialContextSetupRequest.RegistrationAccept, target: accepted_malformed }
+      # Re-verification after a message it could authenticate but not parse. Not an
+      # outcome either way, so it is answered and the flow keeps waiting — the
+      # mistake mobility_registration_updating had to be rewritten to stop making.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_reaction
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_reaction
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_reaction
+        actions:
+          - { type: send, message: IdentityResponse }
+      # NGAP-level cleanup with no NAS error report: not what §5.5.1.3.8 b) asks
+      # for, but explicitly consumed so it cannot masquerade as silence. The
+      # context is gone with the connection, so the discriminator cannot be sent
+      # and this is the one path where its absence is the finding.
+      - event: UEContextReleaseCommand
+        target: no_report_context_alive
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+
+  # THE POSITIVE DISCRIMINATOR. §5.5.2.2 obliges the network to answer a normal
+  # UE-initiated de-registration with a DEREGISTRATION ACCEPT, so this answers
+  # "was the AMF silent, or gone, and did the registered context survive" — a
+  # question silence alone cannot.
+  prove_context_alive_after_silence:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: no_report_context_alive
+        actions:
+          # The accept came back on the connection the probe was sent over, so the
+          # context that protected the malformed message still verifies our uplink.
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+      # An AMF that answers the de-registration by tearing the context down without
+      # a NAS accept has also stayed up; distinguish it from silence rather than
+      # letting it time out into `failed`.
+      - event: UEContextReleaseCommand
+        target: no_report_context_alive
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-164 (negative, expected_terminal: rejected) — A
+# NAS RegistrationReject is received whose nas.gmm_cause is one of 95, 96, 99, 100 or 111
+#
+# REG-164: "A NAS RegistrationReject is received whose nas.gmm_cause is one of 95, 96,
+# 99, 100 or 111" (TS 24.501 §5.5.1.3.8 case b, plus §7.8/A.4 for #95 — see THE CAUSE
+# VALUE in the header). `accepted_malformed` is the finding — the
+# AMF accepted an update with a protocol error in it; `status_reported` is a 5GMM STATUS
+# instead of a reject, which case b) does not offer as an alternative;
+# `no_report_context_alive` is no report at all with the context proved alive.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

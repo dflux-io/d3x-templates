@@ -1,0 +1,140 @@
+# Malformed NAS robustness test.
+#
+# YAML mirror of the built-in `malformed_nas` flow defined in
+# runner/flows/gnb/flow_malformed_nas.go. Run with:
+#
+#   ./bin/d3x-run run -flow template/gnb/malformed_nas.yaml \
+#       -c config/lab.yaml -s config/subscribers.yaml -trace
+#
+# Sends an InitialUEMessage with a garbage NAS PDU to verify the AMF
+# handles malformed input gracefully. Any AMF response (or graceful
+# silence via timeout) is treated as success.
+
+kind: flow
+name: malformed_nas
+description: Send InitialUEMessage with garbage NAS PDU — test AMF robustness (YAML)
+detail: |
+  Sends an InitialUEMessage containing a completely invalid NAS PDU (garbage
+  bytes with invalid Extended Protocol Discriminator) to test AMF robustness
+  against malformed input.
+
+  A well-behaved AMF should not crash or hang when receiving malformed NAS. The
+  expected AMF behavior is one of:
+  - Send an ErrorIndication NGAP message back to the gNB
+  - Send a UEContextReleaseCommand to clean up the UE context
+  - Send a NAS rejection (e.g., RegistrationReject) if it can partially parse
+    the message as a registration attempt
+  - Simply drop the message and release the context after a timeout
+
+  This is a robustness/negative test — any AMF response (or graceful silence) is
+  acceptable. The test succeeds if the AMF does not crash and responds in some
+  way within the timeout. A timeout is also treated as success since the AMF may
+  legitimately ignore completely unparseable NAS.
+category: robustness
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - complete
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ngsetup_response
+        actions:
+          - type: send
+            message: NGSetupRequest
+
+  wait_ngsetup_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NGSetupResponse
+        target: wait_amf_response
+        actions:
+          # THE ROBUSTNESS CLAIM IS ABOUT AN ESTABLISHED NG-C INTERFACE, and
+          # nothing here looked at the response that establishes it: one that
+          # decoded to an empty struct drove the flow onward exactly like a
+          # conformant one, and the malformed NAS then went out on an
+          # interface that may never have come up. TS 38.413 §9.2.6.2 marks
+          # AMF Name, Served GUAMI List and PLMN Support List mandatory.
+          # Asserted BEFORE the send: a failed check bails out of the action
+          # list, so "the AMF did not crash on garbage" is not concluded from
+          # a run that never got as far as an association.
+          - { type: check, field: amf_name, op: not_empty }
+          - { type: check, field: served_guami_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: plmn_support_list.length, op: greater_or_equal, expected: 1 }
+          - type: send
+            message: MalformedInitialUEMessage
+
+  wait_amf_response:
+    # Timeout is acceptable — AMF may silently drop malformed NAS
+    on_timeout:
+      duration: 10s
+      target: complete
+    transitions:
+      - event: ErrorIndication
+        target: complete
+      - event: UEContextReleaseCommand
+        target: complete
+      - event: NASDownlinkTransport.RegistrationReject
+        target: complete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL. One route to `complete` is a timer (the absence window), so the
+  # message assertions below are what separate "reached it" from "waited it out".
+  - name: the flow reached `complete`
+    metric: final_state_counts.complete
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent (MalformedInitialUEMessage)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NG SETUP REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_NG_SETUP_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an NG SETUP RESPONSE arrived
+    metric: rx_events.NGSetupResponse
+    op: greater_or_equal
+    value: 1
+  # THE CHECK FLOOR. `checks_total` counts `check` ACTIONS the FSM executed — it is
+  # incremented in exactly one place (execCheck, runner/runner/action_executor.go) — and a
+  # flow's own `final_checks` never touch it: they are evaluated after the run by
+  # Metrics.EvaluateFinalChecks and reported separately. So while this flow declared no
+  # `check` action anywhere it reported `checks_total: 0` on every path, and the two
+  # counters are indistinguishable in a report that names only one of them. The three
+  # checks in the FSM above are what this row now reads off the message that establishes
+  # the interface; this is the floor that stops them being quietly deleted again.
+  - name: all three declared checks ran
+    metric: checks_total
+    op: equals
+    value: 3
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

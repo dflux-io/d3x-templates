@@ -1,0 +1,53 @@
+# Namf_Communication — N1N2 transfer failure receiver (REST-server, NOTIFY half).
+# 3GPP TS 29.518 §5.2.2.3.1 / §6.1.6.2.4: when an MT N1N2MessageTransfer to a
+# CM-IDLE UE cannot be delivered (paging exhausted → UE_NOT_RESPONDING, or the
+# gNB returns a NASNonDeliveryIndication), the AMF POSTs an
+# N1N2MsgTxfrFailureNotification{cause, n1n2MsgDataUri} to the consumer's
+# n1n2FailureTxfNotifURI.
+#
+# runner binds a rest-listen listener and waits for dmf to POST the failure
+# notification to /n1n2-failure. The trigger half is a curl
+# N1N2MessageTransfer carrying n1n2FailureTxfNotifURI → this listener's URI,
+# fired by scripts/e2e-gnb-run.sh against a CM-IDLE UE that never answers
+# paging (gnb/paging_no_response_retransmission.yaml) or that replies
+# NASNonDeliveryIndication (gnb/nas_non_delivery.yaml).
+#
+# dmf POSTs to the exact n1n2MsgDataUri/notifyUri (no path suffix appended,
+# unlike the dpf PolicyNotifier). The body is plain JSON
+# {cause, n1n2MsgDataUri}; assert cause == UE_NOT_RESPONDING and the msg URI
+# is present. Reply 204 on the held ResponseWriter via a *_Answer send (the
+# notify_receiver pattern). on_timeout→failed so a missing notify fails the
+# flow rather than hanging.
+
+kind: flow
+name: namf_n1n2_failure_receiver
+description: Receive + assert the AMF's N1N2MsgTxfrFailureNotification (UE_NOT_RESPONDING).
+type: server
+protocol: rest
+nf: external
+initial_state: waiting
+final_states: [done, failed]
+
+states:
+  waiting:
+    on_timeout:
+      duration: 60s
+      target: failed
+    transitions:
+      - event: rest.POST./n1n2-failure
+        target: done
+        actions:
+          - type: check
+            field: rest.body.cause
+            op: equals
+            expected: UE_NOT_RESPONDING
+          - type: check
+            field: rest.body.n1n2MsgDataUri
+            op: not_empty
+          - type: send
+            message: Notify_Answer
+            message_body: |
+              {"status": 204}
+
+  done: {}
+  failed: {}

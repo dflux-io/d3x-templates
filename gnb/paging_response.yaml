@@ -1,0 +1,391 @@
+# Paging → SERVICE REQUEST with service type "mobile terminated services" (REG-231).
+#
+# Clauses, operative sentences (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §5.6.2.2.1 "The network shall initiate the paging procedure for 5GS services when
+#                        NAS signalling messages or user data is pending to be sent to the UE in
+#                        5GMM-IDLE mode over 3GPP access ... To initiate the procedure the 5GMM
+#                        entity in the AMF requests the lower layer to start paging and shall
+#                        start timer T3513."
+#                        "Upon reception of a paging indication, the UE shall ... initiate a
+#                        service request procedure over 3GPP access to respond to the paging as
+#                        specified in subclauses 5.6.1.2.1"
+#                        "The network shall stop timer T3513 for the paging procedure when an
+#                        integrity-protected response is received from the UE and successfully
+#                        integrity checked by the network"
+#
+#   TS 24.501 §5.6.1.2.1 "For cases a), b), and g) in subclause 5.6.1.1, the service type IE in
+#                        the SERVICE REQUEST message shall be set to 'mobile terminated services'."
+#
+#   TS 24.501 §5.6.1.4.1 "the UE shall treat the reception of the SERVICE ACCEPT message as
+#                        successful completion of the procedure."
+#
+#   TS 38.413 §9.2.4.1   PAGING message IEs — UE Paging Identity is Mandatory; the TAI List for
+#                        Paging group is present once.
+#   TS 38.413 §8.5.1.2   "At the reception of the PAGING message, the NG-RAN node shall perform
+#                        paging of the UE in cells which belong to tracking areas as indicated in
+#                        the TAI List for Paging IE."
+#
+# ============================================================================================
+# WHAT THIS FLOW CAN AND CANNOT SCORE FOR REG-231
+# ============================================================================================
+# REG-231's pass_criterion is "PDUSessionResourceSetupRequest or InitialContextSetupRequest
+# received on N2 after the paging response, AND the buffered downlink packet arrives on N3 with
+# the announced TEID", with precondition network_trigger: mt-data.
+#
+# The N2 half is asserted below. The N3 half is NOT, and cannot be here:
+#   1. The harness produces no mt-data. matrix/scripts/run.sh already says so and scores the row
+#      `blocked` — "it needs the network to page the UE, which needs downlink data the harness
+#      never generates". The only paging trigger in the repo (tinycore/scripts/e2e-gnb-run.sh
+#      04-mt-paging) is a curl N1N2MessageTransfer carrying DL NAS SIGNALLING, not user data, so
+#      it exercises §5.6.2.2.1's "NAS signalling messages ... pending" limb and never buffers a
+#      downlink packet.
+#   2. tinycore's matrix topology runs the UPF with `-datapath stub`, which carries no user plane
+#      at all (matrix/cores/tinycore/compose.yml says so in as many words), so no N3 packet can
+#      arrive however correct the AMF is.
+# Asserting the N3 half here would therefore red both cores for something neither the trigger nor
+# the datapath can produce. It is left unasserted and REPORTED instead: REG-231 should carry
+# gap: needs-harness until the harness can generate mobile-terminated USER DATA and run against a
+# real datapath, and its pass_criterion should be split so the N2 half is scorable on its own.
+# ============================================================================================
+#
+# WHAT CHANGED (xp-245). The flow had no lenient terminal to remove — every on_timeout already
+# targeted `failed` — but it asserted nothing about content. Added:
+#   - the PAGING message must carry its Mandatory UE Paging Identity (a 5G-S-TMSI) and a TAI list;
+#     an empty page is not a page;
+#   - the SERVICE REQUEST now names its service type EXPLICITLY as "mobile terminated services"
+#     (§5.6.1.2.1) instead of inheriting the enricher default;
+#   - the answer is asserted to be a SERVICE ACCEPT on a NEW UE-associated logical NG-connection.
+#
+# SERVICE TYPE — ENUM SVC_TYPE_MOBILE_TERMINATED_SERVICES=3, mapped to wire 0010 by
+# svcTypeToWire since 2026-08-10 (xp-253). (TS 24.501
+# Table 9.11.3.50.1). It looks like the enum SVC_TYPE_DATA because proto/nas5g's NAS_ServiceType
+# enum is offset by one from the wire and nas_5gmm.go:encodeServiceRequest writes it raw — see the
+# long note in service_request_signalling.yaml. The enricher default happened to produce this same
+# wire value, so this row was accidentally right; it is now right on purpose. When
+# encodeServiceRequest is fixed this must become 3.
+#
+# STRUCTURE IS LOAD-BEARING — DO NOT RENAME STATES. runner/runner/flows_integration_test.go
+# TestE2E_PagingResponse_Dispatch drives this FSM by state name (wait_release_cmd → wait_paging →
+# wait_service_response → connected) and dispatches the BARE `InitialContextSetupRequest` event,
+# and tinycore/scripts/e2e-gnb-run.sh step 04-mt-paging greps this flow's log for `to=connected`.
+
+kind: flow
+name: paging_response
+description: Registration + CM-IDLE + AMF Paging + SERVICE REQUEST (mobile terminated services); assert the page and the accept (YAML)
+detail: |
+  Performs registration, transitions to CM-IDLE via gNB-initiated UE context
+  release, then blocks waiting for an AMF-initiated Paging message
+  (3GPP TS 38.413 §8.5). On Paging, the gNB allocates a new RAN-UE-NGAP-ID and
+  sends a fresh InitialUEMessage carrying a NAS ServiceRequest with service type
+  "mobile terminated services" and the UE's 5G-S-TMSI identity.
+
+  Phase 1 — Registration: standard auth/security/context-setup.
+  Phase 2 — Go to CM-IDLE: gNB sends UEContextReleaseRequest, AMF responds with
+  UEContextReleaseCommand, gNB confirms with UEContextReleaseComplete.
+  Phase 3 — Wait for Paging: long-timeout idle wait. Paging is AMF-driven and
+  requires an external trigger (DL data or signalling destined for the UE).
+  Phase 4 — Service Request: allocate a new RAN-UE-NGAP-ID, send InitialUEMessage
+  with the NAS ServiceRequest, then take the AMF's answer.
+category: stability
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - connected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          # The pre-release RAN UE NGAP ID. Captured here because `d3x-run lint`
+          # refuses an extract that follows a send.
+          - type: extract
+            field: ue.RanUeNgapId
+            store: pre_release_ran_ue_ngap_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: UEContextReleaseRequest
+
+  wait_release_cmd:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_paging
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+      # Absorbed, not answered: the AMF is already releasing this connection.
+      #
+      # UNREVIEWED INTERACTION WITH ccd6864 (#362) — recorded 2026-08-18, NOT acted
+      # on. The scoping is deliberate and it still holds where it is written: a
+      # declared transition beats fsm.DispatchRx's tail default, so this state stays
+      # silent. But the SAME command arriving in any OTHER state of this flow now
+      # draws a CONFIGURATION UPDATE COMPLETE from that default — the very uplink
+      # this line refuses to send here. Latent rather than live today: the default
+      # is gated on the Configuration update indication ACK bit, and open5gs's
+      # command carries no such IE at all (decoded off the v1 sweep). Whether the
+      # silence should become flow-wide is an owner's call, not a template edit.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_cmd
+
+  wait_paging:
+    # Long idle wait: Paging is AMF-driven and requires an external trigger
+    # (a curl N1N2MessageTransfer in the d3x-core 04-mt-paging lab step).
+    # 60s gives the orchestrator room to register → idle → fire the trigger.
+    on_timeout:
+      duration: 60s
+      target: failed
+    transitions:
+      - event: Paging
+        target: wait_service_response
+        actions:
+          # TS 38.413 §9.2.4.1: UE Paging Identity is a MANDATORY IE, and
+          # §8.5.1.2 has the NG-RAN node page "in cells which belong to tracking
+          # areas as indicated in the TAI List for Paging IE". A PAGING with
+          # neither is one the gNB cannot act on.
+          - type: check
+            field: ue_paging_identity.five_g_s_tmsi
+            op: ie_present
+          - type: check
+            field: tai_list_for_paging
+            op: ie_present
+          - type: ngap_realloc
+          - type: send
+            message: ServiceRequest
+            params:
+              # ENUM SVC_TYPE_MOBILE_TERMINATED_SERVICES=3 -> wire 0010. See the header.
+              service_type: 3
+
+  wait_service_response:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # The AMF re-establishes the NGAP UE association and the SERVICE ACCEPT
+      # rides the INITIAL CONTEXT SETUP REQUEST.
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: connected
+        actions:
+          - type: check
+            field: nas.header.message_type
+            op: equals
+            expected: 78
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          - type: check
+            field: ran_ue_ngap_id
+            op: greater_than
+            expected: "{{ue.Params.pre_release_ran_ue_ngap_id}}"
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+      # An INITIAL CONTEXT SETUP REQUEST with no NAS payload. Allowed by REG-231's
+      # pass_criterion ("PDUSessionResourceSetupRequest or InitialContextSetupRequest
+      # received on N2 after the paging response") and the event
+      # TestE2E_PagingResponse_Dispatch drives. No nas.* assertion here: this
+      # message carries no NAS PDU, so ue.NGAP.LastNas would still hold the
+      # previous message's and any nas.* check would silently be about it.
+      - event: InitialContextSetupRequest
+        target: connected
+        actions:
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          - type: check
+            field: ran_ue_ngap_id
+            op: greater_than
+            expected: "{{ue.Params.pre_release_ran_ue_ngap_id}}"
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+      # Nothing to set up, so the accept travels alone. No InitialContextSetupResponse:
+      # there was no request to answer.
+      - event: NASDownlinkTransport.ServiceAccept
+        target: connected
+        actions:
+          - type: check
+            field: nas.header.message_type
+            op: equals
+            expected: 78
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          - type: check
+            field: ran_ue_ngap_id
+            op: greater_than
+            expected: "{{ue.Params.pre_release_ran_ue_ngap_id}}"
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+      # Refusing a UE that answered the network's own page is a failure of this row.
+      - event: NASDownlinkTransport.ServiceReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-231).
+#
+# REG-231 — PDUSessionResourceSetupRequest or InitialContextSetupRequest received on N2
+# after the paging response, and the buffered downlink packet arrives on N3 with the
+# announced TEID
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `connected`
+    metric: final_state_counts.connected
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: greater_or_equal
+    value: 1
+  - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, ServiceRequest)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # STAYS 1 — AND 1 IS NOT WHAT EVERY CORE PRODUCES. Read this before changing it.
+  #
+  # Since #364 the runner answers a UE CONTEXT RELEASE COMMAND that no state names
+  # (TS 38.413 §8.3.3, unconditional), so this metric is now "the one Complete this
+  # flow declares in wait_release_cmd" PLUS one per unnamed command the core chose
+  # to send. That second term is a property of the CORE, not of this FSM.
+  #
+  # Measured, not inferred — three sweeps agree (5ee60cd 2026-08-13, 8a48fa1 and
+  # f227f12-v1 2026-08-17), REG-231's own runner.json:
+  #     tinycore  rx UEContextReleaseCommand 1 -> 1 Complete
+  #     open5gs   rx UEContextReleaseCommand 1 -> 1 Complete
+  #     free5gc   rx UEContextReleaseCommand 2 -> 2 Completes
+  # free5gc issues a SECOND release command for the same context, and it lands in
+  # wait_paging, which names no transition for it — the §8.3.3 breach #364 fixed.
+  # So this assertion now reports red on free5gc, at actual 2. (REG-231 already
+  # fails on all three cores for its own reason: no PAGING arrives.)
+  #
+  # DO NOT "FIX" THAT BY WRITING 2. Two is free5gc's number; writing it would
+  # redden tinycore and open5gs, which walk exactly the path declared above. 1 is
+  # what this FSM declares and what the header of this block says these counts are.
+  # What wait_paging genuinely wants is a transition of its own saying what a
+  # release during the paging wait MEANS for this row — that is template work with
+  # an owner, not a number to be nudged here.
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PAGING arrived
+    metric: rx_events.Paging
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # Several routes reach `connected` with different numbers of checks
+  # (9..10); 9 is the shortest one, so it is the floor that still proves
+  # an assertion was made on the messages this run saw.
+  - name: at least nine declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 9
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,56 @@
+# Nsmf_PDUSession_CreateSMContext — missing mandatory IE (negative/security).
+# 3GPP TS 29.502 §6.1.6.2.2; TS 29.571 §5.2.4.1.
+#
+# runner (AMF) POSTs a SmContextCreateData that OMITS mandatory fields (no supi,
+# no pduSessionId, no dnn, no sNssai). A spec-correct SMF MUST reject with 4xx
+# and a ProblemDetails carrying cause MANDATORY_IE_INCORRECT /
+# MANDATORY_IE_MISSING and stay up.
+kind: flow
+name: smf_nsmf_create_smcontext_missing_mandatory_ie
+description: AMF CreateSMContext missing mandatory IEs — expect 4xx rejection
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

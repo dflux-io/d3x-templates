@@ -1,0 +1,45 @@
+# N4/PFCP — Session Establishment with no established association (negative).
+# 3GPP TS 29.244 §7.5.2; §8.2.1 (Cause 73 — No established PFCP Association).
+#
+# runner (SMF) sends a PFCPSessionEstablishmentRequest WITHOUT first performing an
+# Association Setup. A spec-correct UPF MUST reject with Cause="No established
+# PFCP Association" (asserted via the pfcp.cause resolver) and stay up.
+#
+# RUNTIME NOTE: if the lab's N4 lifecycle already created an association out of
+# band (e.g. UPF auto-associates), the UPF may instead answer on the request's
+# merits; the assertion targets the spec-correct no-association rejection.
+kind: flow
+name: smf_pfcp_session_est_no_association
+description: SMF establishment without prior association — expect Cause No established PFCP Association
+category: negative
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_session
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            peer: smf
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "No established PFCP Association"

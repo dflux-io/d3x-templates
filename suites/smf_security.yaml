@@ -1,0 +1,250 @@
+# SMF security / robustness suite — one flow, one execution per flow.
+#
+# Drives abnormal, malformed, unauthorized, and oversized Nsmf_PDUSession SBI
+# requests (over N11, runner plays the AMF / Nsmf consumer) and malformed/illegal
+# N4/PFCP requests (runner plays the SMF toward the UPF) against a real Open5GS
+# deployment. The cross-cutting assertion is that the SMF/UPF reacts in a
+# spec-correct way — rejects with the right class of error (4xx ProblemDetails
+# for SBI; a PFCP response with the spec-correct reject Cause for N4) or
+# tolerates the probe idempotently — and STAYS UP. These flows deliberately
+# send things the core should reject or absorb, never crash.
+#
+# Every step is one flow / one execution (repetitions: 1). Each flow is
+# self-contained (the SBI flows that need a context create their own first;
+# each PFCP flow that needs an association sets up its own — except the
+# deliberately-no-association establishment probe), so there is no cross-step
+# shared state to carry.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite smf-security \
+#       -templates <templates-dir> -c config/open5gs-smf.yaml -trace
+#
+# stop_on_failure is false on every step: a misbehaviour on one probe must not
+# block discovering the others, and SMF/UPF liveness across the whole run is
+# the real signal — a security suite that aborts on the first surprising answer
+# hides the rest of its findings. There is no hard gate here.
+#
+# ORDER rationale: the stateless reject probes (malformed JSON, missing IE,
+# unknown DNN/SNSSAI, unauthorized, unsupported media/request type, oversized,
+# unknown-ref update/release/retrieve) run FIRST — each sends one bad request
+# and expects one clean rejection, leaving no residual context. The flows that
+# can leave the SMF in a half/dirty state for the shared SUPI run LAST:
+#   - duplicate_pdu_session_id: first create may succeed and leave a live SM
+#     context for supi+pduSessionId before the second is rejected.
+#   - create_replay: first create may succeed and leave a context behind, then
+#     the byte-identical replay is sent.
+# Running these last keeps a dangling context from poisoning a following probe
+# that reuses the same SUPI.
+#
+# Known EXPECTED failures / runtime-risk against a real Open5GS (genuine
+# core/transport behaviour, NOT flow bugs — these are what the live run uses to
+# separate core gaps from flow bugs):
+#   - All CreateSMContext-based probes ride single-part application/json with no
+#     embedded N1 SM NAS PDU (a spec-correct create needs a multipart/related
+#     body). Open5GS may reject these for the MISSING-N1 reason rather than the
+#     specific abuse the probe targets (bad DNN, bad SNSSAI, dup id, ...). The
+#     security assertion (clean 4xx / tolerated + SMF stays up) still holds, but
+#     the EXACT reject cause may reflect the N1/multipart gap, not the probe's
+#     intended trigger. Read the trace to attribute the rejection.
+#   - update/release/retrieve_unknown_ref: target a fabricated smContextRef; a
+#     spec-correct SMF 404s. Expected to pass as a clean rejection.
+#   - pfcp_session_est_no_association: deliberately sends an establishment with
+#     NO prior association; expects the UPF to reject (Cause 73, No established
+#     PFCP Association). pfcp_session_est_missing_mandatory_ie expects Cause 67;
+#     pfcp_session_mod_unknown_seid expects Cause 66. A UPF that silently drops
+#     instead of answering will time out — that itself is a finding.
+#
+# N4 addressing note (REQUIREMENT, now resolved): the PFCP probes need NodeID ==
+# our own IP bound on UDP 8805 (Open5GS routes PFCP responses to NodeID:8805, not
+# the UDP source port). config/open5gs-smf.yaml sets pfcp.local "172.22.0.250:8805"
+# + node_id.value "172.22.0.250" and the harness runs the runner container on
+# --ip 172.22.0.250; runner's PFCP RX path then receives + dispatches the responses
+# normally — there is NO runner PFCP client-RX correlation bug (an earlier run
+# misdiagnosed the addressing issue as one).
+#
+# Results (2026-06-05, Open5GS v2.7.x, runner as SMF consumer):
+# 18/20 pass — the strongest suite. Every Nsmf SBI negative (malformed JSON,
+# missing mandatory IE, unknown DNN, bad S-NSSAI, unsupported request-type,
+# unauthorized token, unsupported media type, oversized payload, update/release/
+# retrieve on unknown ref, unauthorized update, duplicate PDU-session-id, replay)
+# is answered correctly by the real SMF. The only 2 fails are
+# pfcp_session_est_missing_mandatory_ie and pfcp_session_est_no_association: the
+# UPF's response IS received and dispatched, but it answers Cause="Request
+# accepted" where the probe pinned the strict reject Cause ("Mandatory IE
+# missing" / "No established PFCP Association") — the real UPF accepts our bare
+# establishment rather than emitting the spec reject, so the strict pin scores
+# FAIL. That is a UPF Cause-fidelity observation, NOT a core gap or an runner RX bug.
+# pfcp_session_mod_unknown_seid passes (Cause "Session context not found").
+
+kind: suite
+name: smf-security
+description: One-flow-per-probe abnormal/malformed/unauthorized SBI + PFCP probes; assert correct rejection and SMF/UPF liveness.
+steps:
+  # --- stateless SBI CreateSMContext reject probes -----------------------
+  - name: create_malformed_json
+    flow: smf_nsmf_create_smcontext_malformed_json
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: create_missing_mandatory_ie
+    flow: smf_nsmf_create_smcontext_missing_mandatory_ie
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: create_unknown_dnn
+    flow: smf_nsmf_create_smcontext_unknown_dnn
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: create_bad_snssai
+    flow: smf_nsmf_create_smcontext_bad_snssai
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: create_unsupported_request_type
+    flow: smf_nsmf_create_smcontext_unsupported_request_type
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: create_unauthorized_token
+    flow: smf_nsmf_create_smcontext_unauthorized_token
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: create_unsupported_media_type
+    flow: smf_nsmf_create_smcontext_unsupported_media_type
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: smcontext_oversized_payload
+    flow: smf_nsmf_smcontext_oversized_payload
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- stateless SBI Update/Release/Retrieve reject probes ---------------
+  - name: update_unknown_ref
+    flow: smf_nsmf_update_smcontext_unknown_ref
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: update_missing_mandatory_ie
+    flow: smf_nsmf_update_smcontext_missing_mandatory_ie
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: update_malformed_json
+    flow: smf_nsmf_update_smcontext_malformed_json
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: update_unauthorized
+    flow: smf_nsmf_update_smcontext_unauthorized
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: release_unknown_ref
+    flow: smf_nsmf_release_smcontext_unknown_ref
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: release_malformed
+    flow: smf_nsmf_release_smcontext_malformed
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: retrieve_unknown_ref
+    flow: smf_nsmf_retrieve_smcontext_unknown_ref
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- N4/PFCP reject probes (stateless) ---------------------------------
+  - name: pfcp_session_est_missing_mandatory_ie
+    flow: smf_pfcp_session_est_missing_mandatory_ie
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pfcp_session_est_no_association
+    flow: smf_pfcp_session_est_no_association
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pfcp_session_mod_unknown_seid
+    flow: smf_pfcp_session_mod_unknown_seid
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- probes that can leave a dangling SM context: run LAST -------------
+  # duplicate_pdu_session_id and replay each may leave a live SM context for
+  # the shared SUPI after their first create. Run them last so they don't
+  # poison an earlier probe that reuses the same SUPI. Terminal is 'tolerated'
+  # (the assertion is the second/replayed response is a clean non-5xx and the
+  # SMF stays up) — kept distinct from 'failed', so success_when pins it.
+  - name: create_duplicate_pdu_session_id
+    flow: smf_nsmf_create_smcontext_duplicate_pdu_session_id
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  - name: create_replay
+    flow: smf_nsmf_create_smcontext_replay
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated

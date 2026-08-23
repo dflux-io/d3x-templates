@@ -1,0 +1,131 @@
+# Registration with an unknown 5G-GUTI — negative / identity-recovery test.
+#
+# 3GPP ref: TS 24.501 §5.5.1.2 (initial registration, identification by 5G-GUTI)
+# and §5.4.3 (identification procedure); AMF abnormal handling when the GUTI is
+# not recognised. NGAP carriage per TS 38.413 §8.6.
+#
+# Abnormal input sent: the gNB sends an InitialUEMessage carrying a
+# RegistrationRequest that identifies the UE with a bogus / unknown 5G-GUTI
+# (InitialUEMessageGuti) rather than a SUCI. The referenced UE context does not
+# exist on the AMF (e.g. stale GUTI, wrong AMF, fabricated value).
+#
+# Expected-correct Open5GS behavior: per 24.501 §5.4.3 / §5.5.1 the AMF cannot
+# resolve the GUTI to a stored context, so it must recover the UE identity
+# rather than fail blindly. The compliant reaction is to start the identification
+# procedure — a NASDownlinkTransport.IdentityRequest asking for the SUCI — or to
+# reject with a NASDownlinkTransport.RegistrationReject. The AMF MUST NOT crash
+# or hang on an unresolvable GUTI. Success terminal = receiving the IdentityRequest
+# or the RegistrationReject (guti_recovered).
+
+kind: flow
+name: registration_guti_unknown
+description: InitialUEMessage RegistrationRequest with a bogus 5G-GUTI — expect IdentityRequest or RegistrationReject (YAML)
+detail: |
+  Negative identity-recovery test (3GPP TS 24.501 §5.5.1.2, §5.4.3). The UE
+  starts registration identifying itself with an unknown / bogus 5G-GUTI
+  (InitialUEMessageGuti) instead of a SUCI, so the AMF has no stored context to
+  match.
+
+  A spec-compliant AMF (Open5GS) responds by initiating the identification
+  procedure with an IdentityRequest (soliciting the SUCI), or by rejecting the
+  registration with a RegistrationReject. The compliance assertion is that the
+  AMF recovers gracefully — requesting identity or rejecting — without crashing
+  or hanging. Success = receiving either reaction within the timeout.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - guti_recovered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_guti_reaction
+        actions:
+          # RegistrationRequest identifying with a bogus 5G-GUTI (no stored context).
+          - type: send
+            message: InitialUEMessageGuti
+
+  wait_guti_reaction:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # Spec-correct reaction: AMF cannot resolve the GUTI so it solicits the
+      # real identity (IdentityRequest -> SUCI) or rejects the registration.
+      # Either is the success terminal.
+      #
+      # THE TWO REACTIONS ARE SEPARATE TRANSITIONS BECAUSE THEY ASSERT
+      # DIFFERENT THINGS. Written as one `or:` they shared one (empty) action
+      # list, so the row reached `guti_recovered` having read nothing off
+      # either message — "the AMF does not crash" was concluded from the
+      # arrival of a message whose content was never looked at.
+      - event: NASDownlinkTransport.IdentityRequest
+        target: guti_recovered
+        actions:
+          # TS 24.501 §5.4.3.2: the AMF starts the identification procedure
+          # "to request the UE to provide the SUCI", and §9.11.3.3 gives
+          # Identity type 1 = SUCI. It is the mandatory IE of an IDENTITY
+          # REQUEST (Table 8.2.21.1), so a request that solicits anything else
+          # — a 5G-GUTI (2), an IMEI (3), a 5G-S-TMSI (4) — asks the UE for an
+          # identity that cannot resolve the context the AMF has just failed
+          # to find, and does not recover the identity this row is named for.
+          # Without this the row scored every one of those the same.
+          - { type: check, field: nas.identity_type, op: equals, expected: 1 }
+      - event: NASDownlinkTransport.RegistrationReject
+        target: guti_recovered
+        actions:
+          # 5GMM cause is the mandatory IE of a REGISTRATION REJECT (TS 24.501
+          # Table 8.2.16.1); §5.5.1.2.5 requires the UE to act on it, and cause
+          # 0 is not an assigned value (§9.11.3.2). A reject the UE cannot act
+          # on has not recovered anything either.
+          - { type: check, field: nas.gmm_cause, op: not_empty }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-150).
+#
+# REG-150 — An IdentityRequest or a RegistrationReject is received within
+# absent_after_s; the AMF neither hangs nor drops the association
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `guti_recovered`
+    metric: final_state_counts.guti_recovered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent (InitialUEMessageGuti)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  # THE CHECK FLOOR. `checks_total` counts `check` ACTIONS the FSM executed — it is
+  # incremented in exactly one place (execCheck, runner/runner/action_executor.go) — and a
+  # flow's own `final_checks` never touch it: they are evaluated after the run by
+  # Metrics.EvaluateFinalChecks and reported separately. So while this flow declared no
+  # `check` action anywhere it reported `checks_total: 0` on every path, and the two
+  # counters are indistinguishable in a report that names only one of them. Exactly one
+  # check runs on either route to `guti_recovered` — whichever reaction arrived — and
+  # this is the floor that stops it being quietly deleted again.
+  - name: the one check on the reaction that arrived ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and it did not fail
+    metric: checks_failed
+    op: equals
+    value: 0

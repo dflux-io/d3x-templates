@@ -1,0 +1,127 @@
+# Emergency initial registration (3GPP TS 24.501 §5.5.1.2 — 5GS registration
+# type = emergency).
+#
+# Sends an InitialUEMessage whose RegistrationRequest carries 5GS registration
+# type = emergency (registration_type=4 SendParam). The AMF's correct behaviour
+# is config-dependent: it may accept (possibly limited / unauthenticated
+# emergency service) or reject. The assertion is only that the AMF reacts
+# deterministically and does not hang.
+#
+# Terminals: `emergency_accepted` (AMF engages: auth / identity / context setup),
+# `emergency_rejected` (AMF declines emergency — valid), `failed` on no reaction.
+kind: flow
+name: emergency_registration
+description: Initial registration with 5GS registration type = emergency; assert deterministic AMF reaction (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - emergency_accepted
+  - emergency_rejected
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reaction
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params:
+              registration_type: 4
+  wait_reaction:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: emergency_accepted
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: emergency_accepted
+      - event: NASDownlinkTransport.IdentityRequest
+        target: emergency_accepted
+      - event: NASDownlinkTransport.RegistrationReject
+        target: emergency_rejected
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# THE THIRD VERDICT VALUE, ON THE ONE BRANCH THAT MEANS "WE DO NOT DO THIS".
+#
+# `emergency_rejected` is reached by exactly one thing: a NAS REGISTRATION REJECT
+# answering a REGISTRATION REQUEST whose 5GS registration type IE says "emergency
+# registration". The core read the request, understood it, and declined it. That is not
+# the core getting something wrong — this file's own header has said so since it was
+# written ("`emergency_rejected` (AMF declines emergency — valid)") — and it is not the
+# core doing one of two RIGHT things either, because the two branches are not two ways of
+# performing an emergency registration: one performs it and one refuses to.
+#
+# WHAT THIS CHANGES AND WHAT IT DOES NOT. Nothing about the pass/fail line moves.
+# `emergency_rejected` satisfied every final_check below before this declaration and it
+# still does; the run was reported `pass` and is now reported `unsupported`. THAT IS THE
+# ONLY MOVEMENT, and it is the direction the declaration can move a run in at all: the
+# verdict is computed in full first, and only a run that would have PASSED is refined
+# (runner/runner/verdict.go, ComputeVerdict). A hang is still `failed` and still red — an
+# absent feature and a dead AMF are told apart by the fact that one of them SENT
+# something, which is why `failed` (reached by the wait_reaction timer) can never carry
+# this meaning and the loader refuses to let it.
+#
+# WHAT IT COSTS. `emergency_rejected` fires on ANY 5GMM cause: this flow does not read
+# the cause value, so a REGISTRATION REJECT that refuses this subscriber for some reason
+# unrelated to emergency service lands here too and is reported as an absent feature. The
+# reason below says so rather than overclaiming. Narrowing it needs a cause-value check
+# on the reject branch, and REG-112's criterion — which asks only that SOMETHING arrive —
+# does not license one; that is a register question, not a template one.
+unsupported_states:
+  - state: emergency_rejected
+    reason: >-
+      The AMF answered an emergency-type REGISTRATION REQUEST with a REGISTRATION REJECT:
+      it declined to perform the procedure rather than performing it. REG-112, verbatim:
+      "A RegistrationAccept, AuthenticationRequest, IdentityRequest or RegistrationReject
+      arrives within absent_after_s of the InitialUEMessage" — the register counts the
+      reject as a legitimate answer, so nothing here is a defect, and the first three
+      arrivals (which reach `emergency_accepted`) are the AMF engaging with the emergency
+      registration while this one is the AMF refusing it. NOTE THE LIMIT OF THE CLAIM:
+      this flow does not read the 5GMM cause, so a reject for a reason unrelated to
+      emergency service is not distinguishable here from "emergency registration is not
+      supported"; the trace carries the cause and a reader should check it.
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-112 (positive, expected_terminal: null) — A
+# RegistrationAccept, AuthenticationRequest, IdentityRequest or RegistrationReject
+# arrives within absent_after_s of the InitialUEMessage
+#
+# NO NON-FAILURE TERMINAL IS PINNED. REG-112 declares `expected_terminal: null` and its
+# criterion is "A RegistrationAccept, AuthenticationRequest, IdentityRequest or
+# RegistrationReject arrives within absent_after_s" — the first three reach
+# `emergency_accepted` and the fourth reaches `emergency_rejected`, so BOTH terminals
+# satisfy it. The row's stated claim is that the AMF "accepts or rejects, but does not
+# hang", and the hang is exactly `failed` (the wait_reaction timer). That is what is
+# pinned. `checks_total` carries no floor: every path through this flow evaluates ZERO
+# checks, so any floor would be vacuous. That is a real gap in the row, recorded here
+# rather than papered over.
+#
+# AND SINCE THE `unsupported_states:` BLOCK ABOVE, THE TWO TERMINALS NO LONGER REPORT THE
+# SAME THING. Both still satisfy every check below — the declaration is not an assertion
+# and adds none — but the verdict now separates "the AMF performed the emergency
+# registration" (`pass`) from "the AMF declined it" (`unsupported`), which is the
+# distinction the row was making in its terminal names and losing in its verdict.
+# Pinning `final_state_counts.emergency_accepted equals 1` INSTEAD would be wrong for the
+# same reason it is wrong on REG-374: a failed final_check outranks the declaration, so
+# the pin would turn a branch the register calls a legitimate answer into a red.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` — the AMF neither accepted nor rejected inside the window
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

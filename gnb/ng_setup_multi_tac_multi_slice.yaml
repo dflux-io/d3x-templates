@@ -1,0 +1,176 @@
+# REG-803 — NG SETUP advertising SEVERAL TACs and SEVERAL S-NSSAIs per broadcast PLMN.
+#
+# Clauses, retrieved with matrix/scripts/spec-clause.py 38.413 <clause>:
+#
+#   §9.2.6.1 (NG SETUP REQUEST) — Supported TA List is a range-1 list of Supported TA Items up
+#            to <maxnoofTACs>, each carrying a Broadcast PLMN List up to <maxnoofBPLMNs>, each
+#            carrying a TAI Slice Support List of S-NSSAIs. Several TACs and several S-NSSAIs
+#            per broadcast PLMN is the ORDINARY shape of this IE, not an extension.
+#
+#   §8.7.1.2 (Successful Operation) "The NG-RAN node initiates the procedure by sending an NG
+#            SETUP REQUEST message including the appropriate data to the AMF. The AMF responds
+#            with an NG SETUP RESPONSE message including the appropriate data."
+#
+#   §9.2.6.2 (NG SETUP RESPONSE) makes PLMN Support List mandatory and >>Slice Support List
+#            mandatory within each PLMN Support Item — "Supported S-NSSAIs per PLMN or per SNPN".
+#            That list is what the RAN uses to know which of the slices it broadcasts the core
+#            can actually serve.
+#
+# WHAT IS ON THE WIRE. Two Supported TA Items — TAC 1 and TAC 2 — each broadcasting the gNB's
+# own PLMN with TWO S-NSSAIs, SST 1 and SST 2. The multi-TAC / multi-slice shape is carried by
+# the send action's `tacs` / `slice_ssts` params (NGSetupRequestAdvertisedTAs,
+# runner/runner/enrichers_ngap_ifmgmt.go), NOT by a gNB config file: the register asks for
+# `config: multi-tac-multi-slice-gnb`, which was never built. A probe whose deviation lives in
+# an unbuilt config file is not a probe — see REG-804, which sent the ordinary request every
+# positive row sends and read as coverage while asserting nothing.
+#
+# TWO THINGS ARE ASSERTED, and they are different claims:
+#
+#   1. ACCEPTANCE — the AMF answers a two-TA, two-slice Supported TA List with an NG SETUP
+#      RESPONSE rather than an NG SETUP FAILURE or silence. This is the row's expected_outcome
+#      ("The AMF accepts a Supported TA List with more than one Supported TA Item and more than
+#      one slice per broadcast PLMN"). An AMF that only parses the first TA item, or that
+#      chokes on a second S-NSSAI, cannot reach the `completed` terminal.
+#
+#   2. COVERAGE — the mandatory PLMN Support List reports slice support covering the S-NSSAIs
+#      just advertised, i.e. BOTH SST 1 and SST 2 appear in the Slice Support List. This is the
+#      row's pass_criterion read literally, and it is the check that matters operationally: a
+#      site broadcasting two slices whose core advertises one has a slice that will fail at
+#      session-establishment time with no interface-level warning.
+#
+# The `contains` needles read the string form of the resolved JSON list, e.g.
+#   [map[nssai_sd:0 nssai_sst:1]]
+# so `nssai_sst:1]` matches an item whose SST is exactly 1 and cannot be satisfied by SST 10 or
+# 11 — the bracket ends that item's map. MEASURED against tinycore 2026-08-11; the check's
+# `actual` field in the run JSON carries the exact string.
+#
+# MEASURED RESULT against tinycore 2026-08-11: assertion 1 PASSES (the multi-TAC, multi-slice
+# advert is accepted, NG SETUP RESPONSE, 49 bytes) and assertion 2 FAILS — the response
+# advertises exactly one S-NSSAI, SST 1. tinycore's AMF builds its PLMN Support List from a
+# single configured SST (tinycore/dmf/amf/amf.go, `SliceSupportList: [{NssaiSst: a.cfg.Sst}]`),
+# so it can never report coverage of a second slice whatever the RAN broadcasts. That is this
+# row's finding, not a harness defect: a core supporting the two slices it is offered passes
+# both assertions unchanged.
+#
+# WHY THE COVERAGE CHECK IS NOT WEAKENED TO "at least one slice in common". Because the row's
+# own why_it_matters is "Real sites broadcast more than one tracking area and more than one
+# slice; a core that only handles one is a lab toy" — weakening it to the intersection would
+# make the single-slice core the row exists to detect score green.
+
+kind: flow
+name: ng_setup_multi_tac_multi_slice
+description: NG SETUP with two Supported TA Items and two S-NSSAIs per broadcast PLMN — assert acceptance and that the PLMN Support List covers both advertised S-NSSAIs (TS 38.413 §9.2.6.1/§9.2.6.2)
+detail: |
+  The gNB advertises a realistic multi-cell site: two Supported TA Items (TAC 1 and TAC 2),
+  each broadcasting its own PLMN with two S-NSSAIs (SST 1 and SST 2). Both are ordinary uses
+  of the Supported TA List IE of TS 38.413 §9.2.6.1.
+
+  Two assertions. First, the AMF must ACCEPT it — an NG SETUP RESPONSE, not an NG SETUP FAILURE
+  and not silence; reaching the `completed` terminal is that assertion. Second, the mandatory
+  PLMN Support List of §9.2.6.2 must report slice support COVERING the advertised S-NSSAIs:
+  both SST 1 and SST 2 must appear in its Slice Support List, because that list is how the RAN
+  learns which of the slices it broadcasts the core can serve.
+
+  A core that advertises only one S-NSSAI against a two-slice site leaves the RAN selecting a
+  slice the core will refuse later, at session-establishment time, with nothing at the
+  interface level to explain it. The second assertion is what catches that.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ng_setup_response
+        actions:
+          - type: send
+            message: NGSetupRequestAdvertisedTAs
+            params:
+              # Two Supported TA Items ...
+              tacs: "1,2"
+              # ... each broadcasting two S-NSSAIs on the gNB's own PLMN.
+              slice_ssts: "1,2"
+
+  wait_ng_setup_response:
+    # Row budget is 10s. Silence means the AMF answered neither §8.7.1.2 nor
+    # §8.7.1.3 — a failure of the procedure, so this lands on `failed`.
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NGSetupResponse
+        target: completed
+        actions:
+          # --- Assertion 2: coverage of the advertised S-NSSAIs -----------
+          # PLMN Support List and its Slice Support List are mandatory
+          # (§9.2.6.2): an omitted IE makes the path miss and these fail.
+          - { type: check, field: plmn_support_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: plmn_support_list.0.plmn_identity.mcc, op: not_empty }
+          - { type: check, field: plmn_support_list.0.plmn_identity.mnc, op: not_empty }
+          - { type: check, field: plmn_support_list.0.slice_support_list.length, op: greater_or_equal, expected: 1 }
+          # Coverage, one advertised S-NSSAI at a time. Written as membership
+          # rather than `.0.` / `.1.` indexing because §9.2.6.2 fixes no order,
+          # and as TWO checks rather than one `length >= 2` because the checks
+          # of a transition stop at the first failure: this way the failing
+          # check NAMES the S-NSSAI the core left uncovered.
+          - { type: check, field: plmn_support_list.0.slice_support_list, op: contains, expected: "nssai_sst:1]" }
+          - { type: check, field: plmn_support_list.0.slice_support_list, op: contains, expected: "nssai_sst:2]" }
+
+      # Assertion 1 failing: the AMF refused a Supported TA List that is
+      # ordinary under §9.2.6.1. Named so the trace says WHICH failure this is
+      # rather than reporting a bare timeout.
+      - event: NGSetupFailure
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-803).
+#
+# REG-803 — NGSetupResponse received; its PLMN Support List reports slice support
+# covering the advertised S-NSSAIs
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one NG SETUP REQUEST was sent (NGSetupRequestAdvertisedTAs)
+    metric: msg_types.tx.ngap.NGAP_NG_SETUP_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an NG SETUP RESPONSE arrived
+    metric: rx_events.NGSetupResponse
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

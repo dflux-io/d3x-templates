@@ -1,0 +1,37 @@
+# runner -> dpf Nudr runtime subscriber-provisioning SBI suite (UDM-1 + UDR-1).
+#
+# Drives dpf's Nudr_DataRepository write surface
+# (/nudr-dr/v1/subscription-data/{ueId}/..., TS 29.504/29.505) with runner
+# acting as the SBI provisioner: create a brand-new subscriber
+# (authentication-subscription + provisioned data), read it back through the
+# aggregate provisioned-data resource AND the UDM SDM /nssai leaf (derived
+# from the am-data write), then delete it and confirm both reads 404.
+#
+# SCOPE (be honest): this validates the Nudr provisioning WRITE round-trip
+# ONLY — PUT (201) of the auth-subscription + am/smf-sel/sm provisioned data,
+# the aggregate GET round-trip, the SDM /nssai derivation round-trip and its
+# post-delete 404 (UDR-1), the DELETEs (204) and the am-data post-delete 404.
+# The create→AUTHENTICATE→delete leg (the freshly provisioned SUPI generating
+# a real 5G-AKA vector through the AUSF) needs UE-side Milenage crypto and
+# stays Go-gated in dpf/integration TestProvision_Auth_Delete_E2E.
+#
+# Run (script step 11-nudr-provisioning in scripts/dpf-sanity-run.sh):
+#   d3x-run run-suite -suite nudr-provisioning \
+#       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
+#
+# Requires the lab config to declare `udr` AND `udm` NF bindings at the dpf
+# base URL (the seeded dpf serves both facades; the dpf-sanity generated lab
+# config declares them). Empty expected-fail list — every step must pass
+# against the seeded dpf.
+
+kind: suite
+name: nudr-provisioning
+description: One-execution-per-flow Nudr runtime subscriber-provisioning SBI conformance pass against dpf's UDR facade (create → read-back → delete round-trip).
+steps:
+  - name: provisioning_crud_ok
+    flow: nudr_provisioning_crud_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed

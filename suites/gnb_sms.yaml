@@ -1,0 +1,37 @@
+# gNB ↔ AMF ↔ SMSF SMS-over-NAS suite — one UE, one execution per flow.
+#
+# Drives the TS 23.502 §4.13.3 SMS procedures gNB-side against a full core
+# with an SMSF wired to the AMF (deploy/lab). Two steps:
+#
+#   1. sms_mo          — mobile-originated submit: CP-ACK +
+#                        RP-ACK(SUBMIT-REPORT) received, transaction closed.
+#   2. sms_mo_loopback — MO addressed to the sender's own MSISDN; the SMSF's
+#                        local MO→MT routing loops it back as an SMS-DELIVER
+#                        (Hebrew UCS2 asserted byte-exact end to end).
+#
+# The loopback delivery rides the SMSF SC worker's sweep — run the SMSF with
+# a short sweep interval (smsf -sweep 2s) so the 60s step budget holds.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite gnb-sms \
+#       -templates <templates-dir> -c <lab.yaml> -s <subscribers.yaml> -trace
+
+kind: suite
+name: gnb-sms
+description: SMS over NAS — MO submit + closed-loop MO→MT loopback delivery via the SMSF.
+steps:
+  - name: sms_mo
+    flow: sms_mo
+    repetitions: 1
+    timeout: 60s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: sms_sent
+
+  - name: sms_mo_loopback
+    flow: sms_mo_loopback
+    repetitions: 1
+    timeout: 90s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: sms_delivered

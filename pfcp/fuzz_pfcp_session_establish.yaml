@@ -1,0 +1,160 @@
+# PFCP wire-fuzz driver — W2-F1.
+#
+# This is upf/pfcp_session_establish.yaml with a `fuzz:` block bolted on and
+# the assertions relaxed. It is the worked example of the W2-F1 claim: an
+# existing flow already does the hard part — REACHING A VALID PROTOCOL STATE —
+# so turning it into a fuzz driver costs a few lines of YAML and no Go.
+#
+# WHAT IS FUZZED
+# Only PFCPSessionEstablishmentRequest. The association setup that precedes it
+# is deliberately NOT a target: mutating it would leave the UPF with no
+# association and every subsequent probe would be rejected at the node level,
+# never reaching the session-handling code the campaign is aimed at. This is
+# the pattern for every fuzz driver — mutate the LAST message, keep everything
+# that gets you there intact.
+#
+# THE ORACLE (F1's, deliberately simple — the strong ones are W2-F2)
+# Three outcomes, all terminal, all distinguishable in the report:
+#
+#   survived_answered  the UPF replied to the mutated frame. Whatever the
+#                      cause value, the decoder held and the NF is up.
+#   survived_ignored   no reply, but a plain (unmutated) Heartbeat sent
+#                      afterwards WAS answered. Silently dropping an
+#                      undecodable datagram is correct PFCP behaviour.
+#   failed             no reply AND the liveness Heartbeat went unanswered.
+#                      The N4 listener stopped serving — a P0 finding.
+#
+# `final_states` includes both survived_* so a clean campaign exits 0 and a
+# hung UPF exits non-zero.
+#
+# THE FULL ORACLE HIERARCHY (strongest first) — this flow is only rung 3:
+#
+#   1. d3x_recovered_panics_total{site="upf_n4"}. A PacketGuard-contained
+#      panic drops one datagram and leaves the listener, the association and
+#      the process all alive — so this flow still reports survived_* while
+#      the counter moves. ALWAYS scrape it before and after; it is the only
+#      rung that sees a contained decoder crash.
+#   2. GET /ready (W2-4). Cached ~2s and concurrent probes collapse to one
+#      evaluation, so it is cheap to poll and actually consults dependencies.
+#      TWO CAVEATS THAT WILL OTHERWISE PRODUCE FALSE POSITIVES:
+#        - On DARWIN an NF whose N2/SCTP listener matters reports 503,
+#          because SCTP is linux-only and the listener genuinely never binds.
+#          That is the probe being honest, NOT a fuzzing finding.
+#        - A listener we own that failed to bind is CRITICAL; a peer failing
+#          to reach us is ADVISORY. PFCP association is advisory, so a
+#          campaign that wrecks the association will NOT flip /ready. Rung 1
+#          is what catches that.
+#      Use /ready, never /health — /health never consults a dependency.
+#   3. This flow's survived_* / failed states: the liveness floor.
+#   4. A known-good flow replayed after the campaign (the state-corruption
+#      oracle). W2-F2 owns automating it; the pilot driver runs
+#      upf_pfcp_session_establish once at the end.
+#
+# REPRODUCIBILITY
+# `seed:` is explicit, so two runs of this file produce byte-identical
+# mutations. Drop the seed line for a fresh random campaign — the runner
+# prints the seed it picked and a one-line repro command either way.
+#
+#   d3x-run run-flow -flow fuzz_pfcp_session_establish \
+#     -templates . -c <lab-upf.yaml> -gen-subscriber -trace
+#
+# Override the seed without editing this file:  -fuzz-seed 0xdecafbad
+
+kind: flow
+name: fuzz_pfcp_session_establish
+description: Wire-level fuzz of PFCPSessionEstablishmentRequest against a live UPF (N4)
+category: robustness
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - survived_answered
+  - survived_ignored
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [PFCPSessionEstablishmentRequest]
+  strategy: bitflip
+  rate: 1.0
+  budget: 500
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          # The association itself must still be clean — it is the state we
+          # are fuzzing FROM, not the thing under test.
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            peer: upf
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  }
+                ]
+              }
+
+  wait_session:
+    # No reply is NOT a failure yet — a UPF that drops an undecodable
+    # datagram is behaving correctly. Probe liveness before judging.
+    on_timeout:
+      duration: 4s
+      target: probe_liveness
+      actions:
+        - type: send
+          message: PFCPHeartbeatRequest
+          peer: upf
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: survived_answered
+
+  probe_liveness:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPHeartbeatResponse
+        target: survived_ignored
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: not_empty

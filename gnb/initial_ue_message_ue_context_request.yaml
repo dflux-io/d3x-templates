@@ -1,0 +1,209 @@
+# INITIAL UE MESSAGE carrying the UE Context Request IE (3GPP TS 38.413 §8.6.1).
+#
+# Clause, operative sentences (retrieved with matrix/scripts/spec-clause.py):
+#
+#   §8.6.1.1 "The Initial UE Message procedure is used when the NG-RAN node has received from
+#            the radio interface the first uplink NAS message to be forwarded to an AMF."
+#
+#   §8.6.1.2 "The NG-RAN node initiates the procedure by sending an INITIAL UE MESSAGE message
+#            to the AMF. The NG-RAN node shall allocate a unique RAN UE NGAP ID to be used for
+#            the UE and the NG-RAN node shall include this identity in the INITIAL UE MESSAGE
+#            message."
+#            "If the UE Context Request IE is included in the INITIAL UE MESSAGE message the
+#            AMF shall trigger an Initial Context Setup procedure towards the NG-RAN node."
+#
+# What this flow asserts (REG-270 pass_criterion: "InitialContextSetupRequest received on N2
+# quoting the RAN UE NGAP ID sent in the InitialUEMessage"):
+#
+#   1. The UE Context Request IE is explicitly set in the INITIAL UE MESSAGE (ue_context_request
+#      = 1) so the "shall trigger an Initial Context Setup procedure" obligation is armed. It is
+#      spelled out here rather than left to the enricher default so the flow cannot silently stop
+#      testing §8.6.1.2 if that default ever changes.
+#   2. `sent_ran_ue_ngap_id` is snapshotted from the UE context in the SAME transition that sends
+#      the INITIAL UE MESSAGE, BEFORE any downlink message exists. It is therefore a record of
+#      what WE allocated and put on the wire.
+#   3. Every AMF message on this connection is then checked against that snapshot — the decoded
+#      `ran_ue_ngap_id` IE of the RECEIVED message vs. the stored value of the SENT one. The two
+#      operands come from different messages; neither side is re-read from the message under
+#      test. (This is the xp-195 trap: a check whose two sides resolve to the same field is
+#      always green. `ue.RanUeNgapId` is NOT written by the RX path — bus_handlers_ngap_rx.go
+#      only READS the inbound ID to demux — but the snapshot is used anyway so the assertion
+#      does not depend on that remaining true.)
+#   4. The Initial Context Setup Request must actually be an Initial Context Setup: the Security
+#      Key IE (TS 38.413 §9.2.2.1, mandatory) must be present, not merely the message type.
+#
+# Known limit, stated rather than hidden: the runner demultiplexes inbound NGAP by RAN UE NGAP ID
+# (ngap.rx.demux → GnbContext.LookupCtxID), so a message quoting the WRONG id is dropped as
+# "unknown UE" and this flow ends in `failed` by timeout instead of by a failed check. Both are
+# red; the check exists so the id that DID arrive is recorded in the evidence as an asserted
+# value rather than an assumed one.
+#
+# on_timeout targets `failed` everywhere: an AMF that never triggers the Initial Context Setup
+# has violated §8.6.1.2 and this row must go red for it.
+
+kind: flow
+name: initial_ue_message_ue_context_request
+description: InitialUEMessage with UE Context Request IE; assert ICS quotes back the RAN UE NGAP ID we sent (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - context_setup
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Snapshot BEFORE the send: this is the identity the gNB allocated for
+          # this UE and is about to put in the INITIAL UE MESSAGE (§8.6.1.2
+          # "shall allocate a unique RAN UE NGAP ID ... and shall include this
+          # identity in the INITIAL UE MESSAGE message").
+          - type: extract
+            field: ue.RanUeNgapId
+            store: sent_ran_ue_ngap_id
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          # The UE-associated logical NG-connection now exists and the AMF
+          # addresses it with the RAN UE NGAP ID we supplied.
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.sent_ran_ue_ngap_id}}"
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 12s
+      target: failed
+    transitions:
+      # The Initial Context Setup procedure the UE Context Request IE demanded.
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: context_setup
+        actions:
+          # THE row assertion: the ICS quotes back the RAN UE NGAP ID we sent.
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.sent_ran_ue_ngap_id}}"
+          # ... on the same UE-associated logical NG-connection the AMF opened.
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # TS 38.413 §9.2.2.1: Security Key is a mandatory IE of INITIAL CONTEXT
+          # SETUP REQUEST. Present ⇒ this is a real context setup, not just a
+          # message that happens to carry the right type code.
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-270).
+#
+# REG-270 — InitialContextSetupRequest received on N2 quoting the RAN UE NGAP ID sent in
+# the InitialUEMessage
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `context_setup`
+    metric: final_state_counts.context_setup
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The seven `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all seven declared checks ran
+    metric: checks_total
+    op: equals
+    value: 7
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

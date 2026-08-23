@@ -1,0 +1,272 @@
+# REG-431 — the Replayed UE security capabilities IE in SECURITY MODE COMMAND
+# is byte-identical to the UE security capability IE the UE sent in the
+# REGISTRATION REQUEST.
+#
+# TS 24.501 §5.4.2.2 (retrieved, operative sentence verbatim):
+#
+#   "The AMF shall include the replayed security capabilities of the UE
+#    (including the security capabilities with regard to NAS, RRC and UP (user
+#    plane) ciphering as well as NAS and RRC integrity, and other possible
+#    target network security capabilities, i.e. E-UTRAN if the UE included them
+#    in the message to network), the selected 5GS ciphering and integrity
+#    algorithms and the ngKSI."
+#
+# TS 33.501 §6.7.2 NOTE 1: "The NAS SMC procedure is designed such that it
+# protects the Registration Request against a man-in-the-middle attack where the
+# attacker modifies the IEs containing the UE security capabilities provided by
+# the UE in the Registration Request. … In case a bidding down attack was
+# attempted, the verification of the NAS SMC will fail and the UE replies with a
+# reject message."
+#
+# TS 33.501 §5.11.2 e): "The UE security capabilities shall be protected against
+# 'bidding down attacks'."
+#
+# HOW "BYTE-IDENTICAL" IS ASSERTED HERE
+# ------------------------------------
+# There is no `tx.*` namespace: a flow cannot read back the REGISTRATION REQUEST
+# its own UE emitted, so the comparison is against the KNOWN CONSTANT that
+# enricher enrichInitialUEMessage puts on the wire. That constant is fixed and
+# not parameterised by this flow (`null_security_caps` is NOT set below), so it
+# is a literal, verifiable fact about the message we sent:
+#
+#   TX InitialUEMessage NAS PDU, measured 2026-08-10 on both cores:
+#     7e 00 41 71 00 0d 01 00 f1 10 00 00 00 00 00 00 00 40 03 2e 04 ff ff ff ff
+#                                                             ^^ ^^ -----------
+#                                                            IEI len  4 octets
+#   IEI 0x2E = UE security capability (TS 24.501 §9.11.3.54), length 4,
+#   value FF FF FF FF = EA0-EA7, IA0-IA7, EEA0-EEA7, EIA0-EIA7 all set.
+#
+# Byte-identity is therefore asserted FLAG BY FLAG: all 32 bits of the replayed
+# IE must read `true`, which — given the decoder maps octet n bit k to exactly
+# one named flag — is the same predicate as "the four replayed octets are
+# FF FF FF FF". 32 assertions, no aggregate, nothing inferred.
+#
+# WHY NOT `length == 32` (xp-255)
+# -------------------------------
+# This block used to be a single `op: length, expected: 32` against the IE.
+# That worked only as an accident of the JSON projection: every capability bool
+# carried `,omitempty`, a FALSE flag was dropped from the decoded object, and
+# the runner's `.length` terminal returns a map's KEY COUNT — so key count
+# happened to equal the number of TRUE flags.
+#
+# xp-255 removed `,omitempty` from the non-pointer fields of the decoded-message
+# structs, because on a Go value field it made "IE absent" and "IE present
+# carrying 0" the same observation (measured: REG-360's `procedure_transaction_id
+# equals 2` scored `<missing>` against a PTI of 0). The key count of
+# NAS_UESecurityCapability is now a CONSTANT 32 regardless of what was replayed,
+# so `length == 32` would pass unconditionally and turn the live tinycore
+# bidding-down finding below permanently green. A check that cannot fail is
+# worse than no check; the flag-by-flag form asserts the identical spec
+# obligation and does not depend on how the projection encodes `false`.
+#
+# The flag-by-flag form is also better evidence: the failing check names the
+# exact bit the AMF dropped, instead of reporting an arithmetic mismatch.
+#
+# MEASURED (2026-08-10/11, this lab; recorded in matrix/traces/*/REG-431):
+#   open5gs  — replayed LV = 04 ff ff ff ff → all 32 flags true  → PASS (byte-identical)
+#   tinycore — replayed LV = 02 f0 f0       → ea0-ea3, ia0-ia3 true,
+#              the other 24 flags false                          → FAIL at `ea4`
+#              tinycore stores the UE capability as two 8-bit bitmaps
+#              (dmf/store/types.go UeSecurityCapability{NEA,NIA uint8}) and
+#              rebuilds the IE from them (dmf/amf/security.go replayUeSecCap),
+#              which reconstructs only EA0-EA3 / IA0-IA3. Both the E-UTRAN
+#              octets and the EA4-EA7 / IA4-IA7 bits are lost, so the replay is
+#              neither complete nor byte-identical and the bidding-down check
+#              §5.4.2.2 exists to enable cannot be performed by the UE.
+#              WHAT WE SENT DOES NOT LICENSE THIS: §5.4.2.2 requires the E-UTRAN
+#              capabilities back "if the UE included them in the message to
+#              network", and the TX hex above shows we did.
+
+kind: flow
+name: security_mode_command_replayed_ue_capabilities
+description: Initial registration; assert the SECURITY MODE COMMAND replays the UE security capability IE byte-identically (all 32 advertised algorithm bits)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # No `null_security_caps` param: the UE advertises the full
+          # FF FF FF FF capability set quoted in the header comment.
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # The IE is mandatory in the SECURITY MODE COMMAND (TS 24.501
+          # §8.2.25.1.1) — it must exist before its contents mean anything.
+          - type: check
+            field: nas.replayed_ue_security_capabilities
+            op: ie_present
+          # BYTE-IDENTITY, one assertion per replayed bit: all 32 must be true,
+          # which is exactly "the replayed octets are FF FF FF FF" — the value
+          # the TX hex at the top of this file proves we advertised.
+          #
+          # Was `op: length, expected: 32` until xp-255. See the WHY NOT
+          # `length == 32` note in the header: the key count of the decoded
+          # capability object is now a constant 32 whatever was replayed, so
+          # the length form became a check that could not fail. These 32 do
+          # not depend on the projection's encoding of `false`.
+          #
+          # Order is wire order (octet 1 MSB first), so the FIRST failing check
+          # names the bit position where the AMF's replay diverges — against
+          # tinycore that is `ea4`, the top of the second nibble of octet 1,
+          # which is precisely where its 4-bit-wide internal bitmap runs out.
+
+          # --- Octet 1 — 5GS encryption algorithms EA0-EA7 ------------------
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea0,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea1_128,  op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea2_128,  op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea3_128,  op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea4,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea5,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea6,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ea7,      op: equals, expected: true }
+
+          # --- Octet 2 — 5GS integrity algorithms IA0-IA7 -------------------
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia0,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia1_128,  op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia2_128,  op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia3_128,  op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia4,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia5,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia6,      op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.ia7,      op: equals, expected: true }
+
+          # --- Octet 3 — EPS encryption EEA0-EEA7 --------------------------
+          # "…and other possible target network security capabilities, i.e.
+          # E-UTRAN if the UE included them in the message to network"
+          # (§5.4.2.2). The TX hex shows we included them, so they are owed
+          # back; an AMF that truncates the IE to 2 octets fails here.
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea0,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea1_128, op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea2_128, op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea3_128, op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea4,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea5,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea6,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eea7,     op: equals, expected: true }
+
+          # --- Octet 4 — EPS integrity EIA0-EIA7 ---------------------------
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia0,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia1_128, op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia2_128, op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia3_128, op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia4,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia5,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia6,     op: equals, expected: true }
+          - { type: check, field: nas.replayed_ue_security_capabilities.eia7,     op: equals, expected: true }
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-431).
+#
+# REG-431 — The Replayed UE security capabilities IE in the SECURITY MODE COMMAND is
+# byte-identical to the UE security capability IE the UE sent in the REGISTRATION
+# REQUEST.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The 34 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 34 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 34
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

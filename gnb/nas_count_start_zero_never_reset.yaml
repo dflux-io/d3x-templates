@@ -1,0 +1,324 @@
+# REG-456 — the downlink NAS COUNT starts at zero for a new native context,
+# increments, and is NOT reset when the UE reconnects on the same context.
+#
+# TS 33.501 §6.4.5 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim):
+#
+#   "It is essential that the NAS COUNTs for a particular KAMF are not reset to
+#    the start values (that is the NAS COUNTs only have their start value when a
+#    new KAMF is generated). This prevents the security issue of using the same
+#    NAS COUNTs with the same NAS keys, e.g. key stream re-use, in the case a UE
+#    moves back and forth between two AMFs and the same NAS keys are re-derived."
+#
+#   "In the AMF, all the distinct pairs of NAS COUNTs part of the same 5G NAS
+#    security context, shall only be set to the start value in the following
+#    cases: - for a partial native 5GC NAS security context created by a
+#    successful primary authentication run …; - for a mapped 5G security context
+#    …; - for a new KAMF taken into use …  The start value of NAS COUNT shall be
+#    zero (0)."
+#
+# TS 24.501 §4.4.3.1: "The NAS sequence number part of the NAS COUNT shall be
+# exchanged between the UE and the AMF as part of the NAS signalling. After each
+# new or retransmitted outbound SECURITY PROTECTED 5GS NAS MESSAGE message, the
+# sender shall increase the NAS COUNT number by one … The value of the downlink
+# NAS COUNT stored in the AMF is the value that shall be used in the next NAS
+# message."
+#
+# TS 24.501 §5.4.2.2 supplies the anchor for the first assertion: "The AMF shall
+# reset the downlink NAS COUNT counter and use it to integrity protect the
+# initial SECURITY MODE COMMAND message …"
+#
+# WHY EVERY COUNT ASSERTION IS PRECEDED BY has_sequence_number
+# ------------------------------------------------------------
+# A NAS PDU sent PLAIN has no sequence number octet at all. Without the guard,
+# a resolver miss or a synthesised zero would let an entirely unprotected
+# downlink present itself as "sequence number 0" and satisfy the first half of
+# this row — which is the exact class of defect xp-248 found in the SECURITY
+# MODE COMMAND. has_sequence_number is false for a plain PDU, so it fails first
+# and fails honestly, naming the real problem.
+#
+# The reads are all `nas.security.*`, the OUTER header off the wire, in TS 24.501
+# §9.3 wire values. `nas.header.security_header_type` is the INNER header, always
+# plain because DecodeSecure strips the outer one, and asserting through it
+# passes against a core sending everything in the clear.
+#
+# THE THIRD LEG IS THE ONE §6.4.5 IS ABOUT
+# ----------------------------------------
+# "…after a context release and a reconnect on the same security context, the
+# downlink sequence number does not restart at 0." The flow releases the NGAP UE
+# context (gNB-initiated, the UE stays RM-REGISTERED and moves to CM-IDLE),
+# reconnects with a genuine integrity-protected SERVICE REQUEST on the SAME
+# native context — no new authentication, so no new KAMF, so none of the three
+# reset conditions §6.4.5 permits applies — and asserts the downlink NAS
+# sequence number of the answer is strictly greater than 1. A restart at 0 would
+# reuse a (KNASenc, COUNT) pair already spent on this KAMF, which is the key
+# stream re-use the clause names.
+#
+# MEASURED (2026-08-11, this lab):
+#   tinycore — FAILS on the FIRST assertion: `nas.security.has_sequence_number
+#              equals true (actual=false)`. Its SECURITY MODE COMMAND is sent
+#              entirely PLAIN. The whole NAS PDU, off the wire:
+#
+#                  7e 00 5d 22 00 02 f0 f0 …
+#                  ^^ EPD  ^^ msg type 0x5D = SECURITY MODE COMMAND
+#                     ^^ security header type 0 = PLAIN
+#
+#              — no MAC, no sequence number. That is xp-248 and a direct
+#              violation of §5.4.2.2's "shall send the SECURITY MODE COMMAND
+#              message unciphered, but shall integrity protect the message".
+#
+#              ONE ROOT CAUSE, THREE SYMPTOMS, and the flow was re-run with the
+#              COUNT checks temporarily relaxed to establish that the rest of it
+#              is sound and to record what tinycore actually does:
+#                SECURITY MODE COMMAND   plain, no sequence number  (leg 1 fails)
+#                REGISTRATION ACCEPT     sequence number 0, not 1   (leg 2 fails)
+#                reconnect SERVICE ACCEPT sequence number 1, not >1 (leg 3 fails)
+#              The COUNT was never RESET — 0 then 1 across the release and
+#              reconnect, which is what §6.4.5 is really about — it simply
+#              starts one message late because the SMC spends nothing. So the
+#              row's third leg would pass on a core whose SMC is protected, and
+#              all three failures trace to the single plain SECURITY MODE
+#              COMMAND. The assertions are written to the spec, not to the core,
+#              and are deliberately left failing.
+
+kind: flow
+name: nas_count_start_zero_never_reset
+description: Assert the downlink NAS COUNT starts at 0 on the SECURITY MODE COMMAND, increments on the next downlink, and does not restart at 0 after a context release and reconnect on the same native context
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - count_preserved
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          # §6.4.5's first reset case — "a partial native 5GC NAS security
+          # context created by a successful primary authentication run" — is the
+          # one that licenses the zero this row is about to assert, so the
+          # authentication run has to be real.
+          - type: check
+            field: nas.authentication_param_rand
+            op: ie_present
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # GUARD FIRST: a plain PDU carries no sequence number, so it can never
+          # masquerade as "sequence number 0".
+          - type: check
+            field: nas.security.has_sequence_number
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: true
+          # --- §5.4.2.2 / §6.4.5 "The start value of NAS COUNT shall be zero (0)."
+          - type: check
+            field: nas.security.sequence_number
+            op: equals
+            expected: 0
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          # --- §4.4.3.1 "After each new or retransmitted outbound SECURITY
+          # --- PROTECTED 5GS NAS MESSAGE message, the sender shall increase the
+          # --- NAS COUNT number by one." The SECURITY MODE COMMAND spent 0, so
+          # --- the next downlink is 1.
+          - type: check
+            field: nas.security.has_sequence_number
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.sequence_number
+            op: equals
+            expected: 1
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # Go to CM-IDLE. The UE stays RM-REGISTERED and keeps the native
+          # context; only the NGAP UE context goes away.
+          - type: send
+            message: UEContextReleaseRequest
+
+  wait_release_cmd:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_reconnect
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+          - type: ngap_realloc
+          # A genuine, integrity-protected SERVICE REQUEST on the SAME native
+          # context — no authentication, therefore no new KAMF, therefore none
+          # of §6.4.5's three reset conditions is met.
+          - type: send
+            message: ServiceRequest
+
+  wait_reconnect:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event:
+          or:
+            - InitialContextSetupRequest.ServiceAccept
+            - InitialContextSetupRequest
+            - NASDownlinkTransport.ServiceAccept
+        target: count_preserved
+        actions:
+          - type: check
+            field: nas.security.has_sequence_number
+            op: equals
+            expected: true
+          # --- §6.4.5 "the NAS COUNTs only have their start value when a new
+          # --- KAMF is generated". No new KAMF was generated, so the downlink
+          # --- sequence number must be past the two already spent, never back
+          # --- at the start value.
+          - type: check
+            field: nas.security.sequence_number
+            op: greater_than
+            expected: 1
+          - type: send
+            message: InitialContextSetupResponse
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-456).
+#
+# REG-456 — The SECURITY MODE COMMAND carries downlink NAS sequence number 0 and the
+# next downlink NAS message carries 1; after a context release and a reconnect on the
+# same security context, the downlink sequence number does not restart at 0.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `count_preserved`
+    metric: final_state_counts.count_preserved
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: two INITIAL CONTEXT SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 2
+  - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, ServiceRequest)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # STAYS 1 — AND 1 IS NOT WHAT EVERY CORE PRODUCES. Read this before changing it.
+  #
+  # Since #364 the runner answers a UE CONTEXT RELEASE COMMAND that no state names
+  # (TS 38.413 §8.3.3, unconditional), so this metric is now "the one Complete this
+  # flow declares in wait_release_cmd" PLUS one per unnamed command the core chose
+  # to send. That second term is a property of the CORE, not of this FSM.
+  #
+  # Measured, not inferred — three sweeps agree (5ee60cd 2026-08-13, 8a48fa1 and
+  # f227f12-v1 2026-08-17), REG-456's own runner.json:
+  #     tinycore  rx UEContextReleaseCommand 1 -> 1 Complete
+  #     open5gs   rx UEContextReleaseCommand 1 -> 1 Complete
+  #     free5gc   rx UEContextReleaseCommand 2 -> 2 Completes
+  # free5gc issues a SECOND release command for the same context, and it lands in
+  # wait_reconnect, which names no transition for it. So this assertion now reports
+  # red on free5gc, at actual 2 (that row already fails there for its own reason).
+  #
+  # DO NOT "FIX" THAT BY WRITING 2. Two is free5gc's number; writing it would
+  # redden tinycore and open5gs, which walk exactly the path declared above. 1 is
+  # what this FSM declares and what the header of this block says these counts are.
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # The nine `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all nine declared checks ran
+    metric: checks_total
+    op: equals
+    value: 9
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

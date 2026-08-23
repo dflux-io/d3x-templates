@@ -1,0 +1,53 @@
+# Nsmf_PDUSession_CreateSMContext — unsupported media type (negative/security).
+# 3GPP TS 29.502 §6.1.5; TS 29.500 §5.2 / §6.3.
+#
+# runner (AMF) POSTs a CreateSMContext but advertises a Content-Type the operation
+# does not accept (text/plain instead of application/json or
+# multipart/related). A spec-correct SMF MUST reject with 415 Unsupported Media
+# Type (ProblemDetails) and stay up.
+kind: flow
+name: smf_nsmf_create_smcontext_unsupported_media_type
+description: AMF CreateSMContext with text/plain Content-Type — expect 415 rejection
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "text/plain"},
+                "raw_body": "supi=imsi-001010000000001;pduSessionId=11;dnn=internet"
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

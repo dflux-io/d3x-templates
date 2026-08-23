@@ -1,0 +1,69 @@
+# PFCP Heartbeat Recovery Time Stamp stability (3GPP TS 29.244 §19.1.1 /
+# §6.2.2 / TS 23.007).
+#
+# Security/robustness: per TS 23.007 a UPF's Recovery Time Stamp must stay
+# CONSTANT while the node is up (it only changes on restart). runner issues two
+# back-to-back Heartbeats and asserts the UPF returns a RecoveryTimeStamp IE
+# on each, and that the second value equals the first — i.e. no spurious
+# restart signalling that would cause peers to wrongly tear down sessions.
+#
+# Note: a true restart-detection test (timestamp CHANGES after a real UPF
+# restart) is out of scope for an automated flow (no restart hook); this flow
+# validates the stable-while-up half, which is the security-relevant property
+# (a flapping recovery stamp is a DoS/availability hazard).
+#
+# Spec-correct success = both Heartbeats answered and the RecoveryTimeStamp is
+# stable across them.
+
+kind: flow
+name: upf_pfcp_heartbeat_recovery_stable
+description: UPF Recovery Time Stamp stays stable across heartbeats (no spurious restart)
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_first
+        actions:
+          - type: send
+            message: PFCPHeartbeatRequest
+            peer: upf
+
+  wait_first:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPHeartbeatResponse
+        target: wait_second
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: not_empty
+          - type: extract
+            field: pfcp.recovery_timestamp
+            store: first_recovery
+          - type: send
+            message: PFCPHeartbeatRequest
+
+  wait_second:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPHeartbeatResponse
+        target: tolerated
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: equals
+            expected: "{{ue.Params.first_recovery}}"

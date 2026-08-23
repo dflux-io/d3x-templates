@@ -1,0 +1,162 @@
+# REG-823 — a RAN CONFIGURATION UPDATE the AMF cannot accept must be REFUSED with a cause.
+#
+# Clauses, retrieved with matrix/scripts/spec-clause.py 38.413 <clause>:
+#
+#   §8.7.2.3 (RAN Configuration Update, Unsuccessful Operation) "If the AMF cannot accept the
+#            update it shall respond with a RAN CONFIGURATION UPDATE FAILURE message and
+#            appropriate cause value." — a SHALL, unlike NG Setup's §8.7.1.3 "should".
+#
+#   §9.2.6.6 (RAN CONFIGURATION UPDATE FAILURE) makes Cause mandatory and Time to Wait optional;
+#            Time to Wait is an ENUMERATED (v1s, v2s, v5s, v10s, v20s, v60s), so a present value
+#            decodes into 0..5 and an absent one is modelled as -1
+#            (proto/ngap5g: NGAPRANConfigurationUpdateFailure{TimeToWait: -1}).
+#
+# WHAT IS ON THE WIRE. A RAN CONFIGURATION UPDATE carrying a Supported TA List that advertises
+# TAC 7 broadcasting PLMN 999/99 — the MCC TS 23.003 §12.1 reserves for test networks, so no
+# core under test can legitimately serve it — with S-NSSAI SST 3. The list is APER-encoded by
+# the flow's own sender (RANConfigurationUpdateAdvertisedTAs,
+# runner/runner/enrichers_ngap_ifmgmt.go) and the encoding is pinned by a round-trip test
+# through ngap5g.DecodeSupportedTAList — the very function the AMF parses this IE with
+# (tinycore/dmf/amf/config_update.go) — so "the violation is on the wire" is a measured claim,
+# not a YAML-level intention. The deviation lives in the flow rather than in a gNB config file
+# for the reason REG-804 exists to teach: a probe whose deviation lives elsewhere can silently
+# stop deviating.
+#
+# WHAT A CONFORMANT AMF DOES: refuse. §8.7.2.3 gives it no discretion once it "cannot accept the
+# update", and an AMF that serves only PLMN 001/01 cannot accept a configuration whose only
+# advertised tracking area broadcasts 999/99 — accepting it means claiming to serve UEs of an
+# operator it has no relationship with, on a slice it does not run.
+#
+# SUCCESS terminal = `rejected`. `updated` is a FAILURE terminal and is named explicitly so the
+# trace records WHICH failure occurred — an accepted unserviceable configuration, not silence.
+#
+# MEASURED against tinycore 2026-08-11: RAN CONFIGURATION UPDATE ACKNOWLEDGE, terminal
+# `updated`. tinycore's handleRANConfigUpdate applies whatever decodes and answers Failure ONLY
+# when the TA list fails to decode or the association cannot be resolved — there is no
+# acceptance decision about PLMN or slice anywhere in it. This is the same absent-admission-
+# control finding as xp-257 (the AMF accepts NG SETUP from ANY PLMN and constructs
+# NGSetupFailure nowhere), one procedure over. The evidence that it is an ABSENT DECISION rather
+# than a DISAGREEMENT about this particular PLMN: the acceptance run below, which advertises the
+# PLMN and slice the AMF DOES serve, is answered identically — same ACKNOWLEDGE, same 7 bytes.
+#
+# ACCEPTANCE TEST (the row must be able to report the other terminal): re-run with
+# `plmn_mcc: '001' / plmn_mnc: '01' / slice_ssts: "1"` — the served configuration — and the
+# probe stops being a violation. Recorded in the batch report.
+
+kind: flow
+name: ran_config_update_unserved_plmn_refused
+description: RAN CONFIGURATION UPDATE advertising a PLMN and slice the AMF does not serve — expect RANConfigurationUpdateFailure with a cause (TS 38.413 §8.7.2.3)
+detail: |
+  Negative interface-management probe. After an NG Setup exchange, the gNB sends a RAN
+  CONFIGURATION UPDATE whose Supported TA List replaces its tracking areas with TAC 7
+  broadcasting PLMN 999/99 — reserved for test networks — and slice SST 3.
+
+  TS 38.413 §8.7.2.3 leaves the AMF no choice: "If the AMF cannot accept the update it shall
+  respond with a RAN CONFIGURATION UPDATE FAILURE message and appropriate cause value." The
+  flow asserts that failure and its mandatory Cause IE (§9.2.6.6), plus that a Time to Wait IE,
+  when present, decodes to one of the enumerated values rather than to a raw number.
+
+  A RAN CONFIGURATION UPDATE ACKNOWLEDGE is the finding, not a harness fault: the core has
+  accepted a configuration it cannot honour, which turns a clear interface-level rejection into
+  a mystery outage an hour later when sessions on that PLMN or slice start failing. The flow
+  says so on the `updated` terminal rather than timing out silently.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - updated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ng_setup_response
+        actions:
+          # An ordinary NG Setup first: §8.7.2 updates the configuration of an
+          # association that has one, and the row's sendables name it. This
+          # request is the gNB's real configuration — only the UPDATE deviates.
+          - type: send
+            message: NGSetupRequest
+
+  wait_ng_setup_response:
+    on_timeout:
+      duration: 6s
+      target: failed
+    transitions:
+      - event: NGSetupResponse
+        target: wait_config_update_answer
+        actions:
+          - type: send
+            message: RANConfigurationUpdateAdvertisedTAs
+            params:
+              # TS 23.003 §12.1 reserves MCC 999 for test networks: this can
+              # never collide with a PLMN a core legitimately serves.
+              plmn_mcc: '999'
+              plmn_mnc: '99'
+              tacs: "7"
+              slice_ssts: "3"
+      # The AMF refused the ordinary NG Setup — this row cannot say anything
+      # about the update procedure on an association that was not set up.
+      - event: NGSetupFailure
+        target: failed
+
+  wait_config_update_answer:
+    # Row budget is 15s. Silence is a failure: §8.7.2.2 and §8.7.2.3 give the
+    # AMF exactly two answers to this message and neither of them is nothing.
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: RANConfigurationUpdateFailure
+        target: rejected
+        actions:
+          # Cause is mandatory (§9.2.6.6).
+          - { type: check, field: cause, op: not_empty }
+          # "a Time to Wait IE, if present, decodes to an enumerated value":
+          # -1 is the model's ABSENT, 0..5 are the six enumerated values
+          # (v1s..v60s). Anything outside that range is a decode that did not
+          # land on the enumeration.
+          - { type: check, field: time_to_wait, op: greater_or_equal, expected: -1 }
+          - { type: check, field: time_to_wait, op: less_or_equal, expected: 5 }
+      # The core accepted a configuration for a PLMN and slice it does not
+      # serve. A failure terminal, named so the finding is legible.
+      - event: RANConfigurationUpdateAcknowledge
+        target: updated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-823 (negative, expected_terminal: rejected) —
+# RANConfigurationUpdateFailure received with a non-empty Cause IE when the update
+# advertises a PLMN or slice the AMF does not serve; a Time to Wait IE, if present,
+# decodes to an enumerated value
+#
+# REG-823: "RANConfigurationUpdateFailure received with a non-empty Cause IE when the
+# update advertises a PLMN or slice the AMF does not serve." `updated` is the AMF
+# acknowledging a configuration it should have refused.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

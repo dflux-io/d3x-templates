@@ -1,0 +1,51 @@
+# Nsmf_PDUSession_RetrieveSMContext — unknown smContextRef (negative/security).
+# 3GPP TS 29.502 §6.1.6.3.x.
+#
+# runner (AMF) POSTs a retrieve to a fabricated /sm-contexts/{ref}/retrieve path. A
+# spec-correct SMF MUST reject with 404 Not Found (or another 4xx) and stay up.
+kind: flow
+name: smf_nsmf_retrieve_smcontext_unknown_ref
+description: AMF Retrieve SM context with bogus ref — expect 404/4xx rejection
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts/deadbeef-0000-0000-0000-000000000000/retrieve",
+                "headers": {"Content-Type": "application/json"},
+                "body": {}
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

@@ -1,0 +1,54 @@
+# Nausf_SoRProtection — unknown SUPI (security / negative).
+# 3GPP TS 29.509 §6.2.7.3 (404); TS 33.501 §6.14.
+# runner POSTs ue-sor for a SUPI the AUSF has no security context / subscriber for.
+# The AUSF must REJECT (404, or 403 if no K_AUSF) + ProblemDetails and STAY UP.
+
+kind: flow
+name: ausf_sor_protection_unknown_supi_rejected
+description: POST ue-sor for an unknown SUPI is rejected; AUSF stays up
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: ausf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nausf-sorprotection/v1/imsi-001019999999999/ue-sor",
+                "body": {
+                  "steeringInfoList": [
+                    {"plmnId": {"mcc": "001", "mnc": "01"}}
+                  ],
+                  "ackInd": false
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.body.cause
+            op: exists

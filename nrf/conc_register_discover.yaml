@@ -1,0 +1,85 @@
+# CONC-04 — register ∥ discover (Layer B burst).
+#
+# Each UE registers a fresh SMF, then immediately discovers SMFs. Bursting
+# N=100 makes register and discover handlers run concurrently against the
+# same store: the goal is that a discovery interleaved with registrations
+# returns a WELL-FORMED result and never tears / panics (a torn read of the
+# instance list would surface as a 5xx or a malformed body).
+#
+# The discover MUST at least see this UE's own just-registered SMF, so the
+# result is never empty for this flow. Per-UE checks: register is 201;
+# discover is 200 and its body carries an nfInstances array (the substring
+# guards against a handler that drops the key when the slice is nil). The
+# count==100 cross-UE invariant is the runner's curl step.
+#
+# Layer A counterpart: TestConcurrency_CONC04_RegisterParallelDiscover.
+
+kind: flow
+name: nrf_conc_register_discover
+description: Register an SMF then discover SMFs; burst N=100 for CONC-04.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: Register
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-conc04.local",
+                  "ipv4Addresses": ["10.0.4.4"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.Register_Answer
+        target: discovering
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: send
+            message: Discover
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances",
+                "query": {"target-nf-type": "SMF", "requester-nf-type": "AMF"}
+              }
+
+  discovering:
+    transitions:
+      - event: rest.Discover_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "nfInstances"
+
+  done: {}
+  failed: {}

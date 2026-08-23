@@ -1,0 +1,51 @@
+# PFCP Heartbeat without a prior Association (3GPP TS 29.244 §7.4.2 / §6.2.2).
+#
+# Security/robustness: a node-level Heartbeat is sent BEFORE any
+# PFCPAssociationSetup. Per TS 29.244 the Heartbeat is node-level and does not
+# require an established association, so a spec-correct UPF either answers with
+# a PFCPHeartbeatResponse (carrying its RecoveryTimeStamp) or silently ignores
+# the stray request — in both cases it must STAY UP. The cross-cutting goal,
+# like the gNB security suite, is that the UPF reacts spec-correctly and does
+# not crash.
+#
+# Tolerated terminal:
+#   - response arrives  -> "tolerated" (UPF answered, RecoveryTimeStamp present)
+#   - silent drop       -> on_timeout -> "tolerated" (no crash; liveness)
+# Run with success_when: at_least_one_final_state: tolerated.
+
+kind: flow
+name: upf_pfcp_heartbeat_no_association
+description: Stray PFCP Heartbeat with no association; UPF tolerates and stays up
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_heartbeat
+        actions:
+          - type: send
+            message: PFCPHeartbeatRequest
+            peer: upf
+
+  wait_heartbeat:
+    # No response is itself a spec-allowed reaction (silent drop), so the
+    # timeout lands on the tolerated terminal rather than failed.
+    on_timeout:
+      duration: 5s
+      target: tolerated
+    transitions:
+      - event: pfcp.PFCPHeartbeatResponse
+        target: tolerated
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: not_empty

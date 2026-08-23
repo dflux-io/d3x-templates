@@ -1,0 +1,384 @@
+# REG-416 — nothing is completed on a connection whose authentication was
+# rejected, until security is established by a SECURITY MODE COMMAND /
+# SECURITY MODE COMPLETE exchange.
+#
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE (xp-245 negative-probe audit).
+#
+# TS 24.501 §4.4.4.3, first paragraph (retrieved with matrix/scripts/spec-clause.py
+# against the pinned Rel-18 corpus, verbatim):
+#
+#   "Except the messages listed below, no NAS signalling messages shall be
+#    processed by the receiving 5GMM entity in the AMF OR FORWARDED TO THE 5GSM
+#    ENTITY, unless the secure exchange of NAS messages has been established for
+#    the NAS signalling connection:
+#      a) REGISTRATION REQUEST; b) IDENTITY RESPONSE (if requested
+#      identification parameter is SUCI); c) AUTHENTICATION RESPONSE;
+#      d) AUTHENTICATION FAILURE; e) SECURITY MODE REJECT;
+#      f) DEREGISTRATION REQUEST; and g) DEREGISTRATION ACCEPT"
+#
+#   "Integrity protection is never applied directly to 5GSM messages, but to the
+#    5GMM message in which the 5GSM message is included."
+#
+# TS 24.501 §5.4.1.3.5: "If the SUCI was used for identification in the initial
+# NAS message … the network should send an AUTHENTICATION REJECT message to the
+# UE. The network shall maintain, if any, the 5GMM-context and 5G NAS security
+# context of the UE unchanged."
+#
+# THE PROBE, AND WHY IT IS NOT ONE OF THE SEVEN
+# ---------------------------------------------
+# The register's criterion is explicit that "if the uplink message is one of the
+# seven TS 24.501 §4.4.4.3 permits unprotected, the AMF processing it is not
+# itself a failure". So the probe is deliberately NOT one of them: it is a plain
+# UL NAS TRANSPORT carrying a 5GSM PDU SESSION ESTABLISHMENT REQUEST. UL NAS
+# TRANSPORT is absent from the list, and the clause's "or forwarded to the 5GSM
+# entity" wording names this exact case.
+#
+# It is also the LOUDEST available probe, which is what a row whose pass is an
+# absence needs. A plain REGISTRATION COMPLETE draws no downlink whether it is
+# processed or dropped — the vacuity that made six rows lie for weeks. A PDU
+# session request that the AMF forwards produces an answer from the SMF, and
+# that answer comes back on N1 as a DL NAS TRANSPORT carrying a PDU SESSION
+# ESTABLISHMENT ACCEPT or REJECT (or on N2 as PDU SESSION RESOURCE SETUP). Every
+# one of those is named in the criterion as a failure and every one of them is a
+# message, not an inference.
+#
+# WHAT IS ACTUALLY ON THE WIRE
+# ----------------------------
+# MEASURED (2026-08-11, this lab, `-trace`):
+#   TX #5  AUTHENTICATION RESPONSE with the RES* octets inverted
+#          (params corrupt_res_star: true), which draws
+#   RX     NASDownlinkTransport.AuthenticationReject — tinycore logged
+#          "5G-AKA RES* mismatch — sending Authentication Reject".
+#   TX #8  7e 00 67 01 00 08 2e 01 01 c1 ff ff 91 …
+#          ^^ EPD 5GMM
+#             ^^ security header type 0 = PLAIN — no MAC, no sequence number
+#                ^^ message type 0x67 = UL NAS TRANSPORT
+#                   ^^ payload container type 1 = N1 SM, whose container holds
+#                      the 5GSM PDU SESSION ESTABLISHMENT REQUEST (2e 01 01 c1)
+#
+# so the message really is unprotected, really is outside the seven, and really
+# does carry a 5GSM payload the AMF is forbidden to forward. tinycore's own log
+# for this run: "authentication rejected (5G-AKA)", supi imsi-001010000000416 —
+# and then nothing at all for that UE. It PASSES this row.
+#
+# TERMINALS
+#   a REGISTRATION ACCEPT, or any 5GSM downlink   -> the AMF completed a
+#     procedure / forwarded to the 5GSM entity on a connection with no security
+#     and a rejected authentication                                 -> tolerated
+#   any of the six observations the criterion names as acceptable
+#     (AUTHENTICATION REQUEST, IDENTITY REQUEST, SECURITY MODE COMMAND, a 5GMM
+#     reject, UEContextReleaseCommand)                              -> rejected
+#   silence, THEN a fresh authentication proved on the wire         -> rejected
+#   silence, and nothing answers a fresh registration either        -> unproven
+#
+# ============================================================================================
+# THIS ROW'S CRITERION SAYS SILENCE IS ACCEPTABLE, SO IT CANNOT SCORE WITHOUT A PROBE.
+# ============================================================================================
+#
+# Read the criterion again: "a new AUTHENTICATION REQUEST, a reject, or a UEContextReleaseCommand
+# are all acceptable observations" — and so is nothing at all. A row whose conformant answer may
+# be silence is UNSCOREABLE IN PRINCIPLE until absence is turned into presence, because silence
+# cannot be told apart from a crashed AMF, a dead association, a message that never arrived, or
+# an answer our FSM names no transition for. lib/outcome.py DEFENCE 11 refuses a verdict from a
+# terminal reached on a timer, in either direction, and it is right to.
+#
+# Measured on the 50effc0 baseline: tinycore reached `rejected` BY TIMER
+# (terminal_via_timeout {"rejected": 1}) and scored `inconclusive`, while Open5GS and free5GC
+# reached the same terminal on a message and passed. The difference between the three cells was
+# not conformance — tinycore's own log for that run reads "authentication rejected (5G-AKA)",
+# supi imsi-001010000000416, and then nothing at all for that UE, which is the most conformant
+# outcome available. The difference was whether the core happened to say something.
+#
+# ============================================================================================
+# THE DISCRIMINATOR: ASK WHETHER A NEW AUTHENTICATION IS STILL REQUIRED.
+# ============================================================================================
+#
+# The row's title is "no registration is accepted on a connection whose authentication was
+# rejected, WITHOUT A NEW AUTHENTICATION". So the question the probe must answer is not merely
+# "is the AMF alive" but "does it still insist on authenticating this subscriber". After the
+# absence window the flow reallocates the RAN-UE-NGAP-ID and sends a fresh INITIAL UE MESSAGE
+# carrying the SUCI — a new UE-associated logical NG-connection on the same association, exactly
+# as a real re-attach would — and asserts the AUTHENTICATION REQUEST that TS 24.501 §5.4.1.3
+# obliges the AMF to run before it can register a subscriber it holds no context for.
+#
+#   `rejected`   an AUTHENTICATION REQUEST comes back. The AMF is alive, our messages arrive,
+#                and it demands a fresh primary authentication — which is the row's claim,
+#                stated positively, rather than inferred from a timer.
+#   `tolerated`  a REGISTRATION ACCEPT comes back with no authentication at all. That is
+#                strictly worse than the finding this row hunts and is scored as one.
+#   `unproven`   nothing answers even a fresh registration. Nothing was learned, and that must
+#                never read as a pass. Reached by the timer it is a semantic terminal, so
+#                DEFENCE 11 turns it into `inconclusive` with no rule needing to know its name.
+#
+# MEASURED, not hoped for: a fresh INITIAL UE MESSAGE carrying a SUCI draws an AUTHENTICATION
+# REQUEST from all three cores in the same baseline — it is the first transition of every
+# registration row in the corpus, including this flow's own `wait_auth_request` above.
+#
+# ACCEPTANCE TEST (mandatory for a negative row) — MEASURED 2026-08-11, in two
+# parts, because this row's violation has two components and each was disabled
+# on its own:
+#
+#   1. as authored (corrupt_res_star: true)   -> rejected
+#      AUTHENTICATION REJECT arrives, the plain 5GSM probe goes out, and
+#      nothing comes back.
+#   2. corrupt_res_star: false                -> failed
+#      No authentication is rejected, so the precondition this row measures
+#      against does not hold and the flow reports a harness failure rather than
+#      a verdict about the core. That is the intended, honest outcome — but it
+#      does not by itself prove the `tolerated` arm is reachable, so:
+#   3. corrupt_res_star: false AND a temporary wait_auth_reject transition
+#      taking the SECURITY MODE COMMAND onward into wait_reaction -> tolerated
+#      The InitialContextSetupRequest.RegistrationAccept that scores the
+#      finding fires and is scored. The detector works; the run above is
+#      silence because tinycore is conformant, not because the arm is dead.
+# Both terminals are reachable, so the row is testing something.
+#
+# RE-MEASURED 2026-08-13 against d3x-core:matrix-5ee60cd, after the ErrorIndication branch below
+# was rerouted from `unproven` to the discriminator. The A/B held the core constant and moved only
+# this template:
+#
+#   BEFORE  verdict=fail exit=1, final_state_counts {"unproven": 1}, 1.254s, checks_total 2
+#           "final_check failed: the flow reached `rejected` — the terminal this row claims
+#            (final_state_counts.rejected equals 1, actual 0)"
+#           wait_reaction --[ErrorIndication]--> unproven, and the probe never ran.
+#   AFTER   verdict=pass exit=0, verdict_reasons [], final_state_counts {"rejected": 1}, 1.223s,
+#           checks_total 4 — and the path now reads
+#           wait_reaction --[ErrorIndication]--> probe_auth_still_required
+#           probe_auth_still_required --[NASDownlinkTransport.AuthenticationRequest]--> rejected
+#           with nas.authentication_param_rand and nas.abba both ie_present and PASSING.
+#           rx_events.NASDownlinkTransport.AuthenticationRequest went 1 -> 2: the second one IS
+#           the discriminator. The row is faster AND it now answers its own question.
+#
+# AND THE DISCRIMINATOR WAS SHOWN TO GO RED, because a check never shown to fail protects nothing
+# (CLAUDE.md). Two mutations, each reverted:
+#
+#   M1  the rand assertion changed to `nas.gmm_cause` (an IE AUTHENTICATION REQUEST does not
+#       carry)                                                        -> verdict=fail exit=1
+#       "1 step check(s) failed" + "final_check failed: and no assertion failed
+#        (checks_failed equals 0, actual 1)"
+#   M2  the discriminating event changed to SecurityModeCommand, so the AUTHENTICATION REQUEST
+#       that does arrive matches no transition                        -> verdict=fail exit=1
+#       falls out of probe_auth_still_required's 8s timer to `unproven` at 9.344s.
+#
+# M1 proves the assertion is load-bearing; M2 proves the ROUTING is. Neither the branch nor its
+# checks can be removed without this row going red.
+
+kind: flow
+name: post_auth_reject_unprotected_uplink
+description: After an AUTHENTICATION REJECT, an unprotected uplink NAS carrying a 5GSM payload must not complete a 5GMM procedure or be forwarded to the 5GSM entity (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        # FOR bit: uplink NAS pending (TS 24.501 §9.11.3.7) — the probe needs
+        # the N1 connection kept up past the end of the failed authentication.
+        actions: [{ type: send, message: InitialUEMessage, params: { follow_on_request: true } }]
+        target: wait_auth_request
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_auth_reject
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          # §5.4.1.3.5 "if the authentication response (RES) returned by the UE
+          # is not valid" — the RES* octets are inverted on the wire.
+          # corrupt_res_star:false is the acceptance-test switch.
+          - { type: send, message: AuthResponse, params: { corrupt_res_star: true } }
+  wait_auth_reject:
+    # No AUTHENTICATION REJECT at all is not this row's finding — §5.4.1.3.5
+    # says the network "should" send one and permits an identification
+    # procedure instead — but the row cannot measure what it exists to measure
+    # without a rejected authentication, so it reports `failed` (a harness
+    # precondition that did not hold) rather than a verdict about the core.
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationReject
+        target: wait_reaction
+        actions:
+          # The AUTHENTICATION REJECT arrives before security is established, so
+          # it is plain — asserted, because if it were protected the connection
+          # would already have a live context and this row would be probing the
+          # wrong phase.
+          - { type: check, field: nas.security.protected, op: equals, expected: false }
+          # THE PROBE: plain UL NAS TRANSPORT carrying a 5GSM message.
+          - { type: send, message: PlainUplinkNas, params: { inner: pdu_session_establishment_request } }
+      # A core that answers the bad RES* with a fresh authentication or an
+      # identity request has not accepted anything; it is still refusing, which
+      # is exactly what this row wants to see — score it and stop.
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: NASDownlinkTransport.IdentityRequest, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+  wait_reaction:
+    # THE §4.4.4.3 ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. Acceptance of the probe has
+    # its own observables, named below and enumerated in the register's criterion; but the
+    # register also names SILENCE as acceptable, so falling out of this window is not a verdict —
+    # it is the cue to go and ask whether a new authentication is still required.
+    on_timeout:
+      duration: 6s
+      target: probe_auth_still_required
+      actions:
+        # THE DISCRIMINATOR. A fresh RAN-UE-NGAP-ID and a fresh INITIAL UE MESSAGE carrying the
+        # SUCI: a new UE-associated logical NG-connection on the same association, exactly as a
+        # real re-attach would arrive. §5.4.1.3 obliges the AMF to authenticate a subscriber it
+        # holds no valid context for before it can register it.
+        - { type: ngap_realloc }
+        - { type: send, message: InitialUEMessage }
+    transitions:
+      # "no REGISTRATION ACCEPT … no other completed 5GMM procedure"
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+      # "…and no 5GSM message of any kind (no PDU SESSION ESTABLISHMENT ACCEPT
+      # or REJECT, no DL NAS TRANSPORT carrying a 5GSM payload)"
+      - event:
+          or:
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentAccept
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport
+            - PDUSessionResourceSetupRequest
+        target: tolerated
+      # "Silence, an AUTHENTICATION REQUEST, an IDENTITY REQUEST, a SECURITY
+      # MODE COMMAND, a 5GMM reject and a UEContextReleaseCommand are all
+      # acceptable observations."
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: NASDownlinkTransport.IdentityRequest, target: rejected }
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.AuthenticationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+      # AN NGAP ERROR INDICATION IS THE ABSENCE WINDOW ENDING EARLY, NOT A VERDICT.
+      #
+      # It says our probe was not processed as sent — the "never received it as sent" branch of
+      # the failure list, not the §4.4.4.3 refusal this row asserts. It used to route straight to
+      # `unproven`, and its own comment here called it "the one answer that discriminates
+      # nothing". That was true and it was the bug: routing an answer that discriminates nothing
+      # to a TERMINAL scores the row on it anyway.
+      #
+      # WHY IT NOW ARRIVES AT ALL, AND WHY THAT IS THE CORE GETTING MORE CORRECT, NOT LESS.
+      # `sendAuthenticationReject` calls uestore.Remove(ue) — the rejected UE's context is gone,
+      # which is §5.4.1.3.5 being obeyed. The probe therefore rides an AP-ID pair naming no
+      # UE-associated logical NG-connection, and TS 38.413 §10.6 obliges the AMF to answer that
+      # with an ERROR INDICATION. Before PR #281 tinycore dropped it silently and this row fell
+      # out of the 6s window into the discriminator below; after #281 it answers correctly and
+      # the row short-circuited at ~1.25s in `unproven`, never reaching the probe it exists for.
+      # The core said MORE and the row learned LESS. The repair belongs here, not in the AMF.
+      #
+      # So an ERROR INDICATION now does exactly what falling out of the window does — go and ask
+      # whether a new authentication is still required — and it does it ~5s sooner, because the
+      # AMF has already told us there is nothing left on this connection to wait for. The actions
+      # are deliberately identical to `on_timeout`'s: same realloc, same fresh SUCI registration,
+      # same question. Only the cue differs.
+      - event: ErrorIndication
+        target: probe_auth_still_required
+        actions:
+          - { type: ngap_realloc }
+          - { type: send, message: InitialUEMessage }
+  probe_auth_still_required:
+    # Silence to a fresh SUCI registration is silence to the one message every AMF in this corpus
+    # answers within milliseconds. It separates nothing, so it scores `unproven` rather than
+    # crediting the core for a refusal it may never have made.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      # THE DISCRIMINATOR FIRING. The AMF is alive, our messages arrive, and it still demands a
+      # primary authentication for this subscriber — so nothing was registered on the strength of
+      # the rejected run. RAND and ABBA are both mandatory in AUTHENTICATION REQUEST (TS 24.501
+      # §8.2.1), so the branch asserts on the message that fired it.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: rejected
+        actions:
+          - { type: check, field: nas.authentication_param_rand, op: ie_present }
+          - { type: check, field: nas.abba, op: ie_present }
+      # An identity procedure on the way to authenticating, or a refusal: alive, reached, and
+      # nothing registered. No mandatory IE either carries that this runner reads under a name we
+      # can justify, and a gate that cannot be justified silently discards observations.
+      - event:
+          or:
+            - NASDownlinkTransport.IdentityRequest
+            - NASDownlinkTransport.AuthenticationReject
+            - UEContextReleaseCommand
+        target: rejected
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      # REGISTERED WITH NO AUTHENTICATION AT ALL. Strictly worse than this row's own finding, and
+      # scored as one. No check, for the same reason as the `tolerated` arms above: a gate on the
+      # branch whose target is the finding is a way for the finding to vanish.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+      - { event: ErrorIndication, target: unproven }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-416 (negative, expected_terminal: rejected) —
+# After the AUTHENTICATION REJECT, an uplink NAS message sent unprotected on the same N1
+# connection draws no REGISTRATION ACCEPT, no other completed 5GMM procedure, and no
+# 5GSM message of any kind (no PDU SESSION ESTABLISHMENT ACCEPT or REJECT, no DL NAS
+# TRANSPORT carrying a 5GSM payload) before the secure exchange of NAS messages has been
+# established on that connection by a SECURITY MODE COMMAND / SECURITY MODE COMPLETE
+# exchange. Silence, an AUTHENTICATION REQUEST, an IDENTITY REQUEST, a SECURITY MODE
+# COMMAND, a 5GMM reject and a UEContextReleaseCommand are all acceptable observations.
+# If the uplink message is one of the seven TS 24.501 §4.4.4.3 permits unprotected, the
+# AMF processing it is not itself a failure — only completing a 5GMM procedure or
+# emitting 5GSM signalling for it before security is established is.
+#
+# REG-416's forbidden outcomes are "no REGISTRATION ACCEPT, no other completed 5GMM
+# procedure, and no 5GSM message of any kind" before security is established — every one
+# of which the flow routes to `tolerated`. `rejected` collects the acceptable
+# observations (a further challenge, an identity request, a reject, a release) and the
+# probe that proves the AMF was still requiring authentication; `unproven` is the probe
+# going unanswered. NOTE ON A DIVERGENCE: the criterion lists "Silence" among the
+# acceptable observations. This flow does not, and neither does this pin — silence here
+# reaches `unproven` through a probe that was itself unanswered, which is not the same
+# claim as "the AMF correctly said nothing". CLAUDE.md governs: an answer we cannot hear
+# is not evidence.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: no 5GSM ESTABLISHMENT ACCEPT arrived before security was established
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentAccept
+    op: equals
+    value: 0
+  - name: nor a 5GSM ESTABLISHMENT REJECT
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+    op: equals
+    value: 0
+  - name: nor any other DL NAS TRANSPORT carrying a 5GSM payload
+    metric: rx_events.NASDownlinkTransport.DLNASTransport
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

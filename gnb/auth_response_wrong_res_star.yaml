@@ -1,0 +1,78 @@
+# Secured/abnormal NAS probe — AuthenticationResponse with a corrupted RES* (XRES* mismatch) (3GPP TS 33.501 / TS 24.501 abnormal cases).
+kind: flow
+name: auth_response_wrong_res_star
+description: AuthenticationResponse with a corrupted RES* (XRES* mismatch) (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions: [{ type: send, message: InitialUEMessage }]
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_reaction
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - type: send
+            message: AuthResponse
+            params: { corrupt_res_star: true }
+  wait_reaction:
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      - { event: NASDownlinkTransport.AuthenticationReject, target: rejected }
+      - { event: NASDownlinkTransport.SecurityModeReject, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-414 (negative, expected_terminal: rejected) —
+# After AuthResponse carrying a deliberately wrong RES*, an AUTHENTICATION REJECT or a
+# UEContextReleaseCommand is observed and no REGISTRATION ACCEPT is ever sent.
+#
+# `rejected` is the only terminal a MESSAGE can reach: every one of the seven
+# transitions out of wait_reaction targets it, and `tolerated` is reached by the bare 10
+# s timer alone. Silence after a wrong RES* is not the AMF tolerating the forgery, it is
+# an absence we cannot tell from a dead association — and TS 33.501 obliges the AMF to
+# answer, so scoring the timer as a non-failure outcome would credit a core for saying
+# nothing. The criterion names the same thing on the wire.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: and no REGISTRATION ACCEPT was ever sent (inside a context setup)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: equals
+    value: 0
+  - name: nor as a NAS downlink
+    metric: rx_events.NASDownlinkTransport.RegistrationAccept
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

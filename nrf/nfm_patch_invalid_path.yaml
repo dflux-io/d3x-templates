@@ -1,0 +1,128 @@
+# NFM-11 — PATCH with bogus JSON-Patch path or op → 400 + ProblemDetails.
+#
+# Two probes against a registered SMF:
+#   1. path="/no/such/field" — replace on a non-existent field
+#   2. op="invalid" — unknown JSON-Patch operation
+# Both must fail with 400 + ProblemDetails. Catches a server that
+# applies invalid patches silently (no-op) and returns 200.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-11.
+
+kind: flow
+name: nrf_nfm_patch_invalid_path
+description: PATCH with bogus path / op → 400 + ProblemDetails.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-patch-invalid-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: bad_path
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: PatchBadPath
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [
+                  {"op": "replace", "path": "/no/such/field", "value": 0}
+                ]
+              }
+
+  bad_path:
+    transitions:
+      - event: rest.PatchBadPath_Answer
+        target: bad_op
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: send
+            message: PatchBadOp
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [
+                  {"op": "invalid", "path": "/load", "value": 50}
+                ]
+              }
+
+  bad_op:
+    transitions:
+      - event: rest.PatchBadOp_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

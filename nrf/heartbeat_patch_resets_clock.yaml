@@ -1,0 +1,131 @@
+# LONG-01 (cross-listed NFM-13) — PATCH resets the heartbeat clock.
+# See d3x-core docs/nrf/sanity-tests.md §4.7.2 (NFM-13) / §4.7.9.
+#
+# Proves a heartbeat PATCH refreshes the expiry timer (TS 29.510
+# §5.2.2.3): the SUT's UpdateNFInstance handler calls TouchHeartbeat,
+# pushing expiry to now+heartBeatTimer. Catches an implementation that
+# accepts the PATCH but forgets to reset the clock, letting the NF be
+# suspended on schedule anyway.
+#
+# Timing (verified against the SUT, NRF run with -heartbeat 20 → monitor
+# ticks every 20s):
+#   t=0    register heartBeatTimer=10 → expiry t≈10s
+#   t=14   PATCH (heartbeat) → TouchHeartbeat → expiry pushed to t≈24s
+#   t≈20   first monitor tick: expiry is now 24 > 20 → NF NOT suspended
+#          (without the PATCH, expiry would still be 10 and this tick
+#          would have flipped it to SUSPENDED — see LONG-04, which shows
+#          exactly that suspension at t≈20)
+#   t=28   GET → still REGISTERED (before the next tick at t≈40)
+#
+# The survival of the t≈20 tick as REGISTERED is the proof the clock was
+# reset. REQUIRES -heartbeat 20 and a per-flow timeout > 35s.
+
+kind: flow
+name: nrf_heartbeat_patch_resets_clock
+description: PATCH refreshes the heartbeat expiry so the NF survives a monitor tick that would otherwise suspend it (LONG-01 / NFM-13).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/bbbb0001-0000-4000-8000-000000000001",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 10,
+                  "fqdn": "hb-reset.local",
+                  "ipv4Addresses": ["10.0.9.1"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: waiting_to_patch
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.body.nfStatus
+            op: equals
+            expected: REGISTERED
+
+  # Wait until just before the first monitor tick, then send the
+  # heartbeat PATCH that resets the clock.
+  waiting_to_patch:
+    on_timeout:
+      duration: 14s
+      target: checking_patch
+      actions:
+        - type: send
+          message: Heartbeat
+          peer: nrf-peer
+          message_body: |
+            {
+              "method": "PATCH",
+              "url": "/nnrf-nfm/v1/nf-instances/bbbb0001-0000-4000-8000-000000000001",
+              "headers": {"Content-Type": "application/json-patch+json"},
+              "body": [
+                {"op": "replace", "path": "/nfStatus", "value": "REGISTERED"}
+              ]
+            }
+
+  checking_patch:
+    transitions:
+      - event: rest.Heartbeat_Answer
+        target: waiting_to_verify
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+
+  # Wait past the first monitor tick (t≈20). Without the PATCH the NF
+  # would be SUSPENDED by now; with it, it must still be REGISTERED.
+  waiting_to_verify:
+    on_timeout:
+      duration: 14s
+      target: checking_registered
+      actions:
+        - type: send
+          message: GetNF
+          peer: nrf-peer
+          message_body: |
+            {
+              "method": "GET",
+              "url": "/nnrf-nfm/v1/nf-instances/bbbb0001-0000-4000-8000-000000000001"
+            }
+
+  checking_registered:
+    transitions:
+      - event: rest.GetNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfStatus
+            op: equals
+            expected: REGISTERED
+
+  done: {}
+  failed: {}

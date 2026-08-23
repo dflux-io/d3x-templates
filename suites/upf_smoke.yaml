@@ -1,0 +1,86 @@
+# Standalone-UPF N4 smoke suite — the portable Class A CI gate.
+#
+# The minimal "is the standalone UPF alive and speaking PFCP correctly"
+# pass from docs/upf/sanity-tests.md §5. Targets the standalone UPF
+# (d3x-core `cmd/upf -datapath stub`) over loopback — NOT Open5GS.
+# Runs on any OS with no privileges, so it is the suite wired into CI.
+#
+# Covers the plan's smoke set: F-01 heartbeat, F-02 association setup,
+# F-03 session lifecycle (establish → modify → delete), and F-12 the
+# unknown-SEID modify negative. Each session flow is self-contained (it
+# opens its own association before its session work), so there is no
+# cross-step state dependency; order is a diagnostic gate, not a
+# requirement.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite upf_smoke \
+#       -templates . -c config/lab-upf.yaml \
+#       -gen-subscriber
+#
+# GATE: association setup is the one hard gate (stop_on_failure: true) —
+# if the standalone UPF cannot bring up a node-level association there is
+# no point running the rest. Every later step runs to completion
+# (stop_on_failure: false) so the suite reports a full per-procedure
+# result. Pass condition for the gate is `checks_failed == 0` with every
+# step reaching its spec-correct terminal pinned in success_when.
+#
+# NOTE: requires an runner binary built from current source — the PFCP
+# read-side field resolver (pfcp.cause / node_id / recovery_timestamp)
+# must be present, else every check resolves <missing>. Build with
+# `go build -o bin/d3x-run ./cmd/d3x-run` before running.
+
+kind: suite
+name: upf_smoke
+description: Portable N4 smoke gate for the standalone UPF (heartbeat, association, session lifecycle, one negative).
+steps:
+  # --- gate: node-level association must come up first --------------------
+  - name: association_setup
+    flow: upf_pfcp_association_setup
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: associated
+
+  # --- node-level liveness -----------------------------------------------
+  - name: heartbeat
+    flow: upf_pfcp_heartbeat
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  # --- session lifecycle (F-03): establish → modify → delete -------------
+  - name: session_establish
+    flow: upf_pfcp_session_establish
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
+
+  - name: session_modify
+    flow: upf_pfcp_session_modify
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: modified
+
+  - name: session_delete
+    flow: upf_pfcp_session_delete
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: deleted
+
+  # --- negative (F-12): modify on a bogus SEID must be rejected ----------
+  - name: session_modify_unknown_seid
+    flow: upf_pfcp_session_modify_unknown_fseid
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected

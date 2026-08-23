@@ -1,0 +1,300 @@
+# SERVICE REQUEST with service type "signalling" from CM-IDLE (3GPP TS 24.501 §5.6.1).
+#
+# Clauses, operative sentences (retrieved with matrix/scripts/spec-clause.py):
+#
+#   §5.6.1.2.1 "The UE initiates the service request procedure by sending a SERVICE REQUEST
+#              message to the AMF."
+#              "For case c) in subclause 5.6.1.1 ... b) otherwise, the UE shall set the service
+#              type IE to 'signalling'."
+#              "The UE shall include a valid 5G-S-TMSI in the 5G-S-TMSI IE of the SERVICE REQUEST
+#              message."
+#
+#   §5.6.1.4.1 "For cases other than h) in subclause 5.6.1.1, the UE shall treat the reception of
+#              the SERVICE ACCEPT message as successful completion of the procedure."
+#              "If the Uplink data status IE is included in the SERVICE REQUEST message ... the
+#              AMF shall: ... b) include the PDU session reactivation result IE in the SERVICE
+#              ACCEPT message ..." — this request carries NO Uplink data status and NO Allowed PDU
+#              session status, so no user-plane re-establishment is asked for and the reactivation
+#              result IE has nothing to report.
+#
+#   Table 9.11.3.50.1 (Service type IE): bits 4..1 — 0000 signalling, 0001 data,
+#              0010 mobile terminated services.
+#
+# WHAT CHANGED AND WHY (xp-245). This flow used to declare a `service_attempted` terminal reached
+# from `wait_service_response`'s on_timeout, described in its own header as "the request was sent
+# but the AMF answered via NAS only or declined — still a valid exercise of this service type".
+# That made an AMF that said NOTHING pass REG-200. §5.6.1.4.1 fixes the successful terminal as the
+# reception of a SERVICE ACCEPT, so silence is a failure and is now scored as one: the terminal is
+# gone, and every on_timeout except the absence window targets `failed`.
+#
+# The two CARRIERS are kept, because that part of the old header was right and is a real
+# TS 38.413 point rather than leniency: §5.6.1.4.1 fixes the NAS message, not the NGAP message
+# that carries it. An AMF with an NGAP UE context to (re-)establish sends the accept inside an
+# INITIAL CONTEXT SETUP REQUEST (tinycore does); an AMF with nothing to set up sends it alone in a
+# DOWNLINK NAS TRANSPORT (Open5GS does). Both are spec-correct and they need DIFFERENT answers —
+# an INITIAL CONTEXT SETUP RESPONSE is the answer to a request, and sending one when no request
+# arrived would be a message of our own invention — which is why they are two transitions and not
+# one widened `or`. What is NOT kept is the bare `InitialContextSetupRequest` alternative with no
+# NAS payload: §5.6.1.4.1 completes the procedure on the SERVICE ACCEPT, so an ICS carrying no
+# accept is not completion. (REG-200's pass_criterion is looser here — "InitialContextSetupRequest
+# OR a SERVICE ACCEPT" — and should be tightened to match the clause; reported with this batch.)
+#
+# ============================================================================================
+# SERVICE TYPE IS AN ENUM VALUE, NOT A WIRE VALUE — `service_type: 1` is correct here
+# ============================================================================================
+# TS 24.501 table 9.11.3.50.1 codes signalling as the WIRE value 0000, but proto/nas5g's
+# NAS_ServiceType enum reserves 0 for "none" (SVC_TYPE_SIGNALLING=1, SVC_TYPE_DATA=2,
+# SVC_TYPE_MOBILE_TERMINATED_SERVICES=3), exactly like NAS_SecurityHeaderType. Templates carry
+# the ENUM; svcTypeToWire does the -1.
+#
+# That mapping did not exist until 2026-08-10: encodeServiceRequest wrote the enum RAW, so this
+# flow put `7e 00 4c 01` on the wire — service type 0001 = "DATA". MEASURED on tinycore, not
+# inferred. The flow named _signalling had never once sent a signalling service request, and
+# REG-200 was green for the wrong procedure. Decode was raw too, so runner-to-runner round trips
+# agreed with themselves and no unit test could see it. Fixed in proto/nas5g/nas5g.go
+# (svcTypeToWire / svcTypeFromWire) with a byte-level test; see xp-253.
+# ============================================================================================
+
+kind: flow
+name: service_request_signalling
+description: SERVICE REQUEST (service type signalling) from CM-IDLE; assert SERVICE ACCEPT and no PDU session setup (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - connected
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_response
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          # CM-IDLE. A new UE-associated logical NG-connection needs a new
+          # RAN UE NGAP ID (TS 38.413 §8.6.1.2), so reallocate before the
+          # SERVICE REQUEST carries it. No `extract` snapshot here: `d3x-run
+          # lint` refuses an extract that follows a send, and the realloc must
+          # follow the UE CONTEXT RELEASE COMPLETE (whose own AP IDs are filled
+          # from ue.NGAP.RanUeNgapId at TX-enrich time). The assertions below
+          # therefore template `{{ue.RanUeNgapId}}` directly — which is still a
+          # cross-message comparison, not a field compared with itself:
+          # ue.NGAP.RanUeNgapId is written ONLY at UE creation and by
+          # ngap_realloc (runner/runner/action_executor.go), never by the RX
+          # path, so its value here is the id WE allocated for the new
+          # connection, not one read back off the message under test.
+          - { type: ngap_realloc }
+          - type: send
+            message: ServiceRequest
+            params:
+              # ENUM SVC_TYPE_SIGNALLING=1 -> wire 0000 "signalling". See the header block.
+              service_type: 1
+      # Open5GS reallocates the 5G-GUTI right after RegistrationAccept. Absorbed,
+      # not answered: the AMF is already tearing this connection down, and a
+      # CONFIGURATION UPDATE COMPLETE that lands after the release draws an NGAP
+      # ERROR INDICATION for stale AP IDs (TS 38.413 §10.6) — noise of our own
+      # making. Naming the event keeps it out of the "refused by FSM" audit.
+      #
+      # UNREVIEWED INTERACTION WITH ccd6864 (#362) — recorded 2026-08-18, NOT acted
+      # on. The scoping is deliberate and it still holds where it is written: a
+      # declared transition beats fsm.DispatchRx's tail default, so this state stays
+      # silent. But the SAME command arriving in any OTHER state of this flow now
+      # draws a CONFIGURATION UPDATE COMPLETE from that default — the very uplink
+      # this comment refuses to send here. Latent rather than live today: the
+      # default is gated on the Configuration update indication ACK bit, and
+      # open5gs's command carries no such IE at all (decoded off the v1 sweep).
+      # Whether the silence should become flow-wide is an owner's call, not a
+      # template edit.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_cmd
+  wait_service_response:
+    # §5.6.1.4.1 completion is the SERVICE ACCEPT. No accept inside the budget is
+    # a failure, not an "attempt".
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # Carrier 1 — the accept rides an INITIAL CONTEXT SETUP REQUEST.
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: wait_no_pdu_session_setup
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 78 }
+          - { type: check, field: nas.pdu_session_reactivation_result, op: equals, expected: null }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: "{{ue.RanUeNgapId}}" }
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+      # Carrier 2 — the accept travels alone in a DOWNLINK NAS TRANSPORT. No
+      # InitialContextSetupResponse here: there was no request to answer.
+      - event: NASDownlinkTransport.ServiceAccept
+        target: wait_no_pdu_session_setup
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 78 }
+          - { type: check, field: nas.pdu_session_reactivation_result, op: equals, expected: null }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: "{{ue.RanUeNgapId}}" }
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+      # An AMF that refuses a signalling service request from a registered UE has
+      # failed this row; scored, not tolerated.
+      - event: NASDownlinkTransport.ServiceReject
+        target: failed
+  # REG-200's second criterion: "and no PDU Session Resource Setup Request is
+  # sent". An absence can only be observed by waiting, so this is the ONE
+  # on_timeout in this flow that may reach a success terminal — and it is not the
+  # lenient pattern being removed here, because the state can only be entered by
+  # having already received and content-asserted a real SERVICE ACCEPT. 6s against
+  # the row's absent_after_s: 5.
+  #
+  # `nas.pdu_session_reactivation_result equals null` above is the N1 half of the
+  # same claim. `equals null` also passes on a misspelled field name, which is why
+  # it is paired with the `nas.header.message_type equals 78` assertion on a
+  # sibling field of the same decoded message: if that passes, the nas.* namespace
+  # is resolving against this SERVICE ACCEPT and the null is a real absence.
+  wait_no_pdu_session_setup:
+    on_timeout: { duration: 6s, target: connected }
+    transitions:
+      - event:
+          or:
+            - PDUSessionResourceSetupRequest
+            - PDUSessionResourceSetupRequest.PDUSessionEstablishmentAccept
+        target: failed
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-200).
+#
+# REG-200 — InitialContextSetupRequest or a SERVICE ACCEPT is received on N2/N1 for the
+# UE-associated logical NG-connection, and no PDU Session Resource Setup Request is sent
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL, AND WHAT IT DOES NOT PROVE ON ITS OWN. Every path to `connected` in
+  # this flow ends on a TIMER — the absence window is the point of the row — so this pin
+  # says "the flow got as far as the window and nothing knocked it out", and the message
+  # assertions below are what say the run happened at all.
+  - name: the flow reached `connected`
+    metric: final_state_counts.connected
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: greater_or_equal
+    value: 1
+  - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, ServiceRequest)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # STAYS 1 — AND 1 IS NOT WHAT EVERY CORE PRODUCES. Read this before changing it.
+  #
+  # Since #364 the runner answers a UE CONTEXT RELEASE COMMAND that no state names
+  # (TS 38.413 §8.3.3, unconditional), so this metric is now "the one Complete this
+  # flow declares in wait_release_cmd" PLUS one per unnamed command the core chose
+  # to send. That second term is a property of the CORE, not of this FSM.
+  #
+  # Measured, not inferred — three sweeps agree (5ee60cd 2026-08-13, 8a48fa1 and
+  # f227f12-v1 2026-08-17), REG-200's own runner.json:
+  #     tinycore  rx UEContextReleaseCommand 1 -> 1 Complete
+  #     open5gs   rx UEContextReleaseCommand 1 -> 1 Complete
+  #     free5gc   rx UEContextReleaseCommand 2 -> 2 Completes
+  # free5gc sends TWO release commands for the SAME context (ran=1/amf=3) 237 us
+  # apart with DIFFERENT Cause IEs (cause 2 then cause 0); the second lands in
+  # wait_service_response, which names no transition for it, and §8.3.3 obliges a
+  # Complete for each. So this assertion now reports red on free5gc, at actual 2.
+  #
+  # DO NOT "FIX" THAT BY WRITING 2. Two is free5gc's number; writing it would
+  # redden tinycore and open5gs, which walk exactly the path declared above, and
+  # would make a template claim a statement about one core. 1 is what this FSM
+  # declares and what the header of this block says these counts are. The free5gc
+  # red cell is the runner reporting a real difference between cores — which is
+  # what the comparison is for — and a range would delete that signal permanently.
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # "…and no PDU Session Resource Setup Request is sent" (REG-200). A
+  # service request of type `signalling` asks for no user plane, so a core
+  # that reactivated one exceeded what it was asked for. This flow never
+  # establishes a PDU session, so any arrival at all is the finding.
+  - name: and no PDU SESSION RESOURCE SETUP REQUEST was sent
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: equals
+    value: 0
+  # The seven `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all seven declared checks ran
+    metric: checks_total
+    op: equals
+    value: 7
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,176 @@
+# Unsolicited UEContextReleaseComplete with no preceding Release Command
+# (3GPP TS 38.413 §8.3.3 / §10 abnormal: unsolicited Class-1 response).
+#
+# Abnormal input under test: after a normal registration the gNB sends a
+# UEContextReleaseComplete that the AMF never solicited (no UEContextRelease-
+# Command was issued). A UEContextReleaseComplete is the response leg of a
+# Class-1 procedure; receiving one with no outstanding command is a protocol
+# error the AMF must handle gracefully — drop it (and optionally emit an
+# ErrorIndication) without crashing or corrupting the UE context.
+#
+# Lenient assertion: an AMF that never sent a Release Command will most likely
+# silently discard the stray response, so `tolerated` is reached on timeout. An
+# inbound ErrorIndication, or even the AMF deciding to release the UE for real
+# (UEContextReleaseCommand), are also acceptable graceful reactions -> tolerated.
+# Only a transport error routes to `failed`.
+
+kind: flow
+name: ue_context_release_complete_without_command_unsolicited
+description: Send an unsolicited UEContextReleaseComplete; assert AMF handles it gracefully (YAML)
+detail: |
+  Performs registration, then sends a UEContextReleaseComplete with no preceding
+  UEContextReleaseCommand (3GPP TS 38.413 §8.3.3 / §10). Correct AMF behaviour is
+  to ignore/reject the unsolicited Class-1 response and keep the UE context
+  consistent, never to crash. Success `tolerated` is reached on timeout (silent
+  drop), on an inbound ErrorIndication, or on the AMF issuing its own
+  UEContextReleaseCommand.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reaction
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # Unsolicited Class-1 response — no Release Command was received.
+          - type: send
+            message: UEContextReleaseComplete
+
+  wait_reaction:
+    # Most likely silently dropped -> tolerated on timeout.
+    on_timeout:
+      duration: 8s
+      target: tolerated
+    transitions:
+      - event: ErrorIndication
+        target: tolerated
+      - event: UEContextReleaseCommand
+        target: tolerated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-248, REG-861).
+#
+# REG-248 — The NG association survives and a subsequent well-formed registration or
+# service request on the same association completes normally
+#
+# REG-861 — A UEContextReleaseComplete carrying an erroneous AP ID draws no
+# ErrorIndication, the association stays up, and a following registration succeeds
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL. One route to `tolerated` is a timer (the absence window), so the
+  # message assertions below are what separate "reached it" from "waited it out".
+  - name: the flow reached `tolerated`
+    metric: final_state_counts.tolerated
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

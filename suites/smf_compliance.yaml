@@ -1,0 +1,220 @@
+# SMF compliance suite — one peer/session per flow, one execution per flow.
+#
+# Drives the standard Nsmf_PDUSession SBI procedures (over N11, runner plays the
+# AMF / Nsmf consumer) and the N4/PFCP procedures (runner plays the SMF / CP
+# function toward the UPF) against a real Open5GS deployment. Every step runs
+# exactly ONE flow for ONE execution (repetitions: 1, no rate) so each
+# procedure is exercised deterministically and scored on its own — this is a
+# conformance pass, not a load test.
+#
+# Each step asserts, via success_when.at_least_one_final_state, that the flow
+# reached its SPEC-CORRECT terminal (created / updated / released / retrieved
+# for SBI; associated / completed / established / modified / released / updated
+# for PFCP). Every authored flow is self-contained — each SBI flow issues its
+# own CreateSMContext and extracts the smContextRef before the dependent leg,
+# and each PFCP session flow issues its own PFCPAssociationSetupRequest first —
+# so there is no cross-step shared state to carry. The ordering below is
+# therefore a logical "gates first, dependents next, teardown last" rationale,
+# not a hard data dependency between steps.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite smf-compliance \
+#       -templates <templates-dir> -c config/open5gs-smf.yaml -trace
+#
+# stop_on_failure defaults to TRUE when unset, so every step that should NOT
+# abort the run sets it explicitly to false. The only HARD GATE is the one
+# basic positive procedure that every dependent N4 procedure builds on:
+#   - pfcp_association_setup : if the N4 association can't even be set up, every
+#     PFCP session step (establish/modify/delete) is doomed — abort.
+# create_smcontext is NOT a gate: it is a documented expected-fail (Nsmf
+# CreateSMContext needs a multipart/related body with an embedded N1 SM NAS PDU
+# that runner can't carry), so it runs with stop_on_failure:false and must not
+# abort the suite's PFCP/other steps.
+# Everything else runs to completion (stop_on_failure: false) so the suite
+# collects a full per-procedure pass/fail report. The two natural teardown
+# procedures (release SM context, release PFCP association) run LAST, and the
+# PFCP association release is marked always_run so the N4 association is left
+# clean even if an earlier step failed.
+#
+# One-flow-per-procedure conformance rationale: a real Open5GS scored per
+# procedure tells us exactly which procedure works and which doesn't. Bundling
+# multiple procedures into one flow would mask which leg failed; here each
+# procedure gets its own pass/fail line.
+#
+# Known EXPECTED failures / runtime-risk against a real Open5GS (genuine
+# core/transport gaps, NOT flow bugs — these are the legitimate findings this
+# suite exists to surface; the live run uses them to separate core gaps from
+# flow bugs):
+#   - create_smcontext (and every SBI step that creates one first):
+#     a spec-correct CreateSMContext carries an embedded N1 SM NAS PDU (PDU
+#     Session Establishment Request) in a multipart/related body. These flows
+#     send single-part application/json with no binary n1SmMsg part, so a real
+#     Open5GS SMF is likely to reject the create (4xx) before any smContextRef
+#     is produced. The dependent update/release/retrieve steps then never reach
+#     their 2xx leg. Structurally valid flows; the FAIL is a transport/N1 gap.
+#   - update_smcontext_n2_info: additionally needs a binary n2SmInfo part
+#     (multipart) — same single-part limitation.
+#   - pfcp_association_update / association_release: as currently built these
+#     request enrichers draw no answer from a real Open5GS UPF (likely missing
+#     or not-accepted mandatory IEs) and time out — an enricher-content fidelity
+#     gap, not a transport problem. (The simpler session establish/modify/delete
+#     happy flows send a minimal/bare session and ARE accepted with Cause=Request
+#     accepted; the richer rule-bearing UPF-side enrichers are the ones with the
+#     PDR/FAR fidelity gap — see upf_compliance.yaml.)
+# pfcp_association_setup / heartbeat / the bare session est/mod/del flows pass
+# cleanly against a healthy, matched Open5GS UPF; any failure there points at the
+# core, not at our flows.
+#
+# N4 addressing note (REQUIREMENT, now resolved): Open5GS routes PFCP responses
+# to the requester's advertised NodeID address on UDP 8805, NOT back to the UDP
+# source port. Driving a real UPF therefore requires advertising NodeID == our
+# own IP and binding it on :8805 — config/open5gs-smf.yaml sets
+# pfcp.local "172.22.0.250:8805" + node_id.value "172.22.0.250", and the harness
+# runs the runner container on --ip 172.22.0.250 so it owns that NodeID. With that
+# in place runner's PFCP RX path receives and dispatches the AssociationSetupResponse
+# normally (there is NO runner PFCP client-RX correlation bug — an earlier run
+# misdiagnosed the addressing issue as one).
+#
+# Results (2026-06-05, Open5GS v2.7.x, runner as SMF consumer): 5/14.
+# PASS: pfcp_association_setup (Cause=Request accepted, node_id=172.22.0.8),
+# pfcp_heartbeat_liveness (recovery_timestamp), and the bare
+# pfcp_session_establishment / modification / deletion (all Cause=Request
+# accepted). FAIL: create_smcontext (the documented N1-SM multipart gap — now a
+# non-gating expected-fail, stop_on_failure:false), so every dependent SBI step
+# (update ×4 / retrieve / release, each of which creates first) also fails; plus
+# pfcp_association_update and cleanup_pfcp_association_release (no UPF response —
+# enricher-fidelity gap). SBI connectivity to the SMF on 172.22.0.7:7777 is
+# independently proven by smf-security (18/20).
+
+kind: suite
+name: smf-compliance
+description: One-flow-per-procedure Nsmf_PDUSession (SBI/N11) + N4/PFCP conformance pass for an SMF against Open5GS.
+steps:
+  # --- gates -------------------------------------------------------------
+  # PFCP association setup is the hard gate for the whole N4 side: every
+  # session step sets up its own association, so if this can't succeed they
+  # all fail. Run it first and abort on failure.
+  - name: pfcp_association_setup
+    flow: smf_pfcp_association_setup_happy
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: associated
+
+  # Basic positive CreateSMContext is the hard gate for the whole SBI side:
+  # every dependent SBI flow (update/release/retrieve) issues its own create
+  # first, so if a bare create can't be issued/parsed at all, abort.
+  # NOTE: create_smcontext is a DOCUMENTED expected-fail (Nsmf CreateSMContext
+  # needs a multipart/related body with an embedded N1 SM NAS PDU that runner can't
+  # carry), so it must NOT hard-gate and abort the suite's PFCP/other steps.
+  # stop_on_failure stays false; the only N4 gate is pfcp_association_setup above.
+  - name: create_smcontext
+    flow: smf_nsmf_create_smcontext_happy
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: created
+
+  # --- PFCP liveness + session procedures --------------------------------
+  - name: pfcp_heartbeat_liveness
+    flow: smf_pfcp_heartbeat_liveness
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: pfcp_session_establishment
+    flow: smf_pfcp_session_establishment_happy
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
+
+  - name: pfcp_session_modification
+    flow: smf_pfcp_session_modification_happy
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: modified
+
+  - name: pfcp_session_deletion
+    flow: smf_pfcp_session_deletion_happy
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: released
+
+  - name: pfcp_association_update
+    flow: smf_pfcp_association_update
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: updated
+
+  # --- Nsmf_PDUSession SBI procedures ------------------------------------
+  - name: update_smcontext_n2_info
+    flow: smf_nsmf_update_smcontext_n2_info_happy
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: updated
+
+  - name: update_smcontext_modification_request
+    flow: smf_nsmf_update_smcontext_modification_request
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: updated
+
+  - name: update_smcontext_ho_path_switch
+    flow: smf_nsmf_update_smcontext_ho_path_switch
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: updated
+
+  - name: update_smcontext_deactivate_ulcl
+    flow: smf_nsmf_update_smcontext_deactivate_ulcl
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: updated
+
+  - name: retrieve_smcontext
+    flow: smf_nsmf_retrieve_smcontext_happy
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: retrieved
+
+  # --- teardown (run last) -----------------------------------------------
+  # Release SM context is the natural SBI teardown (create -> release chain).
+  - name: release_smcontext
+    flow: smf_nsmf_release_smcontext_happy
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: released
+
+  # PFCP association release is the natural N4 teardown — run it always so the
+  # UPF is left with no dangling association even if an earlier step failed.
+  - name: cleanup_pfcp_association_release
+    flow: smf_pfcp_association_release
+    repetitions: 1
+    timeout: 20s
+    always_run: true
+    success_when:
+      at_least_one_final_state: released

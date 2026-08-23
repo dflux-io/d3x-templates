@@ -1,0 +1,292 @@
+# REG-607 — a mobility registration update that does not ask for SMS over NAS
+# must de-register the UE from SMS: the accept says "not allowed", and a
+# following SMS payload container is aborted rather than relayed.
+#
+# THE CLAUSE (TS 24.501 §5.5.1.3.4, retrieved with matrix/scripts/spec-clause.py):
+#
+#   If the 5GS update type IE was included in the REGISTRATION REQUEST message
+#   with the SMS requested bit set to "SMS over NAS not supported" or the 5GS
+#   update type IE was not included in the REGISTRATION REQUEST message, then
+#   the AMF shall:
+#     a) mark the 5GMM context to indicate that the UE is not available for SMS
+#        over NAS; and
+#     b) set the SMS allowed bit of the 5GS registration result IE to "SMS over
+#        NAS not allowed" in the REGISTRATION ACCEPT message.
+#
+# That sentence is why RegistrationUpdateSMSNotRequested is legitimate even
+# though what it puts on the wire is "IE ABSENT" rather than "IE present, bit
+# clear": the clause names both encodings and imposes the same two obligations
+# on each. (nas5g cannot encode the second form at all — see the enricher's doc
+# comment. If a row ever needs to DISTINGUISH the two, the encoder must grow
+# first; this row does not.)
+#
+# Obligation b) is directly observable — it is the SMS allowed bit of the second
+# accept. Obligation a) is a statement about internal context state, and the
+# register makes it observable through TS 24.501 §5.4.5.2.5 case b) 1): "If the
+# Payload container type IE is set to 'SMS' and 1) the AMF does not have an SMSF
+# address associated with the UE … then the AMF shall abort the procedure." A UE
+# marked not available for SMS is a UE with no live SMSF association, so a
+# submit after the update must draw nothing back.
+#
+# SHAPE. Register (asking for SMS, which is what a UE that later withdraws would
+# have done), release the context so the update arrives as a genuine CM-IDLE →
+# CM-CONNECTED mobility registration exactly as gnb/mobility_registration_updating.yaml
+# does, run the update WITHOUT the 5GS update type IE, then submit an SMS.
+#
+# WHAT THE CHECKS ASSERT.
+#   1. `nas.sms_allowed equals false` on the SECOND accept — §5.5.1.3.4 b), and
+#      the first half of the row's pass criterion verbatim.
+#   2. `ue.Params.sms_mo_rp_ref not_empty` — the SMS really was encoded, so the
+#      silence below cannot be the silence of a send that never happened.
+#   3. Every SMS downlink sub-event the runner can name transitions to
+#      `sms_relayed_after_deregistration`, a FAILING terminal. Silence for
+#      absent_after_s (10 s, from the register row) is the conformant answer —
+#      §5.4.5.2.5's abort is silent by construction.
+#   4. Silence is NOT scored on a bare timer: the passing terminal is reached
+#      only after a DEREGISTRATION REQUEST on the same N1 connection draws its
+#      normal answer. A core that vanished, or that answered the SMS by tearing
+#      the context down, cannot reach `sms_deregistered`.
+#
+# TWO HONEST LIMITS OF THIS ROW, both about the FIRST registration rather than
+# the update:
+#   - The first accept's SMS allowed bit is deliberately NOT checked. §5.5.1.3.4
+#     imposes its obligations on the update unconditionally, whatever the prior
+#     state, so requiring "was allowed" would add a precondition the clause does
+#     not have and would turn every core that fails REG-600 into a REG-607
+#     failure for the wrong reason.
+#   - Consequently, on a core that never granted SMS to begin with, the bit in
+#     check (1) was already clear and that half of the row is weak. The half
+#     that does the work on such a core is (3): whether the AMF still has an SMSF
+#     association it should not have.
+#
+# MEASURED AGAINST tinycore 2026-08-11: see the header of
+# gnb/sms_uplink_without_smsf_association_aborted.yaml — the same AMF path
+# (tinycore/dmf/amf/sms.go handleUplinkSMS) relays on `a.sms != nil` alone and
+# never consults the UE's own SMS availability, so this row reds on (3).
+#
+# A 5GMM STATUS IS NOT SILENCE (xp-312). open5gs answers this submit with a 5GMM
+# STATUS carrying 5GMM cause #96 — captured on the wire as NGAP NAS DOWNLINK
+# TRANSPORT `7e 02 .. .. .. .. 7e 00 64 60` (0x64 = 5GMM STATUS, 0x60 = 96).
+# Until this row named that event the runner refused it into `bus_audit.refused`
+# and dropped it, and the row scored open5gs as silent — crediting the core with
+# an absence it did not produce, exactly the defect REG-622 carried. It now has
+# its own failing terminal, `status_returned`, so final_state_counts says WHICH
+# obligation was broken. REG-718 (ue_policy_uplink_no_pcf_association_aborted)
+# has always had this transition, which is why it went red on open5gs and this
+# row did not.
+#
+# …PayloadNotForwarded is named for the narrower reason given in REG-622's
+# header: xp-312 moved the TS 24.501 §5.4.5.3.2 container refusal off
+# `…DLNASTransport.SMSContainer` (which reported a DELIVERY of a container the
+# AMF refused to deliver) and onto its own 5GMM-layer name, so the six SMS
+# sub-events below no longer cover it and leaving it unnamed would re-open the
+# same drop-the-answer hole for the refusal case.
+#
+# Terminals: sms_deregistered (PASS); sms_relayed_after_deregistration /
+# status_returned / context_released / failed (FAIL).
+
+kind: flow
+name: sms_deregistered_by_mobility_update
+description: REG-607 — mobility registration update without SMS requested clears SMS allowed and stops SMS relay (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - sms_deregistered
+  - sms_relayed_after_deregistration
+  - status_returned
+  - context_released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessageSMSRequested
+            params:
+              # TS 24.501 §5.5.1.2.2 — this UE HAS pending uplink signalling after
+              # the registration (the payload container this row is about), so the
+              # Follow-on request indicator belongs in the 5GS registration type IE.
+              # Without it §5.5.1.2.4 lets the AMF release the N1 connection the
+              # moment registration ends, and free5GC does exactly that; the row
+              # would then measure a release it asked for. FOR is a cleartext-IE bit
+              # (part of the 5GS registration type octet), so it travels on the
+              # first message with no §4.4.6 complication.
+              follow_on_request: true
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+
+  # CM-IDLE, so the update that follows is a real mobility registration and not
+  # a second message on a connection that never went down.
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - type: send
+            message: RegistrationUpdateSMSNotRequested
+            params:
+              # TS 24.501 §5.5.1.2.2 — this UE HAS pending uplink signalling after
+              # the registration (the payload container this row is about), so the
+              # Follow-on request indicator belongs in the 5GS registration type IE.
+              # Without it §5.5.1.2.4 lets the AMF release the N1 connection the
+              # moment registration ends, and free5GC does exactly that; the row
+              # would then measure a release it asked for. FOR is a cleartext-IE bit
+              # (part of the 5GS registration type octet), so it travels on the
+              # first message with no §4.4.6 complication.
+              follow_on_request: true
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  # The AMF may answer the update directly, or re-run authentication and the
+  # security mode procedure first — §5.5.1.3.2 permits both and neither is what
+  # this row scores, so both loop back here. (1) rides on whichever form of
+  # REGISTRATION ACCEPT arrives.
+  wait_update_reaction:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: sms_settle
+        actions:
+          - { type: check, field: nas.sms_allowed, op: equals, expected: false }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: sms_settle
+        actions:
+          - { type: check, field: nas.sms_allowed, op: equals, expected: false }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_update_reaction
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: IdentityResponse }
+
+  # Same settle as gnb/sms_mo.yaml: give an AMF that manages SMS asynchronously
+  # the time it would have in the ordinary case, so a PASS is not a race win.
+  sms_settle:
+    on_timeout:
+      duration: 2s
+      target: wait_sms_silence
+      actions:
+        - type: send
+          message: SMSSubmit
+          params:
+            destination: "19995550123"
+            text: "d3x REG-607 submit after SMS de-registration"
+
+  wait_sms_silence:
+    on_timeout:
+      duration: 10s
+      target: wait_liveness_answer
+      actions:
+        - { type: check, field: ue.Params.sms_mo_rp_ref, op: not_empty }
+        - { type: send, message: DeregistrationRequest }
+    transitions:
+      - { event: NASDownlinkTransport.DLNASTransport.SMSCpAck, target: sms_relayed_after_deregistration }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSCpError, target: sms_relayed_after_deregistration }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport, target: sms_relayed_after_deregistration }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSDeliver, target: sms_relayed_after_deregistration }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSRpError, target: sms_relayed_after_deregistration }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSContainer, target: sms_relayed_after_deregistration }
+      # A DL NAS TRANSPORT echoing the container back with a 5GMM cause is
+      # §5.4.5.3.2's "I did not forward this" — a refusal, so neither a relay
+      # nor silence. See the header.
+      - { event: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded, target: status_returned }
+      # THE ANSWER open5gs ACTUALLY GIVES — 5GMM cause 96. See the header.
+      - { event: NASDownlinkTransport.5GMMStatus, target: status_returned }
+      - { event: UEContextReleaseCommand, target: context_released }
+
+  wait_liveness_answer:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - { event: NASDownlinkTransport.DeregistrationAccept, target: sms_deregistered }
+      - { event: UEContextReleaseCommand, target: sms_deregistered }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-607 (negative, expected_terminal:
+# sms_deregistered) — The second RegistrationAccept has the SMS allowed bit clear, and a
+# following UL NAS TRANSPORT with payload container type SMS draws no SMS downlink
+# within absent_after_s
+#
+# REG-607's pass is an absence — "a following UL NAS TRANSPORT with payload container
+# type SMS draws no SMS downlink" — and `sms_deregistered` is that absence turned into a
+# message: after the window the flow proves the NAS connection is still alive and gets
+# its answer. `sms_relayed_after_deregistration` is any SMS payload container coming
+# back after the UE said SMS over NAS was not supported; `context_released` is the AMF
+# tearing the connection down instead of answering.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `sms_deregistered` — the terminal this row claims
+    metric: final_state_counts.sms_deregistered
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,250 @@
+# Target-gNB Xn-handover finalize via PathSwitchRequest (3GPP TS 38.413 §8.4.4).
+#
+# After registration + PDU session setup, the (target) gNB sends a
+# PathSwitchRequest asking the AMF to switch the N3 user-plane path to the
+# target node — the NG-C finalization of an Xn-based (RAN-to-RAN) handover.
+#
+# Sends:    PathSwitchRequest, with `xn_move: true` so it leaves on the TARGET
+#           association — see the comment on that send for why, and for what
+#           this row measured before it did.
+#
+# Expected-correct behavior: THE SWITCH SUCCEEDS. There IS a real Xn context by
+# the time the request goes out — the UE's RAN leg has been moved to the peer
+# gNB — so REG-560 requires a PathSwitchRequestAcknowledge and `final_checks`
+# below pins that terminal and only that one. `path_switch_rejected` and
+# `path_switch_error_indicated` are named as transitions so a declining answer
+# is recorded as the AMF's own words instead of falling off the bus into a bare
+# timeout, but they are the two ways the core DECLINES what this positive row
+# requires, not passes.
+#
+# The earlier reading — "any of the three is a well-formed reaction and counts
+# as success" — belonged to the version of this flow that sent the request on
+# the UE's own association, where there genuinely was nothing to switch and a
+# refusal was the conformant answer. Open5GS answered with ErrorIndication under
+# those conditions; that observation was taken against a request no target gNB
+# would ever have sent, and says nothing about Open5GS's path switch support.
+
+kind: flow
+name: path_switch
+description: Target-gNB PathSwitchRequest finalizing an Xn handover (YAML)
+detail: |
+  Exercises the NG-C finalization of an Xn-based (inter-gNB, RAN-to-RAN)
+  handover from the target gNB perspective (3GPP TS 38.413 §8.4.4).
+
+  Phase 1 — Registration: standard auth/security/context-setup establishes a
+  UE context and active NGAP UE association.
+  Phase 2 — PDU session setup: establishes a user-plane bearer so there is an
+  N3 path to switch.
+  Phase 3 — Xn move: the UE's RAN leg is relocated to the peer gNB with no NG-C
+  signalling, which is what an Xn handover looks like from the core's side.
+  Phase 4 — PathSwitchRequest, sent from the target: asks the AMF to switch the
+  N3 user-plane path to the target node, carrying the target's new
+  RAN-UE-NGAP-ID, the source AMF-UE-NGAP-ID, the target's user-location, and the
+  switched PDU session list.
+
+  Asserts PathSwitchRequestAcknowledge. PathSwitchRequestFailure and
+  ErrorIndication are named transitions so a declining answer is recorded as the
+  AMF's own words rather than as a timeout, but REG-560 requires the switch to
+  complete and `final_checks` pins the acknowledgement.
+
+  Needs two gNBs (REG-560 preconditions.gnbs: 2).
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - path_switch_acknowledged
+  - path_switch_rejected
+  - path_switch_error_indicated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_path_switch_response
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          # THE REQUEST LEAVES ON THE TARGET ASSOCIATION, WHICH IS WHAT THIS ROW
+          # IS ABOUT. An Xn path switch is by definition sent by the TARGET
+          # NG-RAN node after the UE has already moved to it over the air
+          # (TS 38.413 §8.4.4, TS 23.502 §4.9.1.2) — the 5GC hears nothing until
+          # the request arrives on the target's own association.
+          #
+          # Without `xn_move` this send went out on the association the UE was
+          # ALREADY on, and a conformant AMF answers that by refusing to switch a
+          # path to where the UE already is. The refusal landed on
+          # `path_switch_rejected`, the `final_checks` pin on
+          # `path_switch_acknowledged` failed, and the row reported `fail` — a
+          # harness defect wearing a core gap's clothes. Six sibling templates
+          # (xn_path_switch_*) were authored with the fix; this one, the oldest,
+          # was left behind. EnrichPathSwitchRequest's own doc comment in
+          # runner/runner/enrichers_ngap_mobility.go names this row's predecessor
+          # as the reason the param exists.
+          #
+          # `xn_move: true` relocates the UE's RAN leg to the peer gNB with NO
+          # NG-C signalling at all — a fresh RAN-UE-NGAP-ID allocated there, the
+          # AMF-UE-NGAP-ID untouched because it is the identity that spans both
+          # legs — which is exactly what an Xn handover looks like from the core's
+          # side. It also makes the Path Switch Request Transfer and the User
+          # Location carry the TARGET's endpoint and cell, because both are read
+          # off ue.NGAP.GNB after the move.
+          #
+          # `peer:` would NOT do this job. It is send-time routing only: the leg,
+          # the RAN-UE-NGAP-ID, the advertised DL N3 endpoint and the user
+          # location would all still be the SOURCE's, so the request would arrive
+          # on the target association asking to switch the path to the gNB it
+          # came from.
+          #
+          # NEEDS TWO gNBs. REG-560 declares preconditions.gnbs: 2, so the matrix
+          # runs this row with gnb-2gnb.yaml; with one gNB the send fails outright
+          # ("no peer gNB to move to") rather than measuring anything.
+          - type: send
+            message: PathSwitchRequest
+            params:
+              xn_move: true
+
+  wait_path_switch_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: PathSwitchRequestAcknowledge
+        target: path_switch_acknowledged
+      - event: PathSwitchRequestFailure
+        target: path_switch_rejected
+      # An NGAP ErrorIndication (TS 38.413 §8.7.5) says the AMF decoded the
+      # message and cannot process it. NAMED, so it is recorded as the core's own
+      # answer instead of falling off the bus and leaving this state to time out
+      # — but NOT a success: the request now arrives on the target association
+      # after a real Xn move, so there is a path to switch and REG-560 requires
+      # the switch. `final_checks` pins `path_switch_acknowledged` alone.
+      - event: ErrorIndication
+        target: path_switch_error_indicated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-560 (positive, expected_terminal:
+# path_switch_acknowledged) — PathSwitchRequestAcknowledge is received on the target
+# gNB's association carrying a PDU Session Resource Switched List with the UE's PDU
+# Session ID.
+#
+# REG-560: "PathSwitchRequestAcknowledge is received on the target gNB's association
+# carrying a PDU Session Resource Switched List with the UE's PDU Session ID."
+# `path_switch_rejected` and `path_switch_error_indicated` are the two ways the AMF
+# declines a switch this positive row requires it to complete.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `path_switch_acknowledged` — the terminal this row claims
+    metric: final_state_counts.path_switch_acknowledged
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 7
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

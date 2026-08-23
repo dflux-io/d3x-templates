@@ -1,0 +1,108 @@
+# SBI load baseline — the workload half of `load_nudm_sdm_get`.
+#
+# A flow template cannot declare a workload: `rate` / `duration` /
+# `repetitions` are properties of the RUN (`Workload`, runner/runner/engine.go),
+# set either by the `-rate` / `-repetitions` flags on `run-flow` or by a suite
+# step (runner/runner/fsm/suite.go). This suite is where the numbers live, so
+# the flow stays runnable at any workload and this file states the one it was
+# characterised at.
+#
+#   ./bin/d3x-run run-suite -suite sbi_load_baseline \
+#       -templates . -c runner/config/lab-sbi.yaml \
+#       -gen-subscriber
+#
+# SELF-CONTAINED. With the shipped `runner/config/lab-sbi.yaml` both ends are in
+# one runner process: `sbi_nudm_sdm_get_server` runs as a background flow and
+# binds 127.0.0.1:18443, and the load flow dials it. No core, no lab, no
+# network — which is the point. Run it on a new host to find out what the
+# runner's own floor is there BEFORE reading any number it produces against a
+# real UDM as a fact about that UDM.
+#
+# THIS IS NOT A CAMPAIGN. 2,000 requests over ten seconds is a smoke test of the
+# load path itself: it proves the workload scheduler drove the flow, the HDR
+# histograms filled, and the thresholds are comparable. Characterising a target
+# means minutes of traffic and 2-3 runs on record; see
+# `edgeguard/test/load/suites/` for what that shape looks like.
+#
+# WHY THE BURST FLOW IS NOT A SECOND STEP. `load_nudm_sdm_get_burst` needs a
+# target that answers concurrent requests independently, and the runner's own
+# server-mode responder does not — every copy in a `parallel_send` burst carries
+# the correlation header the request was enriched with once, and a runner
+# listener keys its pending-answer map on that header, so simultaneous arrivals
+# collide and all but one get a 504. That file's LIMITATION 2 has the measured
+# numbers. Adding it here would produce a suite that fails on every host for a
+# reason that is nothing to do with the target, so it stays a
+# point-it-at-a-real-UDM template.
+#
+# EVERY THRESHOLD IN THIS FILE IS A TRIPWIRE. The derivation lives in the flow —
+# read the comment blocks in sbi/load_nudm_sdm_get.yaml before
+# changing a number here, and change it there too.
+
+kind: suite
+name: sbi_load_baseline
+description: |
+  Sustained-rate SBI load baseline against the loopback UDM responder. The
+  flow's own `final_checks` carry the per-run thresholds; the step `checks:` and
+  the suite `final_checks:` below assert what is only visible at the workload
+  level — that the scheduler actually started the flows it was asked for.
+
+steps:
+  # 200 starts/s for 10s = ~2,000 flows, each one a request and its answer. The
+  # rate is chosen to sit comfortably inside what a loopback responder absorbs
+  # (the derivation run in the flow file was at this rate and showed a p95 of
+  # 0.9ms), so a breach means something changed rather than that the target was
+  # saturated on purpose. Saturation testing is a different exercise: raise
+  # `rate` until success_rate moves, and do it in a suite of its own rather than
+  # by editing this one.
+  - name: sustained_rate
+    flow: load_nudm_sdm_get
+    rate: 200
+    duration: 10s
+    # 30s = the 10s spawn window + the flow's own 2s on_timeout + margin for the
+    # tail of the last starts to drain. A step timeout below the spawn window
+    # counts still-in-flight UEs as timed out and fails the run for a reason
+    # that has nothing to do with the target.
+    timeout: 30s
+    gen_subscriber: true
+    background_flows:
+      - sbi_nudm_sdm_get_server
+    checks:
+      # The workload scheduler's own output, asserted. Without this the
+      # thresholds in the flow could be met by a run that started 3 flows.
+      # greater_or_equal, not equals: the spawn loop stops ON the duration, so
+      # the last tick is a partial one and the count lands at 2000 or a little
+      # under (measured: 2000, and 1999 on the run before it). A floor of 1900
+      # is 95% of nominal — tight enough to catch a scheduler that stalled,
+      # loose enough not to fail on the tick.
+      - name: ~2000 flows started at 200/s for 10s
+        metric: flows_started
+        op: greater_or_equal
+        value: 1900
+      - name: no flow failed under sustained rate
+        metric: flows_failed
+        op: equals
+        value: 0
+
+final_checks:
+  # Merged across the cycle. Percentiles here come from the MERGED HDR
+  # histograms (the suite loader's own comment, runner/runner/fsm/suite.go), not
+  # from averaging per-step percentiles — so on a multi-step suite this is a
+  # real p99 over every sample. It is the strictest statement in the file.
+  - name: nothing failed across the whole baseline
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no per-step check failed
+    metric: checks_failed
+    op: equals
+    value: 0
+  # p99, and a HIGHER bound than the flow asserts on its own p95. Both
+  # differences are deliberate: this line answers "did the tail blow out" while
+  # the flow's p95 line answers "did the typical request stay quick". 100ms is
+  # the flow's 50ms head-room doubled for the tail. Measured on the derivation
+  # run: sbi_p99_rtt_ms 2.49. Like every number here it is a tripwire, and
+  # re-deriving it wants 2-3 runs on the host in question.
+  - name: p99 SBI round-trip across the whole baseline stayed bounded
+    metric: sbi_p99_rtt_ms
+    op: less_than
+    value: 100

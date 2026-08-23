@@ -1,0 +1,53 @@
+# DISC-04 — missing required target-nf-type → 400 + ProblemDetails.
+#
+# Probes GET /nnrf-disc/v1/nf-instances with no query string. The spec
+# (TS 29.510 §5.3.2.2) requires target-nf-type; a server that defaults
+# to "any" instead of rejecting the request leaks every registered NF
+# to any caller.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.3 DISC-04.
+
+kind: flow
+name: nrf_disc_missing_target_nf_type
+description: GET /nf-instances with no target-nf-type → 400 + ProblemDetails.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: probing
+        actions:
+          - type: send
+            message: DiscoverNoTarget
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances"
+              }
+
+  probing:
+    transitions:
+      - event: rest.DiscoverNoTarget_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+
+  done: {}
+  failed: {}

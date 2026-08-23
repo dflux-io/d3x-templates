@@ -1,0 +1,240 @@
+# gNB leg of the AF-requested QoS-change e2e (Phase A exit gate, lab tier).
+# 3GPP TS 38.413 §8.2.4 / §9.2.1.3-4.
+#
+# Identical registration + PDU-session establishment to
+# pdu_session_amf_initiated_modify, but the trigger here is REAL: an AF posts a
+# PolicyAuthorization app-session to dpf (pcf/npcf_af_lab_trigger.yaml) which
+# drives PCF→SMF UpdateNotify → SMF QoS modify → AMF PDUSessionResourceModify
+# over N2. So this flow REQUIRES the modify (no not_triggered terminal): a
+# 45s wait then `failed` on timeout, terminal `modified` only, plus a check
+# that the inbound modify item is non-empty.
+#
+# Cross-protocol orchestration (this NGAP flow + the SBI AF trigger flow) is
+# script-driven, not a single suite step — runner flows are single-protocol (the
+# multi-protocol-flow gap). The integrator wires
+# scripts/e2e-gnb-run.sh step 03-af-qos-modify (approved OQ9).
+
+kind: flow
+name: pdu_session_af_qos_modify
+description: Establish a PDU session, then handle the AF-triggered PDUSessionResourceModifyRequest (lab)
+detail: |
+  Registers, establishes a PDU session, then waits (45s) for the
+  AF-PolicyAuthorization-triggered, PCF/SMF-initiated
+  PDUSessionResourceModifyRequest and replies PDUSessionResourceModifyResponse
+  (3GPP TS 38.413 §8.2.4). Unlike pdu_session_amf_initiated_modify this flow
+  requires the modify to arrive (the AF trigger induces it), so it fails on
+  timeout rather than settling in not_triggered. Paired with the SBI AF flow
+  npcf_af_lab_trigger via scripts/e2e-gnb-run.sh.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - modified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # THE SLICE DIFFERENTIATOR, AND IT MUST BE WRITTEN IN DECIMAL.
+              #
+              # 66051 IS 0x010203. The lab dpf seeds its SM policy on
+              # {sst:1, sd:010203}; without a matching SD the establishment
+              # carries the 0xFFFFFF "no SD" sentinel, dpf 403s
+              # SLICE_NOT_PROVISIONED, dmf warns-and-defaults with no
+              # SmPolicyID, the AF app-session binding finds nothing (500
+              # PDU_SESSION_NOT_AVAILABLE) and the modify below never fires.
+              #
+              # DO NOT WRITE IT AS HEX OR AS A QUOTED STRING. The enricher reads
+              # this through ParamUint32 (runner/runner/enrichers.go:1452), whose
+              # string branch is strconv.ParseUint(n, 10, 32) — BASE TEN. So
+              # `sd: "010203"` is ten thousand two hundred and three, and an
+              # unquoted `010203` is at the mercy of the YAML resolver's
+              # leading-zero rules. Either one fails exactly like the original
+              # "no sd override" runner gap did, which is an afternoon lost to a
+              # bug that is not there. Decimal integer, no quotes: 66051.
+              sd: 66051
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_modify_request
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          # N2 tunnel fidelity: UPF uplink GTP-U F-TEID present (non-zero)
+          # at establishment — proves the tunnel was allocated (T2 item 5).
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+
+  wait_modify_request:
+    on_timeout:
+      duration: 45s
+      target: failed
+    transitions:
+      - event: PDUSessionModifyRequest
+        target: modified
+        actions:
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: send
+            message: PDUSessionResourceModifyResponse
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-341).
+#
+# REG-341 — PDUSessionResourceModifyRequest received on N2 within the timeout after the
+# AF request, carrying a QoS Flow Add or Modify Request List
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `modified`
+    metric: final_state_counts.modified
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE MODIFY RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_MODIFY_RESPONSE
+    op: equals
+    value: 1
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION MODIFY REQUEST arrived
+    metric: rx_events.PDUSessionModifyRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The five `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all five declared checks ran
+    metric: checks_total
+    op: equals
+    value: 5
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

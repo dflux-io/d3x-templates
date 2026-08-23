@@ -1,0 +1,86 @@
+# Nausf_UEAuthentication — 5G-AKA confirmation (compliance, runtime-risk).
+# 3GPP TS 29.509 §5.2.2.3 / §6.1.3.3.3.1
+#   (PUT /nausf-auth/v1/ue-authentications/{authCtxId}/5g-aka-confirmation).
+# Chained: initiate (POST) -> extract the created context Location -> PUT the
+# ConfirmationData{resStar} to that resource. Now sendable end-to-end via the
+# generic SBI_Request (arbitrary method PUT + templated path).
+#
+# RUNTIME RISK: runner has no 5G-AKA key-derivation, so it cannot compute the
+# correct RES* for the live test vector. The PUT is structurally valid and the
+# AUSF will answer, but the authResult is expected to be AUTHENTICATION_FAILURE
+# (or a 4xx) rather than AUTHENTICATION_SUCCESS against a real core. Terminal is
+# kept to `completed` = the AUSF answered the confirmation request at all; the
+# live run distinguishes a genuine runner/core gap from a flow bug.
+
+kind: flow
+name: ausf_ueauth_5g_aka_confirmation
+description: Initiate 5G-AKA then PUT the 5g-aka-confirmation with a RES* and read the auth result
+category: functional
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_initiate
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            peer: ausf
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_initiate:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: wait_confirmation
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          # Location points at .../ue-authentications/{authCtxId}; the
+          # confirmation resource is that path + /5g-aka-confirmation.
+          - type: extract
+            field: sbi.headers.Location
+            store: authCtxLocation
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "{{ue.Params.authCtxLocation}}/5g-aka-confirmation",
+                "body": {
+                  "resStar": "00112233445566778899aabbccddeeff"
+                }
+              }
+
+  wait_confirmation:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists
+          - type: check
+            field: sbi.body.authResult
+            op: exists

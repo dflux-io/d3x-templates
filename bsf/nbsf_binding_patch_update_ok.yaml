@@ -1,0 +1,132 @@
+# Nbsf_Management — register a binding, PATCH it with an RFC 7396 JSON
+# merge-patch updating pcfFqdn, confirm the change via discovery, then
+# deregister. TS 29.521 §5.3.3.4 (PATCH /pcfBindings/{bindingId} with
+# application/merge-patch+json → 200 + updated PcfBinding). Uses test-range
+# values (RFC 5737 203.0.113.93, supi …093) disjoint from every other flow;
+# the trailing DELETE keeps reruns against a persistent DPF clean.
+kind: flow
+name: nbsf_binding_patch_update_ok
+description: POST /pcfBindings (201) -> PATCH merge-patch pcfFqdn (200) -> GET ?ipv4Addr (200) -> DELETE (204)
+category: functional
+type: client
+protocol: sbi
+nf: bsf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_register
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nbsf-management/v1/pcfBindings",
+                "body": {
+                  "supi": "imsi-001010000000093",
+                  "dnn": "internet",
+                  "snssai": {"sst": 1, "sd": "000001"},
+                  "ipv4Addr": "203.0.113.93",
+                  "pcfFqdn": "dpf.lab"
+                }
+              }
+
+  wait_register:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_patch
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: binding_loc
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "PATCH",
+                "path": "{{ue.Params.binding_loc}}",
+                "headers": {"Content-Type": "application/merge-patch+json"},
+                "body": {
+                  "pcfFqdn": "pcf2.lab"
+                }
+              }
+
+  wait_patch:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_discover
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          - type: check
+            field: sbi.body
+            op: contains
+            expected: "pcf2.lab"
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nbsf-management/v1/pcfBindings",
+                "query": {"ipv4Addr": "203.0.113.93"}
+              }
+
+  wait_discover:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_deregister
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          - type: check
+            field: sbi.body
+            op: contains
+            expected: "pcf2.lab"
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "{{ue.Params.binding_loc}}"
+              }
+
+  wait_deregister:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

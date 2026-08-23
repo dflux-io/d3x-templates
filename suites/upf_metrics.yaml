@@ -1,0 +1,80 @@
+# Standalone-UPF metrics suite — prove session install is observable via /metrics.
+#
+# The F-20 metrics-assertion vehicle in action: scrape the UPF's
+# Prometheus endpoint before and after a single session establish to prove
+# upf_sessions_active goes 0 → 1 from outside the process. Targets the
+# standalone UPF (cmd/upf -datapath stub) over loopback.
+#
+# Run against a FRESHLY launched UPF (the baseline step asserts == 0):
+#   ./bin/d3x-run run-suite -suite upf_metrics \
+#       -templates . -c config/lab-upf-metrics.yaml \
+#       -gen-subscriber
+#
+# REQUIRES the runner `http1` REST option (dflux-io/d3x-run #309):
+# the /metrics endpoint is HTTP/1.1, the default REST client is h2c-only.
+#
+# Scope: this proves the 0→1 increment (robust, deterministic). The full
+# F-05 (N-session count) and F-16 (association-restart wipe → 0) need more
+# than templates — distinct CP F-SEIDs per session to avoid runner
+# correlation collisions, and recovery-timestamp control / a cross-protocol
+# flow for the wipe — see docs/upf/sanity-tests.md §9.
+#
+# GATE: the baseline scrape is the hard gate (stop_on_failure: true) — if
+# the metrics endpoint is unreachable (e.g. runner without http1) or already
+# dirty, the increment assertion is meaningless. The establish leaves one
+# session installed at suite end (no cross-flow SEID to delete it).
+
+kind: suite
+name: upf_metrics
+description: Scrape /metrics before and after one establish; prove upf_sessions_active 0 → 1.
+steps:
+  - name: metrics_baseline_zero
+    flow: upf_metrics_sessions_active_zero
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: session_establish
+    flow: upf_pfcp_session_establish
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: established
+
+  - name: metrics_after_one
+    flow: upf_metrics_sessions_active_one
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  # --- QER leg: prove a QER is actually programmed at establishment and is
+  # externally observable via /metrics (upf_qers_active 0 → 1). Rebuilds the
+  # gnbsim-only QER-programming assertion (T2 item 3).
+  - name: qers_baseline_zero
+    flow: upf_metrics_qers_active_zero
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: session_establish_qer
+    flow: upf_pfcp_session_establish_qer
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: established
+
+  - name: qers_after_one
+    flow: upf_metrics_qers_active
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed

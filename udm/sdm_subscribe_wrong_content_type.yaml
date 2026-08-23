@@ -1,0 +1,50 @@
+# Nudm_SDM Subscribe with a non-JSON Content-Type — security/negative.
+# 3GPP TS 29.500 §6.1; RFC 7231 (415 Unsupported Media Type / 4xx).
+# Uses SBI_Request headers override (Content-Type: application/xml) with a
+# JSON-shaped body — unlocked by the new generic SBI message.
+# UDM must reject the unsupported media type and stay live.
+
+kind: flow
+name: udm_sdm_subscribe_wrong_content_type
+description: POST sdm-subscriptions with Content-Type application/xml is rejected with 4xx
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-sdm/v2/imsi-001010000000001/sdm-subscriptions",
+                "headers": {"Content-Type": "application/xml"},
+                "raw_body": "<SdmSubscription><callbackReference>x</callbackReference></SdmSubscription>"
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          # Spec-correct: 415/406/400 family — any 4xx rejection.
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399

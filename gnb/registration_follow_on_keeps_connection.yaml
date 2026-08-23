@@ -1,0 +1,179 @@
+# Registration with the Follow-on request indicator set keeps the NAS signalling
+# connection up (register row REG-108).
+#
+# CLAUSE (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.5.1.2.4 — "If the UE has set the Follow-on request indicator to
+#   'Follow-on request pending' in the REGISTRATION REQUEST message, or the
+#   network has downlink signalling pending, the AMF shall not immediately
+#   release the NAS signalling connection after the completion of the
+#   registration procedure."
+#
+#   TS 24.501 §9.11.3.7 — the Follow-on request indicator is the FOR bit of the
+#   5GS registration type IE, i.e. one bit in the first octet of the
+#   REGISTRATION REQUEST, not a separate IE.
+#
+# THE STIMULUS IS ON THE WIRE, NOT JUST IN THE YAML.
+# `params: { follow_on_request: true }` is consumed by EnrichInitialUEMessage
+# (runner/runner/enrichers.go) and sets NAS_RegistrationRequest.FollowOnRequest,
+# which the encoder puts in bit 4 of the 5GS registration type octet. Measured
+# on tinycore 2026-08-11 in the -trace decode of the INITIAL UE MESSAGE:
+# `"registration_type": 1, "follow_on_request": true` — against `false` on the
+# same message when the param is omitted. So this flow really does assert
+# something about a UE that asked, rather than about a UE that did not.
+#
+# WHY THE ABSENCE WINDOW IS NOT ALLOWED TO BE THE WHOLE ASSERTION.
+# The criterion is a NON-event ("no UEContextReleaseCommand within
+# absent_after_s of REGISTRATION COMPLETE"), and a flow that asserts a non-event
+# on a bare timer scores green when it is broken — a flow that crashed, sent
+# nothing and waited also sees no release. Two things stop that here:
+#
+#   * the window is only entered from `registered`, i.e. after a REGISTRATION
+#     ACCEPT was received and answered, so the procedure demonstrably completed
+#     — the clause's own precondition; and
+#
+#   * when the window closes the flow does NOT terminate. It sends a
+#     DEREGISTRATION REQUEST, which is an integrity-protected uplink NAS message
+#     on the very connection whose survival is in question, and requires a
+#     downlink answer to it. An AMF that had released the NAS signalling
+#     connection has no UE context to verify that message against and cannot
+#     answer. So `connection_kept` is reached only by a connection that was
+#     observably still there, never by silence.
+#
+# TERMINALS.
+#   connection_kept — the release never came AND the connection still answered.
+#   released_early  — a UEContextReleaseCommand arrived inside the window: the
+#                     AMF released despite the FOR bit. This is the clause
+#                     violation, recorded as its own terminal rather than as
+#                     `failed`, so the trace says which of the two happened.
+#   failed          — the registration never completed, or the connection did
+#                     not answer the probe (an unannounced release).
+#
+# HOW TRIVIAL IS A GREEN HERE? Control run on tinycore 2026-08-11: the same
+# flow with `follow_on_request` omitted ALSO saw no release in 6 s
+# (registration_follow_on_control, scratchpad only, not committed). tinycore
+# does not release the NAS signalling connection after registration either way,
+# so on this core the row is satisfied trivially — it distinguishes nothing
+# about §5.5.1.2.4 and everything it can distinguish is on a core that does
+# release (free5GC does; see the note in EnrichInitialUEMessage). Recorded here
+# so a green REG-108 on tinycore is not over-read as "the FOR bit was honoured".
+kind: flow
+name: registration_follow_on_keeps_connection
+description: Registration with the Follow-on request indicator set; assert the AMF does not release the NAS signalling connection (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - connection_kept
+  - released_early
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # The FOR bit — the entire stimulus of this row.
+          - type: send
+            message: InitialUEMessage
+            params: { follow_on_request: true }
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_no_release
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          # "after the completion of the registration procedure" — the clause's
+          # precondition. The window below starts here.
+          - { type: send, message: RegistrationComplete }
+
+  # The §5.5.1.2.4 absence window (register absent_after_s: 6). A release
+  # arriving here is the violation and has an EXPLICIT transition, which is what
+  # makes the timeout below mean "it did not arrive" rather than "nothing was
+  # consumed".
+  wait_no_release:
+    on_timeout:
+      duration: 6s
+      target: prove_connection_alive
+      actions:
+        - { type: send, message: DeregistrationRequest }
+    transitions:
+      - { event: UEContextReleaseCommand, target: released_early }
+
+  # The positive acceptance observable. Only a live NAS signalling connection
+  # with the UE's security context still installed can answer this.
+  prove_connection_alive:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: connection_kept
+      - event: UEContextReleaseCommand
+        target: connection_kept
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-108 (positive, expected_terminal: connection_kept)
+# — No UEContextReleaseCommand is received within absent_after_s of REGISTRATION
+# COMPLETE
+#
+# REG-108: "No UEContextReleaseCommand is received within absent_after_s of REGISTRATION
+# COMPLETE." That absence is turned into a message — prove_connection_alive answers, so
+# `connection_kept` is reached on an observation rather than on a timer.
+# `released_early` is the release arriving inside the window, which is the Follow-on
+# request pending flag being ignored.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `connection_kept` — the terminal this row claims
+    metric: final_state_counts.connection_kept
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

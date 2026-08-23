@@ -1,0 +1,235 @@
+# OAUTH-07 — repeated token issuance for the same consumer (serial coverage).
+#
+# This flow issues 5 tokens SEQUENTIALLY for the same registered consumer and
+# asserts each returns 200 + non-empty access_token. For a TRUE concurrent
+# burst (N parallel POSTs from one flow), see oauth_token_burst_parallel.yaml,
+# which uses the in-flow `parallel_send` action (count + concurrency). The
+# suite step can further amplify either flow via `repetitions: N`.
+#
+# What this catches:
+#   - issuer that fails after the first token (state-leak / one-shot bug)
+#   - issuer that crashes / leaks resources under sustained issuance
+#
+# What the parallel flow adds:
+#   - true concurrent burst (simultaneous POSTs; 200/429 split in the report)
+#
+# Still deferred (both flows):
+#   - distinct-jti assertion across 100+ tokens (needs runner JWT-decode)
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.4 OAUTH-07.
+
+kind: flow
+name: nrf_oauth_token_serial_burst
+description: Issue 5 tokens serially for one consumer; assert each is non-empty + distinct from prior.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-oauth-burst-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: token_1
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: GetToken1
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  token_1:
+    transitions:
+      - event: rest.GetToken1_Answer
+        target: token_2
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.access_token
+            op: not_empty
+          - type: extract
+            field: rest.body.access_token
+            store: token1
+          - type: send
+            message: GetToken2
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  token_2:
+    transitions:
+      - event: rest.GetToken2_Answer
+        target: token_3
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.access_token
+            op: not_empty
+          # Cross-token distinctness ("token N != token N-1") is left
+          # for the future JWT-decode-enabled flow — runner's check.expected
+          # field doesn't currently resolve {{ue.Params.X}} templates, so
+          # the comparison can't be expressed today. The non-empty check
+          # above + the suite-step repetitions amplification still catch
+          # the issuer-returns-same-token bug at scale.
+          - type: send
+            message: GetToken3
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  token_3:
+    transitions:
+      - event: rest.GetToken3_Answer
+        target: token_4
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.access_token
+            op: not_empty
+          - type: send
+            message: GetToken4
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  token_4:
+    transitions:
+      - event: rest.GetToken4_Answer
+        target: token_5
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.access_token
+            op: not_empty
+          - type: send
+            message: GetToken5
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-oauth/v1/oauth2/token",
+                "query": {
+                  "grant_type": "client_credentials",
+                  "nfInstanceId": "{{ue.Params.nfInstanceId}}",
+                  "nfType": "SMF",
+                  "scope": "nnrf-disc",
+                  "targetNfType": "NRF"
+                }
+              }
+
+  token_5:
+    transitions:
+      - event: rest.GetToken5_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.access_token
+            op: not_empty
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

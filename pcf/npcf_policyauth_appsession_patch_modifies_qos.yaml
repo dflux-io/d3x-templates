@@ -1,0 +1,199 @@
+# Npcf_PolicyAuthorization — PATCH app-session modifies the derived QoS.
+# 3GPP TS 29.514 §4.2.3 (PATCH /app-sessions/{appSessionId} with
+# AppSessionContextUpdateData → 200).
+#
+# Chain of the install flow, then PATCH the app-session bumping marBwDl
+# 20→40 Mbps, then GET the sm-policy and confirm the derived QoS reflects the
+# new bound (the runner-observable stand-in for the UpdateNotify leg — the notify
+# wire itself is flows #11/#12 + the Go tier). The patched component keeps an
+# fDescs entry (E5). GET asserts via `contains "40 Mbps"` over the decision
+# subtree (E4/E6 — `sbi.body.policy.` prefix, runtime-UUID rule keys).
+
+kind: flow
+name: npcf_policyauth_appsession_patch_modifies_qos
+description: install app-session → PATCH marBwDl→40 Mbps → GET sm-policy shows 40 Mbps
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_sm_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_sm_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_appsession
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-policyauthorization/v1/app-sessions",
+                "body": {
+                  "ascReqData": {
+                    "supi": "imsi-001010000000001",
+                    "dnn": "internet",
+                    "sliceInfo": {"sst": 1, "sd": "000001"},
+                    "notifUri": "http://127.0.0.1:1/af-unused",
+                    "suppFeat": "0",
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "20 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_appsession:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_patch
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: app_sess_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "PATCH",
+                "path": "{{ue.Params.app_sess_loc}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "ascReqData": {
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "40 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_patch:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_sm_get
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "{{ue.Params.sm_policy_loc}}"
+              }
+
+  wait_sm_get:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_cleanup
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          - type: check
+            field: sbi.body.policy.qosDecs
+            op: contains
+            expected: "40 Mbps"
+          # Suite-isolation cleanup (R6): release this (supi,dnn) association so
+          # the NEXT policyauth flow binds unambiguously. dpf's onSMPolicyDeleted
+          # also removes the bound app session server-side (OQ4).
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/delete",
+                "body": {}
+              }
+
+  wait_cleanup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

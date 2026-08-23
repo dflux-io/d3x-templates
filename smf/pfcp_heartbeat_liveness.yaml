@@ -1,0 +1,40 @@
+# N4/PFCP — Heartbeat liveness (compliance).
+# 3GPP TS 29.244 §6.2.2 / §7.4.2.
+#
+# runner (SMF) sends a PFCPHeartbeatRequest (RecoveryTimeStamp + sequence
+# auto-stamped) and the UPF replies with PFCPHeartbeatResponse. Liveness is
+# verified by the round-trip and a non-empty RecoveryTimeStamp in the response.
+kind: flow
+name: smf_pfcp_heartbeat_liveness
+description: SMF heartbeats UPF over N4 — expect Heartbeat response with recovery timestamp
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_hb
+        actions:
+          - type: send
+            message: PFCPHeartbeatRequest
+            peer: smf
+
+  wait_hb:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPHeartbeatResponse
+        target: completed
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: not_empty

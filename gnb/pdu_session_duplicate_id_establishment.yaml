@@ -1,0 +1,227 @@
+# Duplicate PDU Session ID establishment (collision)
+# (3GPP TS 24.501 §6.4.1 / §6.1.4 — PSI already in use).
+#
+# Negative under test: after a PDU session with PDU Session ID = 1 is active,
+# the gNB sends a SECOND PDUSessionEstablishmentRequest reusing the SAME PDU
+# Session ID = 1 with no release in between. A correct AMF/SMF must NOT silently
+# double-allocate a UPF tunnel: it should reject the duplicate (5GSM cause #43
+# "invalid PDU session identity" via a NAS PDUSessionEstablishmentReject), report
+# a 5GMMStatus, or deterministically replay the existing session's setup.
+#
+# Because both requests carry id = 1, the sticky ue.NGAP.PduSessionId guard is
+# irrelevant — the collision is exactly the case under test. Success terminal
+# `handled` covers all three spec-valid reactions; a timeout (no reaction at all,
+# i.e. silent double-allocation) is `failed`.
+
+kind: flow
+name: pdu_session_duplicate_id_establishment
+description: Establish PDU session id=1, then re-request the same id; assert AMF rejects/replays (YAML)
+detail: |
+  Registers a UE, establishes a PDU session with PDU Session ID = 1, then sends a
+  second PDUSessionEstablishmentRequest reusing id = 1 (3GPP TS 24.501 §6.4.1 /
+  §6.1.4). Correct AMF/SMF behaviour is a PDUSessionEstablishmentReject (5GSM
+  cause #43), a 5GMMStatus, or a deterministic re-setup — never a silent second
+  UPF tunnel allocation. Any of those reactions reaches `handled`; no reaction
+  within the window is `failed`.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - handled
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_duplicate_reaction
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          # Second establishment request reusing the SAME PDU session id = 1.
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_duplicate_reaction:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # 5GSM reject for the colliding session id (carried in DL NAS transport).
+      - event: NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: handled
+      # Generic 5GMM status reporting the protocol error.
+      - event: NASDownlinkTransport.5GMMStatus
+        target: handled
+      # Deterministic re-setup of the existing session is also spec-acceptable.
+      - event: PDUSessionResourceSetupRequest
+        target: handled
+        actions:
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-327).
+#
+# REG-327 — After the second PDUSessionEstablishmentRequest reusing the active PDU
+# session ID, exactly one of: a PDUSessionResourceSetupRequest/ModifyRequest carrying a
+# NEW GTP-U TEID for that PDU session ID, or a PDUSessionEstablishmentReject; and never
+# two concurrent setup requests for the same PDU session ID
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `handled`
+    metric: final_state_counts.handled
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 5
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: greater_or_equal
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,78 @@
+# Nudm_UECM AMF 3GPP-access Deregistration — compliance (multi-step).
+# 3GPP TS 29.503 §6.2.3.13
+#   (POST /nudm-uecm/v1/{ueId}/registrations/amf-3gpp-access/dereg-amf, AmfDeregInfo).
+# Register (PUT) then deregister (POST dereg-amf). Both legs via SBI_Request —
+# unlocked by the new generic SBI message (AmfDeregInfo body + UECM op).
+
+kind: flow
+name: udm_uecm_amf_3gpp_dereg_ok
+description: PUT amf-3gpp-access then POST dereg-amf returns 204
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_register
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudm-uecm/v1/imsi-001010000000001/registrations/amf-3gpp-access",
+                "body": {
+                  "amfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "deregCallbackUri": "http://127.0.0.1:7777/dereg",
+                  "guami": {
+                    "plmnId": {"mcc": "001", "mnc": "01"},
+                    "amfId": "020040"
+                  },
+                  "ratType": "NR"
+                }
+              }
+
+  wait_register:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_dereg
+        actions:
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-uecm/v1/imsi-001010000000001/registrations/amf-3gpp-access/dereg-amf",
+                "body": {
+                  "amfInstanceId": "11111111-2222-3333-4444-555555555555"
+                }
+              }
+
+  wait_dereg:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300

@@ -1,0 +1,234 @@
+# PDU session on an explicitly requested, allowed S-NSSAI — the answer must
+# name the SAME slice on both interfaces: the S-NSSAI IE of the 5GSM Accept
+# (N1) and the S-NSSAI of the PDU Session Resource Setup Request item (N2).
+#
+# REG-305 — Slice-differentiated PDU session on an explicitly requested allowed
+# S-NSSAI.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §6.4.1.3 (UE-requested PDU session establishment accepted) —
+#   THE operative sentence for the N1 half:
+#     "If the PDU session is a non-emergency PDU session and the UE is not
+#      registered for onboarding services in SNPN, the SMF shall set the
+#      S-NSSAI IE of the PDU SESSION ESTABLISHMENT ACCEPT message to:
+#        a) the S-NSSAI of the PDU session; and
+#        b) the mapped S-NSSAI (in roaming scenarios)."
+#   Note the modality: for an ordinary (non-emergency, non-onboarding) session
+#   this IE is not optional decoration — the clause says "shall".
+#
+#   TS 23.502 §4.3.2.2.1 step 11 (UE Requested PDU Session Establishment) —
+#   the N2 half, and the pairing of the two:
+#     "SMF to AMF: Namf_Communication_N1N2MessageTransfer (PDU Session ID,
+#      N2 SM information (PDU Session ID, QFI(s), QoS Profile(s), CN Tunnel
+#      Info, S-NSSAI from the Allowed NSSAI or Partially Allowed NSSAI,
+#      Session-AMBR, PDU Session Type, …), N1 SM container (PDU Session
+#      Establishment Accept ([QoS Rule(s) …], selected SSC mode, S-NSSAI(s),
+#      UE Requested DNN, allocated IPv4 address, …)))"
+#   …and step 1, which is where the UE's requested S-NSSAI comes from:
+#     "From UE to AMF: NAS Message (S-NSSAI(s), […] UE Requested DNN, PDU
+#      Session ID, Request type, […] N1 SM container (PDU Session
+#      Establishment Request …))"
+#   i.e. the requested S-NSSAI travels in the 5GMM UL NAS TRANSPORT (TS 24.501
+#   §8.2.10), NOT inside the 5GSM request — which is exactly where this flow
+#   puts it, via the `sst` / `sd` send params.
+#
+# WHAT THIS ROW ASKS FOR THAT REG-300 DOES NOT. pdu_session_setup.yaml proves a
+# session comes up; it never looks at which slice the session belongs to, and
+# would pass unchanged if the core answered on a completely different S-NSSAI.
+# This row asserts slice IDENTITY end to end: SST **and** SD, on N2 and on N1.
+#
+# WHY SD 0x000001 AND NOT THE "no SD" SENTINEL. tinycore's provisioning gives
+# the subscriber sst=1, sd=000001 (matrix/cores/tinycore/provision.sh), and the
+# AMF resolves an absent SD from the Allowed NSSAI. Requesting the SD
+# EXPLICITLY is what makes the row a comparison rather than a tautology: the
+# value asserted below is the value the UE put on the wire, not one the network
+# was free to choose. (0xFFFFFF, the codec's "no SD" sentinel of TS 23.003
+# §28.4.2, remains the enricher default for every other flow.)
+#
+# MEASURED ON tinycore (2026-08-11): the N2 half holds — the setup request item
+# names snssai_SST 1 / snssai_SD 1. The N1 half does NOT: the PDU SESSION
+# ESTABLISHMENT ACCEPT carries NO S-NSSAI IE at all (projected as -1), so a UE
+# that asked for a slice is never told which slice it got. tinycore's accept
+# builder (buildPDUSessionEstablishmentAccept, tinycore/dmf/smf/bridge.go) sets
+# SelectedPduSessionType, SelectedSscMode, SessionAmbr, AuthorizedQosRules,
+# AllowedSscMode, PduAddress and Dnn — and no SNssai. This row FAILS on
+# tinycore against the "shall" above, and that failure is the result.
+#
+# HARNESS NOTE — the accept's IEs are read from ue.Params, not `nas.*`: the
+# accept rides on the per-item NAS-PDU IE that extractNasPdu() never sees (see
+# pdu_session_setup.yaml). exposePduSessionAcceptParams
+# (runner/runner/enrichers_pdu_session_accept.go) projects it, writing -1 when
+# an optional IE is ABSENT — which is why "no S-NSSAI IE" fails as -1 here
+# instead of silently resolving to nothing.
+
+kind: flow
+name: pdu_session_slice_snssai_echoed
+description: PDU session on an explicitly requested allowed S-NSSAI — Accept and NGAP setup request must both name that S-NSSAI (YAML)
+detail: |
+  Registration, then a UE-requested PDU session establishment whose 5GMM UL NAS
+  TRANSPORT carries an explicit S-NSSAI (SST 1, SD 0x000001 — the slice the
+  subscriber is provisioned for).
+
+  Per TS 23.502 §4.3.2.2.1 step 11 the answer names the slice twice: in the N2
+  SM information the AMF forwards to the gNB (the PDU Session Resource Setup
+  Request item's S-NSSAI) and in the N1 SM container (the PDU SESSION
+  ESTABLISHMENT ACCEPT's S-NSSAI IE, which TS 24.501 §6.4.1.3 obliges the SMF
+  to set for a non-emergency session). This flow asserts both against the
+  S-NSSAI the UE actually requested.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # The S-NSSAI the UE explicitly requests, carried in the 5GMM UL
+              # NAS TRANSPORT (TS 24.501 §8.2.10) — SST 1, SD 0x000001.
+              sst: 1
+              sd: 1
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+
+          # --- N2: the setup request names the requested slice ------------
+          # (TS 23.502 §4.3.2.2.1 step 11 — "S-NSSAI from the Allowed NSSAI"
+          #  in the N2 SM information the AMF forwards to the NG-RAN.)
+          - { type: check, field: pdu_session_resource_setup_request_items.0.snssai_SST, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.snssai_SD, op: equals, expected: 1 }
+
+          # --- N1: THE row — the Accept's S-NSSAI IE is the same slice -----
+          # (TS 24.501 §6.4.1.3: "the SMF shall set the S-NSSAI IE of the PDU
+          #  SESSION ESTABLISHMENT ACCEPT message to […] the S-NSSAI of the PDU
+          #  session".) -1 here means the IE was not carried at all.
+          - { type: check, field: ue.Params.pdu_accept_snssai_sst, op: equals, expected: 1 }
+          - { type: check, field: ue.Params.pdu_accept_snssai_sd, op: equals, expected: 1 }
+
+          # Context: a real session on that slice.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-305).
+#
+# REG-305 — PDUSessionEstablishmentAccept received with an S-NSSAI IE equal to the
+# S-NSSAI requested in the UL NAS TRANSPORT, and the NGAP setup request names the same
+# S-NSSAI
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `established`
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The ten `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all ten declared checks ran
+    metric: checks_total
+    op: equals
+    value: 10
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

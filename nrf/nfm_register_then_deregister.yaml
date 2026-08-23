@@ -1,0 +1,125 @@
+# Full NFM lifecycle: PUT (register) → GET (fetch) → PATCH (heartbeat) → DELETE.
+#
+# Mints a fresh UUID inline in the first PUT URL, extracts nfInstanceId
+# from the 201 response body, then reuses it for the GET / PATCH / DELETE
+# steps. Each transition asserts the HTTP status and then dispatches the
+# next request, so the FSM only ever waits on a response event.
+#
+# Producer profile is the "minimal SMF" fixture from
+# docs/nrf/sanity-tests.md §2.6.0 (d3x-core).
+
+kind: flow
+name: nrf_nfm_register_then_deregister
+description: Register → fetch → heartbeat → deregister an SMF profile.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-test.local",
+                  "ipv4Addresses": ["10.0.0.10"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: fetching
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: GetNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  fetching:
+    transitions:
+      - event: rest.GetNF_Answer
+        target: heartbeating
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfStatus
+            op: equals
+            expected: REGISTERED
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: SMF
+          - type: send
+            message: HeartbeatNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PATCH",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json-patch+json"},
+                "body": [
+                  {"op": "replace", "path": "/nfStatus", "value": "REGISTERED"}
+                ]
+              }
+
+  heartbeating:
+    transitions:
+      - event: rest.HeartbeatNF_Answer
+        target: deregistering
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  deregistering:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

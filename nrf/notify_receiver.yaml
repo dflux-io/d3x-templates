@@ -1,0 +1,50 @@
+# SUB-05 / NOTIFY-01 — subscription notification round-trip (receiver
+# half). See d3x-core docs/nrf/sanity-tests.md §2.13 / §4.2.5.
+#
+# A REST *server* flow: runner binds the `notify-listener` rest-listen
+# binding (:39999) and waits for the NRF to POST a status notification to
+# /notify. scripts/nrf-notify.sh drives the other half — it creates a
+# subscription with nfStatusNotificationUri = http://127.0.0.1:39999/notify
+# and then registers an NF, which makes the NRF fire an NF_REGISTERED
+# notification to this listener.
+#
+# Inbound requests raise the event `rest.<METHOD>.<URL>` (here
+# `rest.POST./notify`); the listener replies via a `*_Answer` send, which
+# the http adaptor writes back on the held ResponseWriter. The NRF
+# notification body is {event, nfInstanceUri, nfProfile?} (TS 29.510
+# §5.2.2.4 / nrf/notifier.go NotificationBody).
+#
+# Run via scripts/nrf-notify.sh (a server flow runs for -duration, so the
+# runner backgrounds it and triggers the notification within the window).
+
+kind: flow
+name: nrf_notify_receiver
+description: Receive + assert the NRF's NF_REGISTERED status notification (SUB-05 / NOTIFY-01).
+type: server
+protocol: rest
+nf: external
+initial_state: waiting
+final_states: [done, failed]
+
+states:
+  waiting:
+    transitions:
+      - event: rest.POST./notify
+        target: done
+        actions:
+          - type: check
+            field: rest.body.event
+            op: equals
+            expected: NF_REGISTERED
+          - type: check
+            field: rest.body.nfInstanceUri
+            op: not_empty
+          # Reply 204 on the held ResponseWriter (the *_Answer suffix marks
+          # this send as the response to the inbound request).
+          - type: send
+            message: Notify_Answer
+            message_body: |
+              {"status": 204}
+
+  done: {}
+  failed: {}

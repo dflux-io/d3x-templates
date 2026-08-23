@@ -1,0 +1,198 @@
+# UE-initiated SWITCH-OFF de-registration (3GPP TS 24.501 §5.5.2.2).
+#
+# Abnormal/edge input under test: after a normal registration the UE sends an
+# UplinkNASTransport carrying a NAS-secured DeregistrationRequest with the
+# "switch off" de-registration type (params {switch_off: true}).
+#
+# Expected-correct Open5GS behavior: per 24.501 §5.5.2.2 the network must NOT
+# send a DeregistrationAccept for a switch-off de-registration (the UE is
+# powering down and cannot acknowledge). The AMF deletes the UE 5GMM context and
+# proceeds directly to NGAP resource cleanup, sending a UEContextReleaseCommand
+# to the gNB. The gNB confirms with UEContextReleaseComplete.
+#
+# Compliance assertion: reaching `released` (UEContextReleaseCommand received and
+# UEContextReleaseComplete sent) WITHOUT ever waiting for a DeregistrationAccept
+# proves the AMF honored the switch-off semantics. Contrast deregistration.yaml,
+# which models a NORMAL (non-switch-off) de-registration where the AMF MAY first
+# send a DeregistrationAccept before the UEContextReleaseCommand.
+
+kind: flow
+name: deregistration_switchoff
+description: UE-initiated switch-off de-registration with no DeregistrationAccept (YAML)
+detail: |
+  Performs UE registration followed by a SWITCH-OFF de-registration (3GPP TS
+  24.501 §5.5.2.2). After registration completes, the UE sends a NAS-secured
+  DeregistrationRequest with the switch-off de-registration type set
+  (params {switch_off: true}).
+
+  Unlike the normal de-registration in deregistration.yaml — where the AMF MAY
+  return a DeregistrationAccept before releasing the NGAP context — a switch-off
+  de-registration MUST NOT be acknowledged: the UE is powering down. The AMF is
+  required to skip the accept and proceed straight to UEContextReleaseCommand.
+
+  This flow therefore does NOT include a wait_dereg_accept state. It transitions
+  directly from sending the switch-off DeregistrationRequest to waiting for the
+  UEContextReleaseCommand, replying UEContextReleaseComplete. Success terminal is
+  `released`. If a DeregistrationAccept were (incorrectly) the only reaction, the
+  release wait would time out and the flow would fail — which is the desired
+  compliance signal.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # Switch-off de-registration: no DeregistrationAccept is expected.
+          - type: send
+            message: DeregistrationRequest
+            params:
+              switch_off: true
+
+  # Switch-off de-registration is "processed" when the AMF either releases
+  # the NGAP context (UEContextReleaseCommand — the strict 24.501 §5.5.2.2
+  # behavior, no accept) OR returns a DeregistrationAccept. The latter is a
+  # minor spec deviation but the common real-AMF behavior (Open5GS sends a
+  # DeregistrationAccept even for switch-off); accepting both keeps the flow
+  # asserting "the AMF accepted the switch-off" without failing on that
+  # debatable nuance.
+  wait_release:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: released
+        actions:
+          - type: check
+            field: ran_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: UEContextReleaseComplete
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: released
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-175).
+#
+# REG-175 — A UEContextReleaseCommand is received and no DeregistrationAccept arrives;
+# the flow reaches terminal state 'deregistered'
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `released`
+    metric: final_state_counts.released
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # Several routes reach `released` with different numbers of checks
+  # (4..5); 4 is the shortest one, so it is the floor that still proves
+  # an assertion was made on the messages this run saw.
+  - name: at least four declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

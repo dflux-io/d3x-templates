@@ -1,0 +1,229 @@
+# REG-480 — INITIAL CONTEXT SETUP REQUEST carries a 256-bit Security Key and the
+# UE Security Capabilities.
+#
+# TS 38.413 §8.3.1.1 (retrieved, operative sentence verbatim):
+#
+#   "The purpose of the Initial Context Setup procedure is to establish the
+#    necessary overall initial UE context at the NG-RAN node, when required,
+#    including PDU session context, the Security Key, Mobility Restriction List,
+#    UE Radio Capability and UE Security Capabilities, etc."
+#
+# TS 38.413 §9.3.1.87 Security Key: "Security Key  M  BIT STRING (SIZE(256))
+# — Key material for NG-RAN node or Next Hop Key as defined in TS 33.501."
+#
+# TS 38.413 §9.3.1.86 UE Security Capabilities (operative sentence verbatim):
+#
+#   "The Security Capabilities received from NAS signaling shall not be modified
+#    or truncated when forwarded to NG-RAN nodes and the NG-RAN nodes store and
+#    send the complete bitmaps without modification or truncation as specified in
+#    TS 38.300."
+#
+#   NR Encryption Algorithms, BIT STRING(SIZE(16,…)): "all bits equal to 0" – UE
+#   supports no other algorithm than NEA0; "first bit" – 128-NEA1; "second bit" –
+#   128-NEA2; "third bit" – 128-NEA3; "fourth to seventh bit" are mapped from
+#   bit 4 to bit 1 of octet 3 in the UE Security Capability IE.
+#
+# TS 33.501 §6.7.3.0: "When AS security context is to be established in the
+# gNB/ng-eNB, the AMF shall send the UE 5G security capabilities to the
+# gNB/ng-eNB. The gNB/ng-eNB shall choose the ciphering algorithm which has the
+# highest priority from its configured list and is also present in the UE 5G
+# security capabilities."
+#
+# HOW "EXACTLY 256 BITS" IS ASSERTED
+# ----------------------------------
+# ngap5g decodes the IE with ReadBitStringFixed(256) into NGAPSecurityKey.Key
+# ([]byte), which the field resolver marshals to JSON — so `security_key.key`
+# resolves to the STANDARD BASE64 of the key octets, measured e.g.
+#   "1d7ef706555a621e995b92ec9f...".b64 = 44 chars ending in a single '='.
+# Base64 maps 32 octets, and only 32 octets, to 43 payload characters plus
+# exactly one '=' pad. The regex below therefore asserts len(key) == 32 octets
+# == 256 bits exactly; a 31- or 33-octet key produces a different pad pattern
+# and fails. `not_empty` would have accepted any length and is deliberately not
+# used. (A key SHORTER than the ASN.1 fixed 256 bits cannot even reach this
+# check: the APER decode of the message fails, no RegistrationAccept event is
+# resolved, and wait_context_setup times out into `failed` — which is still the
+# right terminal.)
+#
+# HOW "THE NR BITMAPS ARE PRESENT" IS ASSERTED
+# --------------------------------------------
+# `exists` on the two bitmap fields would be satisfied by an all-zero bitmap,
+# and per §9.3.1.86 an all-zero NR Encryption Algorithms bitmap does not mean
+# "the IE is present", it means "this UE supports no algorithm but NEA0" — a
+# statement about the UE that would be FALSE for the UE we just registered, and
+# one the AMF is expressly forbidden from making by "shall not be modified or
+# truncated". So the assertion is on the value the clause requires:
+#   the UE sent UE security capability octets FF FF FF FF (measured TX:
+#   `… 2e 04 ff ff ff ff`), i.e. 5G-EA0..EA7 and 5G-IA0..IA7 all supported;
+#   NEA0/NIA0 are not signalled in the NGAP bitmap, so the forwarded bitmap is
+#   128-NEA1, 128-NEA2, 128-NEA3 and 5G-EA4..EA7 = the top seven bits of a
+#   16-bit string = 0xFE00 = 65024. Same derivation for integrity.
+#
+# MEASURED (2026-08-10, this lab):
+#   open5gs  — security_key 32 octets; nr_encryption=65024, nr_integrity=65024
+#              (eutra_* also 65024)                                     → PASS
+#   tinycore — security_key 32 octets (K_gNB, TS 33.501 Annex A.9) — OK;
+#              UE Security Capabilities IE present but ALL FOUR BITMAPS ZERO
+#              (raw N2 hex: IE id 0x0077, len 9, value 00×9)            → FAIL
+#              Root cause is on the tinycore side, not ours: dmf/amf/amf.go
+#              builds `NrEncryptionAlgorithms: uint32(NEA) << 24` while the
+#              shared encoder writeExtBitString16 emits `byte(val>>8),byte(val)`
+#              — the LOW 16 bits. The value is shifted 16 bits past the window
+#              that gets serialised, so every bitmap serialises as zero. Nothing
+#              in OUR InitialUEMessage licenses this: the UE advertised the full
+#              bitmap and Open5GS forwarded it correctly from the same input.
+
+kind: flow
+name: initial_context_setup_security_key_and_capabilities
+description: Initial registration; assert the INITIAL CONTEXT SETUP REQUEST carries a 256-bit Security Key and the UE's NR encryption/integrity capability bitmaps unmodified
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # ue_context_request = 1: §8.3.1.1 lets the AMF defer the Initial
+          # Context Setup procedure when the UE Context Request IE is absent,
+          # so the row would measure nothing without it.
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          # --- TS 38.413 §9.3.1.87: Security Key, mandatory, BIT STRING(256).
+          - type: check
+            field: security_key
+            op: ie_present
+          - type: check
+            field: security_key.key
+            op: regex
+            expected: "^[A-Za-z0-9+/]{43}=$"
+          # --- TS 38.413 §9.3.1.86 / TS 33.501 §6.7.3.0: the UE Security
+          # --- Capabilities, forwarded without modification or truncation.
+          - type: check
+            field: ue_security_capabilities
+            op: ie_present
+          - type: check
+            field: ue_security_capabilities.nr_encryption_algorithms
+            op: equals
+            expected: 65024
+          - type: check
+            field: ue_security_capabilities.nr_integrity_protection_algorithms
+            op: equals
+            expected: 65024
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-480).
+#
+# REG-480 — The INITIAL CONTEXT SETUP REQUEST received on N2 contains a Security Key IE
+# of exactly 256 bits and a UE Security Capabilities IE with the NR encryption and NR
+# integrity bitmaps present.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The seven `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all seven declared checks ran
+    metric: checks_total
+    op: equals
+    value: 7
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,50 @@
+# Signature demo Act 2 — SBI abuse with edge default_action allow (no rules).
+#
+# Prerequisites:
+#   - EdgeGuard in front of TinyCore, admin.default_action: allow
+#   - No block-forged / flood-limit rules installed
+#   - runner -c deploy/signature-demo/configs/runner-sbi-via-edge.yaml
+#
+# Abuse reaches the core (or edge body gate if max_request_body_size is
+# low). Assertions stay loose (any clean 4xx / response) — Act 4 pins
+# edge-specific status codes after the policy flip.
+#
+# Run:
+#   d3x-run run-suite -suite signature-attack \
+#     -templates . \
+#     -c deploy/signature-demo/configs/runner-sbi-via-edge.yaml \
+#     -output junit -output-file act2-attack.xml
+
+kind: suite
+name: signature-attack
+description: Act 2 — forged token, oversized body, and SBI flood with edge open (abuse reaches core).
+steps:
+  - name: unauthorized_token
+    flow: smf_nsmf_create_smcontext_unauthorized_token
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: oversized_payload
+    # Loose 4xx assert (greater_than 399). With demo body limit 4096 the
+    # edge may 413; with a large default the core still answers 4xx.
+    # Act 4 uses the edge413-pinned flow after max_request_body_size is set.
+    flow: smf_nsmf_smcontext_oversized_payload
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: flood
+    # Same CreateSMContext abuse, high rate. Without flood-limit, requests
+    # are not rate-limited at edge; core/edge still answers 4xx.
+    flow: smf_nsmf_create_smcontext_unauthorized_token
+    repetitions: 20
+    rate: 50
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected

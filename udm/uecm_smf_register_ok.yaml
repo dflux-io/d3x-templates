@@ -1,0 +1,52 @@
+# Nudm_UECM SMF Registration — compliance.
+# 3GPP TS 29.503 §6.2.3.7
+#   (PUT /nudm-uecm/v1/{ueId}/registrations/smf-registrations/{pduSessionId}, SmfRegistration).
+# Uses SBI_Request PUT — unlocked by the new generic SBI message.
+
+kind: flow
+name: udm_uecm_smf_register_ok
+description: PUT smf-registrations/{pduSessionId} returns 201/200/204
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudm-uecm/v1/imsi-001010000000001/registrations/smf-registrations/1",
+                "body": {
+                  "smfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "pduSessionId": 1,
+                  "singleNssai": {"sst": 1, "sd": "010203"},
+                  "dnn": "internet",
+                  "plmnId": {"mcc": "001", "mnc": "01"}
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: registered
+        actions:
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300

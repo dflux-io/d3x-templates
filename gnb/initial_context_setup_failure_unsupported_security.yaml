@@ -1,0 +1,241 @@
+# REG-252 — an INITIAL CONTEXT SETUP FAILURE is handled as an unsuccessful outcome: the AMF
+# REACTS, and the NG association stays up (3GPP TS 38.413 §8.3.1.3 / §8.3.1.4).
+#
+# Under test: after authentication + security mode, the AMF sends an InitialContextSetupRequest
+# (carrying RegistrationAccept). Instead of accepting it, the gNB replies
+# InitialContextSetupFailure with a radio-network Cause, modelling a RAN that cannot honour the
+# requested security configuration. §8.3.1.4 names encryption/integrity algorithm mismatch
+# against the NG-RAN node's allowed list as exactly this trigger.
+#
+# ============================================================================================
+# THE PASS WAS A TIMER, AND ONE CORE HAD ANSWERED ALL ALONG.
+# ============================================================================================
+#
+# The register's criterion is POSITIVE: "After InitialContextSetupFailure is sent, the AMF sends
+# either a UEContextReleaseCommand or a further NGAP message for that UE within the budget, and
+# the NG association stays up." This flow used to score `rejected` on a "lenient timeout success"
+# — i.e. on the AMF sending NOTHING, which is the one thing the criterion excludes.
+#
+# Measured on the 50effc0 baseline, and the two cells that timed out did so for opposite reasons:
+#
+#   open5gs   sent NGAP_UE_CONTEXT_RELEASE_COMMAND. Terminal reached on a message. `pass`.
+#   tinycore  sent nothing at all — "timed out in state=wait_reject_reaction after 10.0s —
+#             terminal target=rejected". lib/outcome.py DEFENCE 11 voided the verdict, correctly:
+#             a silent AMF, a crashed one, a dead association and a lost message are the same
+#             observation. `inconclusive`.
+#   free5gc   RETRANSMITTED THE INITIAL CONTEXT SETUP REQUEST. Its rx count for
+#             NGAP_INITIAL_CONTEXT_SETUP_REQUEST is 2, and bus_audit.refused names the second
+#             one: {state: wait_reject_reaction, event:
+#             InitialContextSetupRequest.RegistrationAccept, arrival_seq: 4}. That retry IS "a
+#             further NGAP message for that UE" — the criterion's own words, and the most
+#             informative answer available, because re-sending the setup is exactly what
+#             §8.3.1.3's "may consider that the NAS PDU ... was not delivered" contemplates. This
+#             flow named no transition for it, so the bus dropped the message and the state timed
+#             out. DEFENCE 11 voided that too. `inconclusive`.
+#
+# So one core's real, conformant, on-the-wire reaction was discarded by our own state machine and
+# then replaced with our own silence. That is the failure mode DEFENCE 11 exists to catch, and
+# inverting the timer or exempting the row would only hide it again.
+#
+# ============================================================================================
+# WHAT REPLACES THE TIMER
+# ============================================================================================
+#
+#   `rejected`   the criterion satisfied ON A MESSAGE: a UEContextReleaseCommand, a retried
+#                INITIAL CONTEXT SETUP REQUEST, a 5GMM refusal, or an NGAP ERROR INDICATION. The
+#                AMF reacted, which is the whole claim.
+#   `unproven`   nothing at all for that UE inside the window. The criterion's first half is not
+#                satisfied and no other reading of the silence is excluded either. Reached by the
+#                timer it is a semantic terminal, so DEFENCE 11 turns it into `inconclusive`
+#                through its existing rule — no change to outcome.py, and no unearned pass.
+#   `failed`     a transport-level Error — the association itself went down, which is the
+#                "wedging the core" outcome the row's why_it_matters names.
+#
+# WHY THERE IS DELIBERATELY NO LIVENESS PROBE ON THE SILENT PATH, WITH EVIDENCE.
+# The obvious next step would be an NG SETUP REQUEST after the window, proving the criterion's
+# second half ("the NG association stays up") and turning the silence into a reportable finding
+# instead of an `inconclusive`. It is NOT done here, and the reason is a defect in a shared fact
+# rather than a judgement about this row.
+#
+# `run` derives the `rejected` fact by grepping runner.log for a set of refusal strings, and
+# `InitialContextSetupFailure` is one of them — but runner.log records what WE SEND as well as
+# what arrives. tinycore's REG-252 log, line 5:47PM DBG, reads
+# `... event=InitialContextSetupRequest.RegistrationAccept ... send=InitialContextSetupFailure`,
+# and facts.json for that run duly reports `"rejected": true`. It is true on all three cores, and
+# it is OUR OWN TRANSMISSION that sets it.
+#
+# lib/outcome.py step 9 then reads "`rejected` and kind in (negative, abnormal)" as
+# `rejected-correctly`, which counts as a PASS. So for this row EVERY terminal reachable on a
+# message is green, whatever it is called: the ladder cannot express a finding here at all. Adding
+# a probe would therefore convert tinycore's honest `inconclusive` into an unearned GREEN for a
+# core that left a half-built context with no signal — which is the exact defect this whole pass
+# exists to remove, arrived at from the other side. Until the `rejected` fact distinguishes what
+# the core sent from what we sent, `unproven`-by-timer is the most honest verdict this row can
+# reach, and it is the one it reaches. Recorded here so the next author does not "improve" it.
+
+kind: flow
+name: initial_context_setup_failure_unsupported_security
+description: Reply InitialContextSetupFailure to the AMF's context setup; assert the AMF reacts with a message (YAML)
+detail: |
+  Registers through authentication and security mode, then on the AMF's
+  InitialContextSetupRequest replies with InitialContextSetupFailure (Cause
+  radioNetwork) rather than InitialContextSetupResponse (3GPP TS 38.413
+  §8.3.1.4). The register's criterion is positive — the AMF must send a
+  UEContextReleaseCommand or a further NGAP message for that UE — so `rejected`
+  is now reached only on such a message, including the retried INITIAL CONTEXT
+  SETUP REQUEST that free5gc measurably sends and that this flow used to drop.
+
+  Silence is `unproven`, never a pass: it cannot be told apart from a crashed
+  AMF, a dead association or a lost message. A transport-level error is `failed`.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - unproven
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reject_reaction
+        actions:
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          # Reject the context setup instead of accepting it.
+          - type: send
+            message: InitialContextSetupFailure
+
+  wait_reject_reaction:
+    # THE WINDOW, AND FALLING OUT OF IT IS NOT A PASS. open5gs answers inside a second and
+    # free5gc's retry arrives in the same period, so 10 s is generous for both reactions the
+    # criterion names. An AMF that has said nothing by then has not satisfied the criterion, and
+    # `unproven` says so without pretending to know why.
+    on_timeout:
+      duration: 10s
+      target: unproven
+    transitions:
+      - event: UEContextReleaseCommand
+        target: rejected
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+      # THE RETRY IS "A FURTHER NGAP MESSAGE FOR THAT UE", and naming it is what turns free5gc's
+      # measured answer from a refused arrival into the observation the criterion asks for.
+      #
+      # Both event spellings are needed. ResolveEventString emits the dotted form when the retry
+      # carries a decodable NAS PDU and the bare form when it does not, and EventDef.Matches
+      # compares the WHOLE string after stripping a protocol prefix — so a bare
+      # `InitialContextSetupRequest` would not match the dotted event, nor the other way round.
+      #
+      # The check is on the UE this row is about, so the branch asserts on something rather than
+      # merely noting that a message arrived.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - InitialContextSetupRequest
+        target: rejected
+        actions:
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+      # The AMF refusing in words. Both carry the 5GMM cause as a mandatory IE (TS 24.501 §8.2.9,
+      # §8.2.29), so the branch asserts on the message that fired it.
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions:
+          - type: check
+            field: nas.gmm_cause
+            op: ie_present
+      # An ERROR INDICATION is a reaction too, and for THIS row that is all the criterion asks
+      # for: "a further NGAP message for that UE". (On rows whose claim is that a specific message
+      # was PROCESSED it means the opposite — "not processed as sent" — and is scored `unproven`
+      # there. This row's claim is only that the AMF reacted rather than wedging.)
+      - event: ErrorIndication
+        target: rejected
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-252 (negative, expected_terminal: rejected) —
+# After InitialContextSetupFailure is sent, the AMF sends either a
+# UEContextReleaseCommand or a further NGAP message for that UE within the budget — a
+# RETRIED INITIAL CONTEXT SETUP REQUEST is one, and is what §8.3.1.3's 'may consider
+# that the NAS PDU ... was not delivered' looks like on the wire — and the NG
+# association stays up. The reaction must be a MESSAGE: an AMF that emits nothing has
+# not satisfied this criterion, and silence cannot be told apart from a crashed core, a
+# dead association or a message that never arrived, so it is reported as inconclusive
+# rather than as either answer.
+#
+# REG-252: "The reaction must be a MESSAGE: an AMF that emits nothing has not satisfied
+# this criterion." `rejected` is exactly the message branch; `unproven` is the 10 s
+# timer, which the criterion itself says is reported as inconclusive rather than as
+# either answer.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

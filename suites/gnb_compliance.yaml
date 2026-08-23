@@ -1,0 +1,247 @@
+# gNB ↔ AMF 5G compliance suite — one UE, one execution per flow.
+#
+# Drives the standard NGAP/NAS procedures (and the cause-fidelity negatives
+# that must be correctly REJECTED) gNB-side against a real 5G core
+# (Open5GS). Every step runs exactly ONE UE for ONE execution
+# (repetitions: 1, no rate) so each procedure is exercised deterministically
+# and scored on its own — this is a conformance pass, not a load test.
+#
+# Each step asserts, via success_when.at_least_one_final_state, that the flow
+# reached its SPEC-CORRECT terminal (e.g. a negative flow must reach its
+# reject/release terminal, not merely "not failed"). Steps where more than
+# one terminal is spec-valid (configuration_update, handover_source) omit
+# success_when and fall back to the engine default (any non-"failed"
+# terminal passes).
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite gnb-compliance \
+#       -templates <templates-dir> -c config/open5gs-gnb.yaml \
+#       -s config/subscribers.yaml -trace
+#
+# stop_on_failure defaults to TRUE when unset, so every step that should
+# NOT abort the run sets it explicitly to false. ng_setup + registration are
+# the only hard gates: if the association or a basic registration can't be
+# established there's no point continuing. Everything after runs to
+# completion so the suite collects a full per-procedure pass/fail report, and
+# deregistration_after_release runs always (cleanup) so the core is left clean.
+#
+# uplane_traffic is intentionally NOT here: it drives GTP-U on N3, which
+# needs a real user-plane path (UPF TUN + routing) this control-plane
+# conformance lab doesn't provide. pdu_session_setup already validates the
+# control-plane session establishment, which is the compliance-relevant part.
+#
+# Known EXPECTED failures against Open5GS (genuine core gaps, not our bugs —
+# these are the legitimate compliance findings this suite exists to surface):
+#   - ue_context_suspend / ue_context_resume: Open5GS does not implement the
+#     NGAP UE Context Suspend/Resume procedure (AMF logs "Not implemented
+#     proc:57"). Kept in the suite on purpose — the FAIL IS the finding.
+# Every other step is expected to pass against a healthy, matched Open5GS;
+# any failure there points at the core, not at our flows.
+#
+# NOT included here (situational — they can't deterministically pass against
+# a healthy, matched core in a 1-UE run, so they live elsewhere):
+#   - paging_response   : needs a network-side MT trigger (downlink data)
+#   - identity_request  : AMF only sends IDENTITY REQUEST when it can't
+#                         resolve the SUCI; a provisioned subscriber won't
+#                         trigger it
+#   - ng_setup_failure  : requires a deliberately PLMN/slice-mismatched
+#                         config (run it standalone with such a config)
+#   - the fuzz/abnormal flows: see gnb_security.yaml
+
+kind: suite
+name: gnb-compliance
+description: One-UE-per-flow 5G NGAP/NAS conformance pass for a gNB against a 5G core.
+steps:
+  # --- gates -------------------------------------------------------------
+  - name: ng_setup
+    flow: ng_setup
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: registration
+    flow: registration
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: registered
+
+  # --- session management ------------------------------------------------
+  - name: pdu_session_setup
+    flow: pdu_session_setup
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
+
+  - name: pdu_session_release
+    flow: pdu_session_release
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: released
+
+  # --- connection management ---------------------------------------------
+  - name: service_request
+    flow: service_request
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: connected
+
+  # gNB-initiated UE Context Release (TS 38.413 §8.3.2): register, request
+  # release with cause user-inactivity, complete on the AMF's ReleaseCommand.
+  - name: ue_context_release_request
+    flow: ue_context_release_request_gnb_initiated
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: released
+
+  - name: ue_context_suspend
+    flow: ue_context_suspend
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: suspended
+
+  - name: ue_context_resume
+    flow: ue_context_resume
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: context_resumed
+
+  # configuration_update: complete OR no_update are both spec-valid
+  # (Open5GS may or may not send a Configuration Update Command), so no
+  # success_when — any non-"failed" terminal passes.
+  - name: configuration_update
+    flow: configuration_update
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+
+  # --- cause-fidelity negatives (must be correctly rejected) -------------
+  - name: duplicate_registration
+    flow: duplicate_registration
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: re_registered
+
+  - name: pdu_session_reject_bad_dnn
+    flow: pdu_session_reject
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pdu_session_reject_bad_slice
+    flow: pdu_session_reject_slice
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # Duplicate PDU Session ID collision (TS 24.501 §6.4.1 / §6.1.4): the AMF/SMF
+  # must reject (5GSM #43), report 5GMMStatus, or deterministically re-setup —
+  # never silently double-allocate. Against Open5GS this re-issues the setup.
+  - name: pdu_session_duplicate_id
+    flow: pdu_session_duplicate_id_establishment
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: handled
+
+  - name: deregistration_switchoff
+    flow: deregistration_switchoff
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: released
+
+  # --- mobility / reset --------------------------------------------------
+  # handover_source: in a single-gNB lab there's no target to hand over to,
+  # so the AMF decodes the HandoverRequired and gracefully reports it can't
+  # route it (Open5GS: ErrorIndication "cannot find target gNB-id"). The
+  # flow treats Command / PreparationFailure / ErrorIndication all as valid
+  # reactions, so no success_when. A full handover needs a second gNB.
+  - name: handover_source
+    flow: handover_source
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+
+  - name: ng_reset_partial
+    flow: ng_reset_partial
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: partial_reset_complete
+
+  - name: ng_reset_global
+    flow: ng_reset
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: reset_complete
+
+  # Reset-and-recover (TS 38.413 §8.7.4 + §8.7.1): after a global NG Reset the
+  # AMF must accept a fresh UE registration on the same association.
+  - name: ng_reset_then_recover
+    flow: ng_reset_then_recover
+    repetitions: 1
+    timeout: 40s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: recovered
+
+  # Non-UE-associated ErrorIndication (TS 38.413 §8.7.5): association-scoped
+  # error with no UE context; a compliant AMF tolerates it and stays up.
+  - name: error_indication_non_ue_associated
+    flow: error_indication_non_ue_associated_after_setup
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  - name: deregistration
+    flow: deregistration
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: deregistered
+
+  # NOTE: the scenario-plan "small_addition" functional flows live in the
+  # companion suite gnb_compliance_ext.yaml (single-registration probes only).
+  # The CM-IDLE-reconnect flows (service_request variants, periodic/mobility
+  # registration updating) are validated standalone but kept out of suites:
+  # repeated register→release→reconnect cycles on one shared SCTP association
+  # accumulate NAS-COUNT / security-context state and make a long suite flaky.
+
+  # --- cleanup (always runs, even if earlier steps failed) ---------------
+  - name: cleanup
+    flow: deregistration_after_release
+    repetitions: 1
+    timeout: 30s
+    always_run: true
+    success_when:
+      at_least_one_final_state: clean

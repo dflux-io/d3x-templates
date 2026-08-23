@@ -1,0 +1,148 @@
+# mobility registration updating (3GPP TS 24.501 §5.5.1.3).
+#
+# Completes an initial registration (establishing a NAS security context and a
+# 5G-GUTI), goes CM-IDLE via gNB-initiated release, then drives a second
+# RegistrationRequest with 5GS registration type = mobility updating,
+# identified by the stored 5G-GUTI and integrity-protected over the NAS context
+# (RegistrationUpdate enricher, registration_type=2).
+#
+# THE UPDATE MUST BE ACCEPTED, NOT MERELY ANSWERED.
+#
+# TS 24.501 §5.5.1.3.4 lets the AMF re-verify the UE before it accepts — primary
+# authentication, a security mode procedure, an identification procedure are all
+# permitted first. What it does NOT do is make the re-verification the outcome.
+# This flow used to stop at the first AuthenticationRequest / SecurityModeCommand
+# / IdentityRequest and call the row done on a `reaction` terminal, which asserted
+# only that the AMF said something. tinycore re-authenticates every update
+# ("Registration Request claims a SUPI held by an authenticated context —
+# authenticating before any handover of the identity"), so the row could never
+# reach `updated`, and the terminal it did reach proved nothing about whether the
+# core accepts a mobility update at all. The flow now ANSWERS each re-verification
+# and waits for the REGISTRATION ACCEPT that ends the procedure.
+#
+# Terminals: `updated` (RegistrationAccept — the procedure completed), `reaction`
+# (the AMF engaged and then REFUSED: RegistrationReject), `failed` on silence.
+kind: flow
+name: mobility_registration_updating
+description: mobility registration updating with the stored 5G-GUTI; assert AMF engages (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - updated
+  - reaction
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - type: send
+            message: RegistrationUpdate
+            params:
+              registration_type: 2
+  # Self-transitions, not terminals: each re-verification the AMF may insert
+  # before it accepts (TS 24.501 §5.5.1.3.4) is answered and the flow keeps
+  # waiting for the REGISTRATION ACCEPT. Only an accept or a reject ends it.
+  wait_update_reaction:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: updated
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: updated
+        actions:
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_update_reaction
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: IdentityResponse }
+      # The AMF answered and REFUSED. Not silence, and not an acceptance — the
+      # register's expected terminal for this row is `updated`, so this lands red
+      # while still telling the trace reader which of the two happened.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: reaction
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-155 (positive, expected_terminal: updated) — A
+# RegistrationAccept is received in response to the update, or the AMF re-verifies the
+# identity first (AuthenticationRequest / SecurityModeCommand / IdentityRequest) and
+# then accepts
+#
+# REG-155: "A RegistrationAccept is received in response to the update, or the AMF re-
+# verifies the identity first ... and then accepts" — either way the accept is the
+# observation, and the accept is the only route into `updated`. `reaction` is reached by
+# a REGISTRATION REJECT alone, which the criterion does not permit.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `updated` — the terminal this row claims
+    metric: final_state_counts.updated
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

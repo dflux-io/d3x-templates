@@ -1,0 +1,142 @@
+# AMF-initiated Identity Request during registration (3GPP TS 24.501 §5.4.3).
+#
+# When the AMF cannot resolve the UE's identity it sends a NAS IdentityRequest
+# (carried in an NGAP NASDownlinkTransport) asking the UE for a specific identity
+# type. The UE responds with an IdentityResponse carrying the requested identity
+# (here the SUCI), and the registration then proceeds.
+#
+# THE TRIGGER IS THE TEST.
+#
+# This flow used to open with a plain InitialUEMessage — a RegistrationRequest
+# identified by the UE's SUCI. There is nothing for an AMF to resolve there: the
+# identity is right in front of it, so a correct AMF goes straight to
+# authentication and never sends an IDENTITY REQUEST. Measured against all three
+# cores the row was red for that reason, and the trace says so in one line:
+#
+#   RX event DISPATCHED AND REFUSED ... event=NASDownlinkTransport.AuthenticationRequest
+#   state=wait_identity_request — no transition names it
+#
+# The AMF was behaving correctly and the flow was asking the wrong question. The
+# identification procedure is invoked when the AMF has NO stored context for the
+# identity presented (§5.4.3.2), so the opening message must present one it
+# cannot resolve: InitialUEMessageGuti, a RegistrationRequest identified by a
+# 5G-GUTI whose GUAMI belongs to no AMF the core knows. That is also the sendable
+# the register names for this row.
+
+kind: flow
+name: identity_request
+description: Registration whose 5G-GUTI the AMF cannot resolve — expect Identity Request, answer with the SUCI (YAML)
+detail: |
+  Starts a UE registration that the AMF cannot resolve and handles the
+  AMF-initiated identification procedure (3GPP TS 24.501 §5.4.3). The gNB sends
+  an InitialUEMessage whose RegistrationRequest is identified by an unresolvable
+  5G-GUTI; the AMF, holding no context for it, sends a NAS IdentityRequest inside
+  an NGAP NASDownlinkTransport. The UE replies with an IdentityResponse carrying
+  its SUCI.
+
+  Success terminal is `identity_provided`, and it is NOT reached on the
+  IdentityRequest alone: the register's criterion is that the procedure
+  *advances* after the identity is supplied, so the flow answers the request and
+  then requires the AMF to move on to AuthenticationRequest or RegistrationAccept.
+  Terminating on the IdentityRequest would have asserted that the AMF asked a
+  question, not that our answer was usable.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - identity_provided
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_identity_request
+        actions:
+          # RegistrationRequest identified by a 5G-GUTI with no stored context —
+          # the condition §5.4.3.2 names for invoking the identification procedure.
+          - type: send
+            message: InitialUEMessageGuti
+
+  wait_identity_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_identity_accepted
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: IdentityResponse
+
+  # The identity was supplied; the assertion is that the AMF could USE it. A core
+  # that asks for an identity and then stalls, or rejects the registration it just
+  # recovered the identity for, leaves the UE exactly as stranded as one that
+  # never asked — so neither reaches the success terminal.
+  wait_identity_accepted:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: identity_provided
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: identity_provided
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: identity_provided
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-115).
+#
+# REG-115 — An IdentityRequest is received on N1 and, after the IdentityResponse, the
+# procedure advances to AuthenticationRequest or RegistrationAccept
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `identity_provided`
+    metric: final_state_counts.identity_provided
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent (InitialUEMessageGuti)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NAS UPLINK TRANSPORT was sent (IdentityResponse)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an IDENTITY REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.IdentityRequest
+    op: greater_or_equal
+    value: 1
+  # The one `check` action on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

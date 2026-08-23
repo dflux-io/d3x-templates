@@ -1,0 +1,43 @@
+# MTLS-05 — mutual TLS: server requires + accepts a trusted client cert.
+# See d3x-core docs/nrf/sanity-tests.md §4.7.7 (MTLS-05).
+#
+# NRF launched `-tls-client-auth require -tls-client-ca ca.crt`. The
+# client (peer nrf-mtls) presents a client cert signed by that CA, so the
+# mutual handshake completes and the bootstrapping GET returns 200.
+
+kind: flow
+name: nrf_mtls_handshake_ok
+description: Valid client cert + ClientAuth=require → 200 (MTLS-05).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: getting
+        actions:
+          - type: send
+            message: GetBstr
+            peer: nrf-mtls
+            message_body: |
+              {"method": "GET", "url": "/nnrf-bstr/v1/bootstrapping"}
+
+  getting:
+    transitions:
+      - event: rest.GetBstr_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nrfInstanceId
+            op: not_empty
+
+  done: {}
+  failed: {}

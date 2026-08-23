@@ -1,0 +1,197 @@
+# REG-118 — a subscriber the network has never been provisioned with must not
+# be registered.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 24.501 §5.5.1.2.5 (Initial registration not accepted by the network) —
+#   the whole of the network's duty: "If the initial registration request cannot
+#   be accepted by the network, the AMF shall send a REGISTRATION REJECT message
+#   to the UE including an appropriate 5GMM cause value."
+#
+#   TS 24.501 §A.1 — what the expected causes mean: "#3 Illegal UE — This 5GMM
+#   cause is sent to the UE when the network refuses service to the UE either
+#   because an identity of the UE is not acceptable to the network or because
+#   the UE does not pass the authentication check"; "#6 Illegal ME — ... if the
+#   ME used is not acceptable to the network".
+#
+# THE CAUSE VALUE IS NOT PINNED, AND THE REGISTER ALREADY SAYS SO. Nothing in
+# §5.5.1.2.5 obliges #3, #6 or #7 for an unknown subscriber — everything that
+# clause says about those causes is UE-side behaviour on receipt. The register's
+# own pass_criterion is already relaxed to match ("nas.gmm_cause is expected to
+# be 3, 6 or 7 but any cause satisfies the security property"), so this flow
+# asserts what the clause asserts: a REGISTRATION REJECT arrives, carrying a
+# cause. The value is extracted into the trace so a reader can see which one.
+#
+# THE SECURITY PROPERTY IS THE POINT: no REGISTRATION ACCEPT, ever. A core that
+# admits an identity it has never been provisioned with has no subscriber
+# boundary at all, and that outcome has its own named failure terminal —
+# `registered_unknown_subscriber` — so the trace records WHICH failure it was
+# rather than leaving a reader to infer it from a missing state.
+#
+# THE PROBE IS IN THE MESSAGE, NOT IN THE HARNESS CONFIGURATION, and it has to
+# be. Every register row owns a provisioned subscriber (matrix/scripts/lib/
+# subscriber.py refuses to run a row whose derived IMSI is not in the pool), so
+# there is no "unprovisioned subscriber" file to hand the runner — the row's own
+# subscriber IS provisioned. `InitialUEMessageUnknownSupi`
+# (runner/runner/enrichers_registration_identity.go) therefore substitutes the
+# subscriber's MSIN for 0999999999 for exactly one message, which is outside
+# both the register-derived range (0000000nnn) and the multi-UE headroom block
+# (9000000001..) that the pool allocates from — so it can neither name a real
+# subscriber nor collide with a concurrent row. The substitution covers the wire
+# SUCI and the §4.4.6 replay copy together, pinned by
+# TestInitialUEMessageUnknownSupi_SuciNamesTheGhostAndRestores; a half-deviated
+# probe would let the AMF resolve the real subscriber from whichever copy was
+# left correct, and the row would look like coverage while asserting nothing.
+#
+# THE PLMN IS NOT MOVED. 001/01 stays, because "an operator we do not serve" is
+# a different row (REG-804, ng_setup_failure). The only variable here is whether
+# the subscriber exists.
+#
+# WHY AN IDENTITY REQUEST IS ANSWERED RATHER THAN TREATED AS A VERDICT. §5.4.3
+# lets the AMF ask for the identity again when it cannot resolve one; answering
+# it with the same ghost SUCI keeps the probe honest and lets the procedure
+# reach its real conclusion instead of ending on a state the row did not intend.
+#
+# NOT A BARE TIMER: `rejected` is reached by a message arriving. Silence is
+# `failed`, because §5.5.1.2.5 is a "shall send" — a device told nothing retries
+# forever, and an AMF that drops unknown identities silently is also an AMF a
+# scanner can probe without leaving a trace.
+#
+# MANDATORY CONTROL (the row must be able to report the other terminal): run the
+# identical flow with the ordinary `InitialUEMessage` sender — the row's real,
+# provisioned subscriber, everything else unchanged. See the MEASURED note.
+#
+# MEASURED AGAINST tinycore 2026-08-11 (git-8523d93): PASS, terminal `rejected`,
+# 2/2 checks. The AMF answered the ghost SUCI with a REGISTRATION REJECT
+# immediately — no authentication was attempted — carrying 5GMM cause #11.
+#
+# ONE OBSERVATION FOR THE REGISTER OWNER, NOT ASSERTED HERE. #11 is "PLMN not
+# allowed" (§A.2), and the PLMN was this core's own 001/01; §A.1's #3 "Illegal
+# UE ... because an identity of the UE is not acceptable to the network" is the
+# cause that fits an unknown subscriber. §5.5.1.2.5 mandates only "an
+# appropriate 5GMM cause value", so this row does not and should not fail on it
+# — but a core telling a device "this PLMN is barred to you" when it means "we
+# have never heard of you" sends that device off to scan for other networks
+# instead of re-provisioning, which is worth a note.
+#
+# ACCEPTANCE TEST — THE ROW CAN REPORT THE OTHER TERMINAL. Run 2026-08-11 with
+# the ordinary `InitialUEMessage` sender (the row's own PROVISIONED subscriber,
+# everything else identical): AUTHENTICATION REQUEST -> SECURITY MODE COMMAND ->
+# INITIAL CONTEXT SETUP REQUEST carrying a REGISTRATION ACCEPT, terminal
+# `registered_unknown_subscriber`. The identity is the only variable between the
+# two runs.
+
+kind: flow
+name: registration_unprovisioned_subscriber_rejected
+description: Initial registration under a SUCI naming a subscriber the network was never provisioned with — expect REGISTRATION REJECT and never a REGISTRATION ACCEPT (YAML)
+detail: |
+  Negative registration probe. The UE presents a SUCI whose MSIN names a
+  subscriber that exists in no operator database — deviated for exactly one
+  message, in the wire copy and in the TS 24.501 §4.4.6 replay copy together.
+
+  TS 24.501 §5.5.1.2.5 requires the AMF to answer a registration it cannot
+  accept with a REGISTRATION REJECT carrying an appropriate 5GMM cause;
+  Annex A.1 gives #3 "Illegal UE" as the cause for an identity that is not
+  acceptable to the network. The flow asserts the reject and its cause IE, and
+  fails on a REGISTRATION ACCEPT or on silence.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - registered_unknown_subscriber
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_answer
+        actions:
+          - { type: send, message: InitialUEMessageUnknownSupi }
+
+  wait_answer:
+    # §5.5.1.2.5 is a "shall send"; nothing at all is a failure of that duty.
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # THE ROW. A reject carrying a cause — the value is recorded, not pinned,
+      # because the clause pins nothing (see the header).
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          # `ie_present` and not `not_empty`: 5GMM cause #0 does not exist, but
+          # asserting presence separately means an ABSENT cause IE is reported
+          # as absent rather than as a value mismatch against <missing>.
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: greater_than, expected: 0 }
+
+      # The core admitted a subscriber it has never heard of. This is the
+      # finding the row exists to catch, named so the trace says so.
+      # The 5G-GUTI checks fire on this FAILURE path on purpose: they are the
+      # evidence that the core did not merely answer something, it ADMITTED the
+      # ghost identity and issued it a temporary identity of its own.
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered_unknown_subscriber
+        actions:
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: registered_unknown_subscriber
+        actions:
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+
+      # §5.4.3: the AMF may ask for the identity again. Answer with the same
+      # ghost identity and keep waiting for the procedure's real conclusion.
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_answer
+        actions:
+          - { type: send, message: IdentityResponse }
+
+      # An AUTHENTICATION REQUEST for an identity the network cannot have keys
+      # for is itself a finding — the AMF has manufactured a challenge for a
+      # subscriber it does not know. It is not the security failure this row is
+      # about, though, so the flow answers it (the RES* will be wrong, since the
+      # UE's keys belong to a different identity) and lets the procedure
+      # conclude: the verdict is whatever the AMF does NEXT, which is what
+      # `rejected` and `registered_unknown_subscriber` measure.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_answer
+        actions:
+          - { type: send, message: AuthResponse }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-118 (negative, expected_terminal: rejected) — A
+# NAS RegistrationReject is received and no RegistrationAccept ever arrives;
+# nas.gmm_cause is expected to be 3, 6 or 7 but any cause satisfies the security
+# property
+#
+# REG-118: "A NAS RegistrationReject is received and no RegistrationAccept ever
+# arrives." `registered_unknown_subscriber` is the finding — the core admitted a
+# subscriber it has never heard of and issued it a 5G-GUTI.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 2
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

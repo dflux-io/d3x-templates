@@ -1,0 +1,51 @@
+# Gx CCR/CCA 4-step echo flow — TERMINATION_REQUEST.
+# CC-Request-Type=TERMINATION_REQUEST(3) closes a credit-control session.
+
+kind: flow
+name: diameter_gx_ccr_cca_terminate
+description: Gx CCR/CCA TERMINATION 4-step echo against edge
+category: functional
+type: client
+protocol: diameter
+nf: pgw
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ccr_echo
+        actions:
+          - type: send
+            message: CCRTerminate
+
+  wait_ccr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CCR
+        target: wait_cca_echo
+        actions:
+          - type: check
+            field: CC-Request-Type
+            op: equals
+            expected: 3
+          - type: send
+            message: CCA
+
+  wait_cca_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CCA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001

@@ -1,0 +1,121 @@
+# PDU session establishment requesting PDU session type IPv6
+# (3GPP TS 24.501 §6.4.1 — PDU session type negotiation).
+#
+# Same as pdu_session_setup but the NAS PDUSessionEstablishmentRequest carries
+# PDU session type = IPv6 (via the pdu_session_type SendParam). The SMF either
+# accepts (PDUSessionResourceSetupRequest) or, if IPv6 is not supported on the
+# DNN, rejects (PDUSessionEstablishmentReject) — both are spec-valid and observed.
+#
+# Terminals: `established` (setup accepted), `rejected_ipv6` (SMF declined IPv6 —
+# a valid, documentable result), `failed`.
+kind: flow
+name: pdu_session_setup_ipv6
+description: PDU session establishment with PDU session type IPv6; accept or reject both valid (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - rejected_ipv6
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+          # as soon as registration completes, and free5GC does.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_type: 2
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          # N2 tunnel fidelity: the UPF's uplink GTP-U F-TEID must be present
+          # (non-zero) once the resource setup lands — proves the datapath
+          # tunnel was actually allocated (T2 item 5). Mirrors pdu_session_setup.
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+      - event: NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: rejected_ipv6
+      - event: NASDownlinkTransport.5GMMStatus
+        target: rejected_ipv6
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-301 (positive, expected_terminal: established) —
+# PDUSessionEstablishmentAccept received on N1 with Selected PDU session type = IPv6 and
+# a PDU address IE carrying an interface identifier; PDUSessionResourceSetupRequest
+# carries a GTP-U TEID
+#
+# REG-301: the accept with Selected PDU session type = IPv6 and an interface identifier
+# in the PDU address IE, and a PDUSessionResourceSetupRequest carrying a GTP-U TEID.
+# `rejected_ipv6` is the core refusing an IPv6 session.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `established` — the terminal this row claims
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

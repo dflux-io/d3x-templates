@@ -1,0 +1,231 @@
+# REG-481 — the Security Key the AMF puts on N2 is the KgNB, not merely 32 octets
+# of something.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 33.501 §6.2.3.1 — the derivation this row is about: the AMF and the UE
+#   derive KAMF -> KgNB, and the binding input is the uplink NAS COUNT of the
+#   SECURITY MODE COMPLETE.
+#
+#   TS 33.501 §6.8.1.1.2.3 — the same derivation stated as the inputs the AMF
+#   uses when it hands the key to the NG-RAN: the fresh KAMF and the start value
+#   of the uplink NAS COUNT carried in the NAS SMC Complete.
+#
+#   TS 38.413 §9.3.1.87 — where it lands on the wire: the Security Key IE of the
+#   INITIAL CONTEXT SETUP REQUEST, a 256-bit BIT STRING.
+#
+# WHY THIS ROW COULD NOT BE WRITTEN BEFORE #248. The runner held a KgNB only on
+# its AMF (server) side. The client-side UE never derived one and resolveUEField
+# exposed no key material at all, so a flow could assert that the Security Key
+# IE was PRESENT and 256 bits long — which is REG-480's claim — and nothing
+# about whether it was the right key. REG-481 was bound to the shared
+# `registration` flow, which asserts neither; flow-ownership.yaml has carried
+# the line "REG-481: asserts the Security Key is bit-identical to a locally
+# derived KgNB" as an unpaid Phase-2 obligation since that file was written.
+#
+# WHAT MAKES THE COMPARISON HONEST. The two sides of the equality are computed
+# by DIFFERENT CODE from DIFFERENT MATERIAL:
+#
+#   * the right-hand side, ue.Kgnb, is derived by the UE at the moment it sends
+#     SECURITY MODE COMPLETE, from a KAMF it rebuilt itself out of CK/IK/SQN/AK
+#     and the SUPI (enrichAuthRequest), i.e. from the authentication vector it
+#     answered — not from anything the AMF told it;
+#   * the left-hand side is the Security Key octets the AMF under test put in
+#     INITIAL CONTEXT SETUP REQUEST.
+#
+# A shared helper cannot make them agree by accident, which is the property a
+# key-derivation row needs.
+#
+# ENCODING, NOT KEYS, IS THE EASY WAY TO GET THIS WRONG. `security_key.key`
+# resolves through resolveNGAPField — a json.Marshal of the decoded ngap5g
+# message — in which a []byte becomes a STANDARD BASE64 string, and
+# evaluateCheck compares the two operands with fmt.Sprintf("%v") on both sides.
+# ue.Kgnb is rendered as standard base64 for exactly this reason (params.go), so
+# `equals` compares keys. A hex rendering would be a different string for the
+# same key and this row would fail on the encoding every single run. ue.KgnbHex
+# is asserted present alongside it so the trace carries a value a human can read
+# without decoding base64, but it is never the operand.
+#
+# THE COUNT IS PART OF THE CLAIM, NOT DECORATION. §6.2.3.1 binds KgNB to the
+# uplink NAS COUNT of the SECURITY MODE COMPLETE, and EncodeSecureNewContext
+# increments that counter as soon as the message is protected — so a derivation
+# taken one line later is wrong by exactly one COUNT and produces a mismatch
+# that reads as an AMF defect. This flow sends exactly one protected uplink
+# message before the INITIAL CONTEXT SETUP REQUEST arrives, so the binding COUNT
+# must be 0; asserting it pins the input rather than trusting it.
+#
+# VACUITY, EVERY CLASS, CHECKED.
+#   * `not_contains` — not used.
+#   * `exists` — not used. `ie_present` is used instead wherever presence is the
+#     question, because it fails on a path that does not resolve. That matters
+#     twice here: `security_key.key` carries `,omitempty` (proto/ngap5g), so an
+#     absent key vanishes from the projection rather than reading as "", and
+#     ue.Kgnb / ue.KgnbHex / ue.KgnbUlCount MISS rather than resolving empty
+#     when the UE derived no key (params.go). Both absences fail.
+#   * `not_empty` is NOT used on any ue.<Scalar> path here. Those resolve to the
+#     raw Go value with ok=true, so `not_empty` on them is unconditionally true.
+#   * pkt_tx — no user-plane leg in this row.
+#   * zero checks evaluated — impossible: `key_verified` is reachable only
+#     through the transition carrying the six checks below.
+#
+# WHAT THIS ROW DELIBERATELY DOES *NOT* ASSERT. The register's criterion ends
+# with "a second registration after a new AKA run yields a different Security
+# Key". That half is not decidable in one flow on this SUT: TS 24.501 §5.4.1.2
+# lets an AMF re-use the UE's native 5G NAS security context on a subsequent
+# registration and skip authentication entirely, in which case there is no
+# second SECURITY MODE COMPLETE, the UE derives no second KgNB, and a flow
+# demanding two different keys would score a conformant AMF red. Asserting the
+# first half well is worth more than asserting both halves badly; the freshness
+# half needs a row (and a criterion) of its own.
+#
+# NOT A BARE TIMER: `key_verified` is reached by an INITIAL CONTEXT SETUP
+# REQUEST arriving. Every on_timeout targets `failed`.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; another
+# agent holds Docker (xp-234) and this flow has never been executed.
+
+kind: flow
+name: security_key_matches_derived_kgnb
+description: Registration; assert the Security Key IE in INITIAL CONTEXT SETUP REQUEST is bit-identical to the KgNB the UE derived from its own KAMF and the SECURITY MODE COMPLETE uplink NAS COUNT (TS 33.501 §6.2.3.1)
+detail: |
+  A plain 5G-AKA registration. When the INITIAL CONTEXT SETUP REQUEST arrives,
+  the flow compares the Security Key IE (TS 38.413 §9.3.1.87) with the KgNB the
+  UE derived independently when it sent SECURITY MODE COMPLETE, from a KAMF it
+  rebuilt from the authentication vector it had just answered.
+
+  The two values come from different code over different material, so agreement
+  is evidence rather than tautology. The uplink NAS COUNT the UE bound its key
+  to is asserted as well: TS 33.501 §6.2.3.1 makes that count an input, and a
+  key derived one COUNT late is a mismatch that would read as a core defect.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - key_verified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # There is a NAS security context to derive an AS key FROM. ue.SecCtx
+          # is a pointer, so `not_empty` here is a genuine nil test.
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          # Sending this is what derives the UE-side KgNB (TS 33.501 §6.2.3.1).
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: key_verified
+        actions:
+          # GUARDS. `ie_present` fails on a path that does not resolve, so an
+          # INITIAL CONTEXT SETUP REQUEST carrying no Security Key IE — or a
+          # decoder that stopped producing it — cannot reach the equality below
+          # and satisfy it by accident.
+          - { type: check, field: security_key, op: ie_present }
+          - { type: check, field: security_key.key, op: ie_present }
+          # The UE really derived one. MISSES rather than resolving "" when it
+          # did not, so this fails rather than comparing two absences.
+          - { type: check, field: ue.Kgnb, op: ie_present }
+          # ---- THE ROW. TS 33.501 §6.2.3.1 / TS 38.413 §9.3.1.87: the Security
+          # Key delivered on N2 IS the KgNB the UE derived. Both operands render
+          # as standard base64 of the same 32 octets — see the header. ----
+          - { type: check, field: security_key.key, op: equals, expected: "{{ue.Kgnb}}" }
+          # The binding input, pinned rather than trusted. This flow protects
+          # exactly one uplink NAS message before the INITIAL CONTEXT SETUP
+          # REQUEST, so the COUNT that KgNB was derived from is 0; anything else
+          # means the derivation moved relative to EncodeSecureNewContext.
+          - { type: check, field: ue.KgnbUlCount, op: equals, expected: 0 }
+          # Recorded so the trace carries the key in a form a human can read.
+          - { type: check, field: ue.KgnbHex, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-481).
+#
+# REG-481 — The Security Key IE in INITIAL CONTEXT SETUP REQUEST is bit-identical to the
+# KgNB derived locally from the KAMF of this authentication run and the uplink NAS COUNT
+# used in SECURITY MODE COMPLETE; a second registration after a new AKA run yields a
+# different Security Key.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `key_verified`
+    metric: final_state_counts.key_verified
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The eight `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all eight declared checks ran
+    metric: checks_total
+    op: equals
+    value: 8
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,201 @@
+# REG-451 — an UNPROTECTED (security header type 0) uplink NAS message sent
+# after security activation is discarded, and nothing on N1/N2 moves because
+# of it.
+#
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE (xp-245 negative-probe audit).
+#
+# TS 24.501 §4.4.4.3, final paragraph (retrieved with matrix/scripts/spec-clause.py
+# against the pinned Rel-18 corpus, verbatim):
+#
+#   "Once the secure exchange of NAS messages has been established for the NAS
+#    signalling connection, the receiving 5GMM entity in the AMF shall not
+#    process any NAS signalling messages unless they have been successfully
+#    integrity checked by the NAS. … If any NAS signalling message is received,
+#    as not integrity protected even though the secure exchange of NAS messages
+#    has been established, then the NAS shall discard this message."
+#
+# TS 33.501 §6.4.3.2 states the same as a NAS integrity-protection requirement.
+#
+# THIS ROW IS NOT uplink_nas_before_security_activation
+# -----------------------------------------------------
+# That row sends a plain NAS BEFORE the security mode control procedure
+# completes, where the governing sentence is the "until the secure exchange …
+# has been established" one and the AMF is permitted (obliged, for seven message
+# types) to process unprotected NAS. This row fires AFTER activation, where the
+# sentence quoted above applies and admits NO exceptions — not even for the
+# seven, and not even for DEREGISTRATION REQUEST, which is what this flow sends
+# in the clear. The precondition is asserted, not assumed: the REGISTRATION
+# ACCEPT that precedes the probe is checked to have arrived integrity-protected
+# and MAC-verified under the new context, which is what "secure exchange has
+# been established" means on the wire.
+#
+# WHAT IS ACTUALLY ON THE WIRE
+# ----------------------------
+# MEASURED (2026-08-11, this lab, `-trace` TX #13), the whole NAS PDU:
+#
+#     7e 00 45 01 00 0d 01 00 f1 10 f0 ff ff ff ff ff ff ff ff 51
+#     ^^ EPD 5GMM
+#        ^^ security header type 0 = PLAIN: no MAC, no sequence number
+#           ^^ message type 0x45 = DEREGISTRATION REQUEST (UE originating)
+#
+# Compare the frame the runner sent two messages earlier on the same
+# connection — `7e 02 <MAC×4> <SN> …`, security header type 2, integrity
+# protected and ciphered. The probe is the same UE, the same association, the
+# same active context, and no protection at all.
+#
+# tinycore discarded it and said so, for this exact frame:
+#
+#   "unprotected deregistration message for a UE with an activated NAS security
+#    context — discarded, context untouched (TS 24.501 §4.4.4.2)"
+#   supi: imsi-001010000000451
+#
+# which is the behaviour the clause mandates: this row PASSES against tinycore.
+#
+# WHY THE PLAIN MESSAGE IS A DEREGISTRATION REQUEST
+# -------------------------------------------------
+# The criterion's pass is an ABSENCE ("draws no downlink NAS response and does
+# not change the registration or session state observable on N1/N2"), and an
+# absence scored on a bare timer is the exact defect xp-245 found: a flow that
+# sent nothing at all would score green. So the plain message is chosen to be
+# one the AMF would HAVE to answer if it processed it — DEREGISTRATION REQUEST,
+# not switch-off, obliges a DEREGISTRATION ACCEPT (§5.5.2.3.2) and a move out of
+# 5GMM-REGISTERED. Acceptance of unprotected NAS is then a message on the wire,
+# and "does not change the registration state" is measured rather than assumed:
+# after the absence window a legitimate, correctly protected, correctly counted
+# DEREGISTRATION REQUEST goes out, and only a context that never moved can
+# answer it.
+#
+#   DEREGISTRATION ACCEPT to the PLAIN message  -> processed unprotected NAS -> tolerated
+#   nothing, then the protected one is answered -> discarded, state intact   -> rejected
+#   nothing, and the protected one is ignored   -> the plain message DID move
+#                                                  the AMF's state           -> tolerated
+#
+# ACCEPTANCE TEST (mandatory for a negative row) — MEASURED 2026-08-11:
+#   protect: false (as authored)   -> rejected   (silence, then the follow-up
+#                                     DEREGISTRATION ACCEPT arrives)
+#   protect: true  (violation off) -> tolerated  (the byte-identical inner
+#                                     message, correctly secured, is answered
+#                                     inside the absence window)
+# The row can report both terminals, so it is testing something.
+
+kind: flow
+name: post_smc_unprotected_uplink_discarded
+description: After security activation, a plain (security-header-type 0) uplink NAS must be discarded and must not move the registration state (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        # FOR bit: uplink NAS pending (TS 24.501 §9.11.3.7) — the probe and its
+        # follow-up both need the N1 connection kept up after registration ends.
+        actions: [{ type: send, message: InitialUEMessage, params: { follow_on_request: true } }]
+        target: wait_auth_request
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_discard
+        actions:
+          # "Once the secure exchange of NAS messages has been established" —
+          # the precondition of the clause, read off the OUTER header of the
+          # REGISTRATION ACCEPT. nas.security.* and not nas.header.*: the inner
+          # header is always plain after DecodeSecure and would pass against a
+          # core sending everything in the clear (xp-248).
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+          - { type: check, field: nas.security.ciphered, op: equals, expected: true }
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # The violation. protect:true is the acceptance-test switch.
+          - type: send
+            message: PlainUplinkNas
+            params: { inner: deregistration_request, protect: false }
+  wait_discard:
+    # The §4.4.4.3 absence window. A discard emits nothing, so the window hands
+    # over to the state-integrity leg rather than resolving on its own timer.
+    on_timeout:
+      duration: 6s
+      target: prove_state_intact
+      actions: [{ type: send, message: DeregistrationRequest }]
+    transitions:
+      # The AMF completed a 5GMM procedure off an unprotected NAS message.
+      - { event: NASDownlinkTransport.DeregistrationAccept, target: tolerated }
+      # Releasing the UE context is acting on the plain message just as much as
+      # answering it: it is the only stimulus this connection has had since
+      # REGISTRATION COMPLETE.
+      - { event: UEContextReleaseCommand, target: tolerated }
+      # Refusals — none of these completes the procedure the plain message asked
+      # for, and §4.4.4.3's discard is a floor, not a ceiling.
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+  prove_state_intact:
+    # No answer to a message the AMF *can* verify: the plain message moved its
+    # registration state after all.
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: rejected
+        actions:
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-451 (negative, expected_terminal: rejected) —
+# After security activation, a plain (security-header-type 0) uplink NAS message draws
+# no downlink NAS response and does not change the registration or session state
+# observable on N1/N2.
+#
+# REG-451, same shape as REG-450 with the corruption replaced by the absence of
+# protection. `rejected` is reached only by the AMF refusing in words, or by the
+# correctly protected follow-up still being answered — never by the timer, which hands
+# over to the probe instead. `tolerated` is a 5GMM procedure completed off an
+# unprotected NAS message.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

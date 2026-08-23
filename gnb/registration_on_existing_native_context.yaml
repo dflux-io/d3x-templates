@@ -1,0 +1,318 @@
+# REG-404 — a second registration protected with an existing FULL NATIVE 5G NAS
+# security context reaches REGISTRATION ACCEPT, without needing a fresh
+# authentication run.
+#
+# TS 33.501 §6.8.1.2.1 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim):
+#
+#   "The UE sends an initial NAS message to initiate transition from CM-IDLE to
+#    CM-CONNECTED state. IF A FULL NATIVE 5G NAS SECURITY CONTEXT IS ALREADY
+#    AVAILABLE IN THE UE AND THE AMF, THEN THE UE SHALL DIRECTLY TAKE INTO USE
+#    THE AVAILABLE FULL 5G NAS SECURITY CONTEXT and use it to protect the
+#    initial NAS message using the distinct pair of NAS COUNTs together with the
+#    NAS connection identifier for this access."
+#
+#   "On transitions to CM-CONNECTED, the AMF SHOULD BE ABLE TO CHECK WHETHER A
+#    NEW AUTHENTICATION IS REQUIRED, e.g. because of prior inter-provider
+#    handover."
+#
+# TS 33.501 §6.8.1.1.2.2: "The UE shall transmit a NAS Registration Request
+# message. This message is integrity protected using the distinct NAS COUNT
+# values and the NAS connection identifier associated with this access. For the
+# case that the 5G NAS security context used by the UE is non-current in the
+# AMF, the AMF shall delete any existing current 5G security context and make
+# the used 5G security context the current 5G security context."
+#
+# TS 24.501 §4.4.2.5: after the security mode control procedure completes, all
+# NAS messages are sent integrity protected with the current algorithms — which
+# is why the second registration goes out as an integrity-protected, unciphered
+# initial NAS message (§4.4.6 case b)3), security header type 1) rather than
+# plain.
+#
+# WHAT THE TWO NON-FAILURE TERMINALS MEAN, AND WHY THERE ARE TWO
+# --------------------------------------------------------------
+# The register's pass criterion is the ACCEPT: "a second registration protected
+# with the same native context reaches REGISTRATION ACCEPT on N1". Its headline
+# is stronger — "without requiring a fresh authentication run" — and the clause
+# does not support scoring that stronger form as mandatory: §6.8.1.2.1 says the
+# AMF "should be able to check whether a new authentication is required", which
+# permits running one. Collapsing both outcomes into one terminal would lose the
+# distinction the row exists to draw; scoring the re-authentication as a failure
+# would invent an obligation the clause declines to create. So:
+#
+#   registered_native_no_auth  — the accept arrived with NO intervening
+#     AUTHENTICATION REQUEST. The native context was taken into use directly,
+#     which is §6.8.1.2.1's sentence in full.
+#   registered_after_reauth    — the accept arrived, but the AMF ran a fresh
+#     5G AKA first. The criterion's literal pass is met; its headline is not.
+#     Conformant, and recorded distinctly so the register can decide.
+#   failed                     — no REGISTRATION ACCEPT at all. The native
+#     context did not get the UE registered, which is the row failing.
+#
+# WHY THIS IS NOT mobility_registration_updating (REG-155)
+# --------------------------------------------------------
+# That flow's criterion is "the update is accepted" and it scores one terminal
+# for every path to the accept. This row's whole content is WHICH path was
+# taken, so it needs the split above, and it additionally asserts that the
+# second registration really was protected with the context the first one
+# established (nas.security.* on the answer, and ue.SecCtx before the send) —
+# without which "on the same native context" is an assumption rather than a
+# measurement.
+#
+# MEASURED (2026-08-11, this lab) — tinycore reaches `registered_after_reauth`.
+# The mobility REGISTRATION REQUEST goes out integrity protected with the
+# context the first registration established (`7e 01 <MAC×4> <SN> 7e 00 41 02
+# …` — security header type 1, inner message type 0x41), and tinycore answers
+# it with an AUTHENTICATION REQUEST rather than taking that context into use
+# directly. It then runs a full 5G AKA, sends a SECURITY MODE COMMAND selecting
+# integrity algorithm 3 (128-NIA2), and finally the REGISTRATION ACCEPT, whose
+# MAC verifies. So the register's literal pass criterion is met and the row's
+# headline is not: `registered_after_reauth`. §6.8.1.2.1's "the AMF should be
+# able to check whether a new authentication is required" makes that a
+# permitted choice, not a violation, which is exactly why it has its own
+# terminal instead of being scored either green or red here.
+
+kind: flow
+name: registration_on_existing_native_context
+description: After a completed registration and a context release, a second registration protected with the same full native 5G NAS security context must reach REGISTRATION ACCEPT (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered_native_no_auth
+  - registered_after_reauth
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # "a FULL NATIVE 5G NAS security context" — full, i.e. the security
+          # mode control procedure completed and non-null algorithms are in
+          # force, not merely a partial context from the AKA run.
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          # The context is genuinely in use in BOTH directions before the
+          # release: the AMF's own REGISTRATION ACCEPT verifies under it.
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          # The 5G-GUTI the second registration will identify itself with.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_second_registration
+        actions:
+          # The context survived the release on our side; the row is about
+          # whether it survived on the AMF's. Asserted BEFORE the sends: the
+          # loader refuses a check after a send in the same action list.
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # §6.8.1.1.2.2 / §4.4.6 b)3): a mobility REGISTRATION REQUEST with the
+          # real 5G-GUTI, integrity protected with the native context and
+          # unciphered, so the AMF can read the GUTI and find the context.
+          - { type: send, message: RegistrationUpdate }
+
+  wait_second_registration:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # §6.8.1.2.1 in full: the native context was taken into use directly and
+      # the registration completed off it, with no new authentication.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: registered_native_no_auth
+        actions:
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      # The AMF exercised §6.8.1.2.1's "check whether a new authentication is
+      # required" and decided one was. Permitted — so the flow follows it
+      # through and still requires the accept.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_reauth_security_mode
+        actions: [{ type: send, message: AuthResponse }]
+
+      # PAGING — DECLINED, DELIBERATELY, and CONSUMED so the decision is on the
+      # record instead of on the floor. Of the three states the v1 sweep found
+      # refusing a page, this is the ONE where a page is genuinely expected — and
+      # it is still declined, for a different reason from the other two.
+      #
+      # No runner-level default for PAGING exists and none may be added
+      # (runner/runner/fsm/events.go, EventPaging): the message carries no
+      # RAN-UE-NGAP-ID and the demux BROADCASTS it to every UE on the gNB, and
+      # TS 24.501 §5.6.2.2.1 obliges only the paged UE, only in 5GMM-IDLE.
+      # Deciding is the template's job.
+      #
+      # WHY A PAGE IS PLAUSIBLE HERE. This flow really does go CM-IDLE:
+      # `wait_release_cmd` sends the UE CONTEXT RELEASE COMPLETE, and for as long
+      # as the AMF holds the UE idle it is entitled to page it for anything it
+      # has pending.
+      #
+      # WHY THE UE NONETHELESS OWES NO SERVICE REQUEST. The same transition that
+      # released the context went straight on to `ngap_realloc` and a mobility
+      # REGISTRATION REQUEST — `RegistrationUpdate` is enriched as an NGAP INITIAL
+      # UE MESSAGE (runner/runner/enrichers_gnb_additions.go), not a NAS uplink —
+      # so a UE-associated logical NG-connection is ALREADY back up and a
+      # registration procedure is in flight the moment this state is entered.
+      # The page has in effect already been answered: whatever the AMF had
+      # pending it can deliver on this connection. A SERVICE REQUEST on top would
+      # be a second initial NAS message colliding with a registration the UE has
+      # not yet had answered.
+      #
+      # AND IT WOULD DELETE THE ROW. REG-404 asks whether the AMF takes the
+      # existing full native 5G NAS security context into use for THAT
+      # registration (TS 33.501 §6.8.1.2.1). Every non-failure terminal below is
+      # reached by the REGISTRATION ACCEPT to it arriving and verifying under
+      # that context; a realloc plus a SERVICE REQUEST would replace the
+      # connection it was sent on, and the accept would be answering a different
+      # question — or arrive addressed to a RAN UE NGAP ID we had abandoned.
+      #
+      # THE COST OF CONSUMING, PAID KNOWINGLY. dispatchFSMViaBus resets
+      # StateEntered and clears PendingEvents on every consumed event, so each
+      # page restarts this state's 12 s wait; nothing in this flow uses an AND
+      # compound, so the clear costs nothing. That is the price of the page being
+      # REPORTED as decided rather than counted in bus_audit.rx_refused. No check
+      # actions: a declined page must not move `checks_total`, which the floor
+      # below reads.
+      - event: Paging
+        target: wait_second_registration
+
+  wait_reauth_security_mode:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_reauth_accept
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+          - { type: send, message: SecurityModeComplete }
+      # A re-authentication that ends in a refusal has not registered the UE,
+      # so the criterion is not met.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: registered_after_reauth
+        actions:
+          # THE ONLY PATH TO A NON-FAILURE TERMINAL THAT ASSERTED NOTHING. An
+          # AMF that answers the re-authentication with the accept directly
+          # reached `registered_after_reauth` on six checks, all of them about
+          # the FIRST registration; the accept that ends the SECOND one — the
+          # message REG-404's criterion is entirely about — was not read. The
+          # sibling accept transitions both require it to verify, and so does
+          # this one: "reaches REGISTRATION ACCEPT on N1" protected with the
+          # context in force is the claim, and an accept whose MAC does not
+          # verify is not that message.
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+  wait_reauth_accept:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: registered_after_reauth
+        actions:
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-404 (positive, expected_terminal:
+# registered_after_reauth) — After a completed registration and a context release, a
+# second registration protected with the same native context reaches REGISTRATION ACCEPT
+# on N1.
+#
+# NO TERMINAL IS PINNED HERE. REG-404's criterion is "a second registration protected
+# with the same native context reaches REGISTRATION ACCEPT on N1", and BOTH non-failure
+# terminals reach one: `registered_native_no_auth` (the AMF used the stored context
+# directly) and `registered_after_reauth` (it ran a fresh AKA first). TS 24.501
+# §5.4.1.2.1 leaves that choice to the AMF, so neither is the wrong answer and the
+# criterion does not separate them. The register names `registered_after_reauth` as
+# expected_terminal. That looks BACKWARDS for a row whose stated point is that the AMF
+# "makes that context current rather than discarding it" — re-authenticating is the
+# branch in which the stored context was NOT used. Flagged rather than encoded.
+#
+# AND `final_state_counts.failed equals 0` IS NOT ON ITS OWN A CLAIM THAT ANYTHING
+# HAPPENED — "did not fail" cannot separate success from not-quite-failure, which is the
+# defect REG-820 shipped on three cores. What carries the positive claim here is the
+# floor below, and it carries it only because of what the FSM now looks like: EVERY route
+# to a non-failure terminal ends on a `nas.security.mac_verified` check against the
+# SECOND registration's REGISTRATION ACCEPT, and the shortest of the three runs seven
+# checks. The path that stops before that accept runs six and lands on `failed`. So
+# `checks_total >= 7` together with `checks_failed == 0` says what no pin can say across
+# two conformant terminals: the accept came back and verified under the context the first
+# registration established.
+#
+# The floor was 6, which is exactly the count of the one path that asserted NOTHING about
+# that accept (`wait_reauth_security_mode --RegistrationAccept--> registered_after_reauth`,
+# which had no check action at all). It is 7 now because that path has one.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` (the association or the preamble died)
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: the second registration's REGISTRATION ACCEPT was read — every route to a non-failure terminal checks it, and the shortest runs seven checks
+    metric: checks_total
+    op: greater_or_equal
+    value: 7
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

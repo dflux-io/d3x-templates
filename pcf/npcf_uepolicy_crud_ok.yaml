@@ -1,0 +1,145 @@
+# Npcf_UEPolicyControl — URSP/UE-policy association CRUD (SBI round-trip).
+# 3GPP TS 29.525 §4.2: POST /npcf-ue-policy-control/v1/policies → 201 +
+# Location + PolicyAssociation; DELETE /policies/{id} → 204.
+#
+# URSP bytes ride in on the CREATE, via uePolReq — the production path, where
+# the caller is supplying policy for the association it is creating.
+#
+# The step in the middle is a NEGATIVE assertion, and it is the point of this
+# flow being kept rather than shortened (W4-F, xp-201 class A). There used to be
+# a POST /policies/{id}/deliver route that took opaque URSP bytes for ANY
+# association and pushed them at that subscriber's UE over namf-comm
+# N1N2MessageTransfer, which the AMF NAS-wraps and hands to the UE. Its own
+# comment called it a lab-only admin seam and it was mounted on the production
+# router. It is gone; the capability lives at Server.DeliverUePolicy for
+# operator tooling. This flow asserts the route stays gone, because "we removed
+# it" is the kind of claim that quietly stops being true.
+#
+# SCOPE: the Npcf_UEPolicyControl SBI surface ONLY. Against this standalone DPF
+# no AMF is wired, so create-with-bytes persists them without pushing. The
+# actual URSP NAS-delivery leg — PCF → AMF namf-comm N1N2MessageTransfer
+# (N1MessageClass=UPDP) → UE over N1 — needs the docker lab and stays Go-gated;
+# the dpf→AMF push client lives at tinycore/dpf/amfclient.
+#
+# Drives the PCF role against the seeded dpf (peer: pcf). The create body is a
+# minimal PolicyAssociationRequest for seed SUPI imsi-001010000000001; v1 reads
+# supi + notificationUri + uePolReq and stores them, echoing the request back
+# inside the PolicyAssociation response (resp.Request). The {id} for the
+# probe and the DELETE comes verbatim from the create Location header.
+
+kind: flow
+name: npcf_uepolicy_crud_ok
+description: POST policies with uePolReq (201+Location) → the removed /deliver seam is unrouted (404) → DELETE (204) — Npcf_UEPolicyControl SBI round-trip
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-ue-policy-control/v1/policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "notificationUri": "http://127.0.0.1:1/ue-policy-notify",
+                  "uePolReq": "AQIDBA==",
+                  "suppFeat": "0"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_deliver_gone
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: check
+            field: sbi.headers.Location
+            op: not_empty
+          # v1 echoes the create request inside the PolicyAssociation
+          # (resp.Request) — assert the supi round-trips.
+          - type: check
+            field: sbi.body.request.supi
+            op: equals
+            expected: "imsi-001010000000001"
+          # The create echoes the URSP bytes it stored, so this leg proves the
+          # production path into the same code still works.
+          - type: check
+            field: sbi.body.request.uePolReq
+            op: equals
+            expected: "AQIDBA=="
+          # Chain the minted association id from the Location for the
+          # unrouted-seam probe and the DELETE.
+          - type: extract
+            field: sbi.headers.Location
+            store: pol_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.pol_loc}}/deliver",
+                "body": {
+                  "uePolicy": "AQIDBA=="
+                }
+              }
+
+  wait_deliver_gone:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_delete
+        actions:
+          # THE NEGATIVE ASSERTION. The lab-only admin seam is not on the
+          # router: chi matches no route for this path, so 404. If this ever
+          # reads 200 again, an unauthenticated caller can push arbitrary URSP
+          # bytes at any subscriber's UE.
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "{{ue.Params.pol_loc}}",
+                "body": {}
+              }
+
+  wait_delete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

@@ -1,0 +1,78 @@
+# SBI wire-fuzz driver — W2-F3.
+#
+# pcf/npcf_smpolicy_create_dynamic_ok.yaml reduced to its create send with a
+# `fuzz:` block and relaxed assertions. Fuzzes the JSON request body of
+# POST /npcf-smpolicycontrol/v1/sm-policies against a live PCF.
+#
+# For SBI the mutate stage does not touch the internal envelope
+# (method/path/headers). It mutates the envelope's BODY and re-marshals around
+# it, so a well-formed HTTP POST carries a corrupt SmPolicyContextData — the
+# real request that crosses the network.
+#
+# ORACLE
+#   survived  the PCF answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400/403/404 on a corrupt body is
+# CORRECT. Only that a status EXISTS is checked. Note this driver does not run
+# the base flow's cleanup delete, so successful creates leak sm-policy
+# associations — run it against a lab PCF and expect to reset state after.
+
+kind: flow
+name: fuzz_pcf_smpolicy_create
+description: Wire-level fuzz of the Npcf_SMPolicyControl create request body against a live PCF
+category: robustness
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [SBI_Request]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 201, 400, 403, 500 — means the NF
+    # parsed, decided and replied, which is what F3 asserts.
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: survived
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

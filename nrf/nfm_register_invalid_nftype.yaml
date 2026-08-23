@@ -1,0 +1,61 @@
+# NFM-10 — nfType not in NFType enum → 400 + ProblemDetails.
+#
+# Probes nfType="BOGUS" — any string outside the OpenAPI NFType enum.
+# Catches a server that accepts any string into an enum field (which
+# would then fail discovery because no consumer asks for nfType=BOGUS).
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-10.
+
+kind: flow
+name: nrf_nfm_register_invalid_nftype
+description: nfType outside the NFType enum → 400 + ProblemDetails.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: probing
+        actions:
+          - type: send
+            message: RegisterBogusNfType
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "BOGUS",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-bogus-nftype-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  probing:
+    transitions:
+      - event: rest.RegisterBogusNfType_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+
+  done: {}
+  failed: {}

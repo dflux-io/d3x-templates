@@ -1,0 +1,209 @@
+# Mobility registration update reallocates a NEW 5G-GUTI (register row REG-157).
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.5.1.3.4 — "The 5G-GUTI reallocation shall be part of the
+#   registration procedure for mobility registration update. The 5G-GUTI
+#   reallocation should be part of the registration procedure for periodic
+#   registration update. During the registration procedure for mobility
+#   registration update, if the AMF has not allocated a new 5G-GUTI by the
+#   generic UE configuration update procedure, the AMF shall include in the
+#   REGISTRATION ACCEPT message the new assigned 5G-GUTI."
+#
+#   TS 24.501 §5.3.3 — "The AMF shall assign a new 5G-GUTI for a particular UE:
+#   a) during a successful initial registration procedure; b) during a
+#   successful registration procedure for mobility registration update; …" and,
+#   on what the value is for, "The purpose of the 5G-GUTI and 5G-S-TMSI is to
+#   provide identity confidentiality, i.e., to protect a user from being
+#   identified and located by an intruder."
+#
+# WHY THIS IS NOT `mobility_registration_updating`.
+# That flow (owned by REG-155) asserts the update is ACCEPTED. Acceptance says
+# nothing about whether the accept carried a new temporary identity, and
+# re-issuing the SAME 5G-GUTI on every update satisfies "accepted" perfectly
+# while defeating the identity confidentiality the value exists for. REG-157 is
+# only about the reallocation, so it needs the comparison this flow makes.
+#
+# HOW THE COMPARISON IS MADE, AND THE TRAP IN IT.
+# The 5G-TMSI assigned by the phase-1 REGISTRATION ACCEPT is snapshotted with
+# `extract` into ue.Params.initial_tmsi, and the phase-2 accept's 5G-TMSI is
+# asserted `not_contains` that value. Both sides are the base64 form of the same
+# 4-octet field, so containment is equality here — no partial-match ambiguity.
+#
+# THE TRAP: `not_contains` PASSES ON A MISSING FIELD. evaluateCheck
+# (runner/runner/action_executor.go) treats absence as "nothing to match
+# against, so vacuously satisfied". An AMF that omitted the 5G-GUTI IE from the
+# update accept entirely — the more serious violation of the same clause —
+# would sail through a bare `not_contains`. So the inequality is preceded by
+# `nas.guti ie_present`, `identity_type equals 2` and `nas.guti.tmsi_5g
+# ie_present`, all of which FAIL on absence. Do not remove them: they are not
+# decoration, they are what stops the row's only real check from being vacuous.
+#
+# Why the 5G-TMSI and not the whole 5G-GUTI: §5.3.3 says the 5G-TMSI is the
+# component that "provides an unambiguous identity of the UE within the AMF(s)
+# identified by the GUAMI". Same AMF, same GUAMI — so the TMSI is the only part
+# that CAN change here, and requiring the whole GUTI to differ would be
+# satisfied by a GUAMI change that the single-AMF test bed cannot produce.
+#
+# MEASURED AGAINST tinycore 2026-08-11: PASS, terminal `guti_reallocated`.
+# Phase-1 5G-TMSI and phase-2 5G-TMSI were different values in every run.
+# ACCEPTANCE TEST for the check itself: re-running with the inequality flipped
+# to `contains` (scratchpad only, not committed) FAILED with
+# `nas.guti.tmsi_5g contains bt7LTA== (actual=o8veXQ==)` — so the check is
+# reading two genuinely different live values and is capable of reporting the
+# other verdict.
+#
+# tinycore re-runs authentication and the security mode procedure before it
+# accepts an update, which §5.5.1.3.4 permits; `wait_update_reaction` answers
+# each of those as a self-transition and keeps waiting for the accept, exactly
+# as mobility_registration_updating learned to.
+kind: flow
+name: mobility_update_guti_reallocation
+description: Mobility registration update; assert the REGISTRATION ACCEPT reallocates a 5G-GUTI different from the one initial registration assigned (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - guti_reallocated
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          # §5.3.3 a) — the initial registration must have assigned one, or
+          # there is nothing for the update to reallocate AWAY from and the
+          # phase-2 comparison would be meaningless.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          # The baseline for the inequality below.
+          - { type: extract, field: nas.guti.tmsi_5g, store: initial_tmsi }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # registration_type 2 = mobility updating (TS 24.501 §9.11.3.7),
+          # identified by the stored 5G-GUTI. This is the procedure §5.5.1.3.4
+          # attaches the reallocation to.
+          - type: send
+            message: RegistrationUpdate
+            params: { registration_type: 2 }
+
+  wait_update_reaction:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: guti_reallocated
+        actions:
+          # THE row assertions. Order matters — see the header: the three
+          # presence checks are what stop `not_contains` from passing on an
+          # omitted 5G-GUTI IE.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: not_contains, expected: "{{ue.Params.initial_tmsi}}" }
+          - { type: send, message: InitialContextSetupResponse }
+          # REGISTRATION COMPLETE acknowledges the reallocated 5G-GUTI and stops
+          # T3550 (§5.5.1.3.4).
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: guti_reallocated
+        actions:
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: not_contains, expected: "{{ue.Params.initial_tmsi}}" }
+          - { type: send, message: RegistrationComplete }
+      # Re-verification the AMF may insert before it accepts (§5.5.1.3.4):
+      # answered, and the flow keeps waiting for the accept.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_update_reaction
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: IdentityResponse }
+      # The AMF engaged and refused — no accept, so no reallocation to assert.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-157 (positive, expected_terminal:
+# guti_reallocated) — nas.guti in the update's RegistrationAccept differs from the
+# 5G-GUTI assigned at initial registration
+#
+# REG-157: the update's REGISTRATION ACCEPT carries a 5G-GUTI different from the one
+# assigned at initial registration. The accept is the only route into
+# `guti_reallocated`, and the "differs" half is a per-step check, so `checks_failed
+# equals 0` is what carries it. `rejected` is a REGISTRATION REJECT to a mobility update
+# the AMF should have accepted.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `guti_reallocated` — the terminal this row claims
+    metric: final_state_counts.guti_reallocated
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 9
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

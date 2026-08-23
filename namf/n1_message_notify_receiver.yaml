@@ -1,0 +1,57 @@
+# Namf_Communication — N1MessageNotify receiver (REST-server, NOTIFY half).
+# 3GPP TS 29.518 §5.2.2.3.1 / §6.1.6.2.3: after the AMF delivers a downlink N1
+# NAS PDU to a UE, it fans out an N1MessageNotify to each consumer subscribed
+# via /ue-contexts/{ueContextId}/n1-n2-messages/subscriptions, POSTing to the
+# subscription's n1NotifyCallbackUri.
+#
+# The notification body is multipart/related (an N1MessageNotification JSON
+# root referencing a vnd.3gpp.5gnas part by ContentId — dmf
+# notify_hooks.go:buildN1MessageNotify). runner's REST listener surfaces the raw
+# body as rest.body; JSON-path resolution misses on a multipart body, so assert
+# via `contains` over the stringified body (the multipart boundary, the JSON
+# N1 message container, the vnd.3gpp.5gnas content-type, the subscription id
+# token) plus the POST path. Reply 204 on the held ResponseWriter.
+#
+# Orchestrated by scripts/e2e-gnb-run.sh step 05-namf-callbacks: a gNB flow
+# registers (CM-CONNECTED), the script itself POSTs the subscription from a
+# curl sidecar with n1NotifyCallbackUri → THIS listener's runtime container IP,
+# then a curl N1N2MessageTransfer delivers a session-less DL NAS that fires the
+# notify. (It is the script and not namf/n1n2_subscribe.yaml that subscribes:
+# the callback URI is only known once this container has an IP, and a template
+# cannot interpolate one. That template exists but is not run — see its header.)
+
+kind: flow
+name: namf_n1_message_notify_receiver
+description: Receive + assert the AMF's N1MessageNotify (multipart, contains-based).
+type: server
+protocol: rest
+nf: external
+initial_state: waiting
+final_states: [done, failed]
+
+states:
+  waiting:
+    on_timeout:
+      duration: 60s
+      target: failed
+    transitions:
+      - event: rest.POST./n1-message-notify
+        target: done
+        actions:
+          # Multipart body: the JSON root carries an n1MessageContainer; the
+          # second part is the vnd.3gpp.5gnas N1 PDU referenced by ContentId.
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "n1MessageContainer"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "application/vnd.3gpp.5gnas"
+          - type: send
+            message: Notify_Answer
+            message_body: |
+              {"status": 204}
+
+  done: {}
+  failed: {}

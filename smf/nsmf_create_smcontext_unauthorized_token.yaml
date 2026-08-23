@@ -1,0 +1,72 @@
+# Nsmf_PDUSession_CreateSMContext — invalid/forged OAuth2 token (negative).
+# 3GPP TS 29.500 §6.7.3; TS 33.501 §13.4.1.
+#
+# runner (AMF) POSTs a CreateSMContext but attaches a bogus bearer token in the
+# Authorization header. When the SMF enforces OAuth2 (TS 33.501 §13), it MUST
+# reject with 401 Unauthorized / 403 Forbidden (ProblemDetails) and stay up.
+#
+# RUNTIME NOTE: the Open5GS SA lab may run with service-mesh / NRF token
+# verification disabled, in which case the SMF answers on the operation's own
+# merits (commonly 4xx for the single-part body) instead of 401/403. The flow
+# asserts any clean 4xx rejection plus liveness, so it is meaningful either way.
+kind: flow
+name: smf_nsmf_create_smcontext_unauthorized_token
+description: AMF CreateSMContext with forged OAuth2 token — expect 401/403/4xx rejection
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer not-a-valid-jwt.forged.token"
+                },
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 10,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1"
+                }
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

@@ -1,0 +1,57 @@
+# PFCP Association Setup advertising unknown/reserved CP Function Features
+# (3GPP TS 29.244 §8.2.58 / §5.20).
+#
+# Security/robustness: runner advertises a CP Function Features IE with reserved /
+# future bits set (flags=0xFFFFFFFF). Per TS 29.244 §5.20 feature negotiation
+# must ignore bits a peer does not understand — the UPF must NOT fault on
+# unknown CP feature bits. A spec-correct UPF accepts the association
+# (Cause "Request accepted") and echoes its own UP Function Features IE,
+# advertising only mutually-supported features. The flow asserts the
+# association succeeded and the UPF returned a UP Function Features IE, i.e. the
+# unknown bits were tolerated and negotiation completed.
+#
+# Spec-correct success = AssociationSetupResponse Cause "Request accepted" with
+# a UP Function Features IE present.
+
+kind: flow
+name: upf_pfcp_association_setup_unknown_feature
+description: Association Setup with reserved CP feature bits; UPF tolerates and negotiates
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+            message_body: |
+              {
+                "cp_function_features": {"flags": 4294967295}
+              }
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: tolerated
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.up_function_features
+            op: not_empty

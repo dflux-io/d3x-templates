@@ -1,0 +1,275 @@
+# REG-561 — the path switch is where the next-hop chain advances.
+#
+# TS 33.501 §6.9.2.3.2: "Upon reception of the NGAP PATH SWITCH REQUEST, the
+# AMF shall increase its locally kept NCC value by one and compute a new fresh
+# NH from its stored data using the function defined in Annex A.10 […] The AMF
+# shall then send the newly computed {NH, NCC} pair to the target gNB/ng-eNB in
+# the NGAP PATH SWITCH REQUEST ACKNOWLEDGE message." TS 38.413 §8.4.4.2 is the
+# procedure that carries it.
+#
+# THE EXPECTED VALUE IS NOT A GUESS. TS 33.501 §6.9.2.1.1: the initial KgNB is
+# "associated with a virtual NH parameter with NCC value equal to zero", and
+# "at initial setup, the derived NH value is associated with the NCC value
+# one". This UE has had exactly one AS security context established and no
+# prior handover or path switch, so the first acknowledge must carry NCC 1. A
+# repeated NCC means the chain did not advance, and an unchanged NH is the
+# backward key separation this mechanism exists for, not happening.
+#
+# THE REQUEST LEAVES ON THE TARGET ASSOCIATION, AND THAT IS THE WHOLE POINT.
+# An Xn path switch is by definition sent by the TARGET NG-RAN node after the
+# UE has already moved to it over the air (TS 38.413 §8.4.4, TS 23.502
+# §4.9.1.2) — the 5GC hears nothing until the request arrives on the target's
+# own association. The predecessor of these rows sent PATH SWITCH REQUEST on
+# the association the UE was already on; a conformant AMF answers that by
+# refusing to switch a path to where the UE already is, and the refusal was
+# scored as core behaviour when it was the harness's. So the send carries
+# `xn_move: true`, which relocates the UE's RAN leg to the peer gNB with NO
+# NG-C signalling at all (a fresh RAN-UE-NGAP-ID allocated there, the
+# AMF-UE-NGAP-ID untouched because it is the identity that spans both legs) —
+# which is exactly what an Xn handover looks like from the core's side.
+#
+# NEEDS TWO gNBs (register preconditions.gnbs: 2). With one, there is no peer
+# to move to and the send fails outright rather than measuring anything.
+
+kind: flow
+name: xn_path_switch_ack_nh_ncc_increment
+description: Xn path switch from the target gNB; assert the PATH SWITCH REQUEST ACKNOWLEDGE carries a Security Context whose NCC is one greater than the UE's current AS NCC
+detail: |
+  Registration, one PDU session, then an Xn path switch: the UE's RAN leg is
+  moved to the peer gNB with no NG-C signalling and a PATH SWITCH REQUEST is
+  sent from there, carrying a real Path Switch Request Transfer (the new
+  serving gNB's DL N3 endpoint).
+
+  Asserts the PATH SWITCH REQUEST ACKNOWLEDGE carries a Security Context IE
+  with a non-empty Next Hop and NCC exactly 1.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - path_switch_nh_verified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_path_switch_response
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: PathSwitchRequest
+            params:
+              xn_move: true
+
+  wait_path_switch_response:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PathSwitchRequestAcknowledge
+        target: path_switch_nh_verified
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # Answered on the leg that asked — the target's own association and
+          # its own RAN-UE-NGAP-ID.
+          - type: check
+            field: ue.RxGnb
+            op: equals
+            expected: "{{ue.Params.xn_target_gnb}}"
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.RanUeNgapId}}"
+          # --- TS 33.501 §6.9.2.3.2, the row's criterion ---
+          - type: check
+            field: security_context
+            op: ie_present
+          - type: check
+            field: security_context.next_hop_nh
+            op: not_empty
+          - type: check
+            field: security_context.next_hop_chaining_count
+            op: equals
+            expected: 1
+      # The AMF refused the switch. A distinct terminal so the verdict is not
+      # confused with silence.
+      - event: PathSwitchRequestFailure
+        target: failed
+      - event: ErrorIndication
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-561).
+#
+# REG-561 — The Security Context IE in the received PathSwitchRequestAcknowledge is
+# present and its NCC is exactly one greater than the NCC last associated with this UE's
+# AS keys.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `path_switch_nh_verified`
+    metric: final_state_counts.path_switch_nh_verified
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PATH SWITCH REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_PATH_SWITCH_REQUEST
+    op: equals
+    value: 1
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PATH SWITCH REQUEST ACKNOWLEDGE arrived
+    metric: rx_events.PathSwitchRequestAcknowledge
+    op: greater_or_equal
+    value: 1
+  # The 13 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 13 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 13
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

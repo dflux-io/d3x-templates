@@ -1,0 +1,187 @@
+# NFM-03 — register with every optional NFProfile field; GET round-trips identically.
+#
+# Catches silently-dropped fields in the storage layer. A common bug
+# when adding a column to the Bun model without updating the JSON
+# marshaller, or when the OpenAPI schema and the Go struct drift apart.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-03. Fields
+# covered (all client-controlled per TS 29.510 NFProfile):
+#   - nfType, nfStatus (required)
+#   - heartBeatTimer
+#   - fqdn, ipv4Addresses, ipv6Addresses
+#   - plmnList (multi-PLMN), sNssais (multi)
+#   - allowedPlmns, allowedNfTypes
+#   - capacity, priority, locality
+#   - recoveryTime (RFC 3339 timestamp)
+#   - nfServices (one entry; serviceName + scheme + apiPrefix)
+#
+# Note: nfStatus is server-overwritten to REGISTERED on PUT
+# (handler_nfm.go:49-56), so we only assert nfStatus on the registered
+# side, not as a round-trip equality. All other client-supplied fields
+# are asserted to round-trip exactly.
+
+kind: flow
+name: nrf_nfm_register_full_profile
+description: Register full NFProfile; GET round-trips every client-controlled field.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterFullNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-full-test.local",
+                  "ipv4Addresses": ["10.0.0.50", "10.0.0.51"],
+                  "ipv6Addresses": ["2001:db8::50"],
+                  "plmnList": [
+                    {"mcc": "001", "mnc": "01"},
+                    {"mcc": "208", "mnc": "10"}
+                  ],
+                  "sNssais": [
+                    {"sst": 1, "sd": "010203"},
+                    {"sst": 2, "sd": "020304"}
+                  ],
+                  "allowedPlmns": [{"mcc": "001", "mnc": "01"}],
+                  "allowedNfTypes": ["AMF", "PCF"],
+                  "capacity": 500,
+                  "priority": 10,
+                  "locality": "rack-7",
+                  "recoveryTime": "2026-05-21T00:00:00Z"
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterFullNF_Answer
+        target: fetching
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: send
+            message: GetFullNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  fetching:
+    transitions:
+      - event: rest.GetFullNF_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: SMF
+          - type: check
+            field: rest.body.nfStatus
+            op: equals
+            expected: REGISTERED
+          - type: check
+            field: rest.body.heartBeatTimer
+            op: equals
+            expected: 30
+          - type: check
+            field: rest.body.fqdn
+            op: equals
+            expected: smf-full-test.local
+          - type: check
+            field: rest.body.capacity
+            op: equals
+            expected: 500
+          - type: check
+            field: rest.body.priority
+            op: equals
+            expected: 10
+          - type: check
+            field: rest.body.locality
+            op: equals
+            expected: rack-7
+          - type: check
+            field: rest.body.recoveryTime
+            op: contains
+            expected: "2026-05-21"
+          # Multi-element fields: assert presence by substring match on
+          # serialized body. The exact JSON representation is tolerated
+          # to differ in field ordering between PUT and GET responses.
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "10.0.0.50"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "10.0.0.51"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "2001:db8"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "208"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "010203"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "020304"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "AMF"
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "PCF"
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

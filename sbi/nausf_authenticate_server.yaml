@@ -1,0 +1,42 @@
+# SBI smoke — Nausf_UEAuthentication_Authenticate (server side).
+# Replies with a canned UEAuthenticationCtx payload (5G-AKA shape).
+
+kind: flow
+name: sbi_nausf_authenticate_server
+description: Server response template for Nausf_UEAuthentication_Authenticate
+category: functional
+type: server
+protocol: sbi
+nf: ausf
+
+initial_state: waiting
+final_states:
+  - completed
+  - failed
+
+states:
+  waiting:
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate
+        target: waiting
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate_Answer
+            message_body: |
+              {
+                "status": 201,
+                "body": {
+                  "authType": "5G_AKA",
+                  "5gAuthData": {
+                    "rand": "11112222333344445555666677778888",
+                    "autn": "AAAABBBBCCCCDDDDEEEEFFFF00001111",
+                    "hxresStar": "1234567890ABCDEF1234567890ABCDEF"
+                  },
+                  "_links": {
+                    "5g-aka": {
+                      "href": "/nausf-auth/v1/ue-authentications/abcdef/5g-aka-confirmation"
+                    }
+                  },
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }

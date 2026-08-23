@@ -1,0 +1,51 @@
+# Nausf_UEAuthentication — unauthorized serving network (security / negative).
+# 3GPP TS 29.509 §6.1.7.3 (cause SERVING_NETWORK_NOT_AUTHORIZED, 403).
+# runner initiates authentication with a serving-network name the AUSF must not
+# authorize. The AUSF must REJECT with 403 + ProblemDetails and STAY UP.
+
+kind: flow
+name: ausf_ueauth_bad_serving_network_name_rejected
+description: POST ue-authentications with an unauthorized servingNetworkName is rejected 403
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            peer: ausf
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc999.mcc999.3gppnetwork.org"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 403
+          - type: check
+            field: sbi.body.cause
+            op: contains
+            expected: SERVING_NETWORK_NOT_AUTHORIZED

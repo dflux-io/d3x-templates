@@ -1,0 +1,135 @@
+# Authentication failure (MAC failure) — negative / robustness test.
+#
+# 3GPP ref: TS 24.501 §5.4.1.3.7 (abnormal cases on the UE side) and the
+# AMF handling in §5.4.1.3.6. NGAP carriage per TS 38.413 §8.6.
+#
+# Abnormal input sent: the gNB drives a UE through the registration preamble
+# (InitialUEMessage -> AuthenticationRequest) and then, instead of a valid
+# AuthResponse, sends an AuthenticationFailure with 5GMM cause #20
+# "MAC failure" (params {cause: 20}). This models a UE that computed XMAC !=
+# MAC over the received AUTN, i.e. the network authentication token failed
+# integrity verification.
+#
+# Expected-correct Open5GS behavior: per 24.501 §5.4.1.3.6 the AMF, on
+# receiving AUTHENTICATION FAILURE with cause #20, may either re-run the
+# authentication procedure with a fresh challenge (a new
+# NASDownlinkTransport.AuthenticationRequest) up to its retry limit, or abort
+# authentication and send a NASDownlinkTransport.AuthenticationReject. Either
+# reaction is spec-compliant; the AMF MUST NOT proceed to SecurityModeCommand
+# or RegistrationAccept, and MUST NOT crash. Success terminal = reaching
+# either the re-challenge or the reject (auth_rechallenged).
+
+kind: flow
+name: auth_failure_mac
+description: Auth preamble then AuthenticationFailure cause #20 (MAC failure) — expect re-challenge or reject (YAML)
+detail: |
+  Negative authentication test (3GPP TS 24.501 §5.4.1.3.7). The UE registers up
+  to the point of receiving the AuthenticationRequest, then returns an
+  AuthenticationFailure with 5GMM cause #20 "MAC failure" instead of an
+  AuthenticationResponse.
+
+  A spec-compliant AMF (Open5GS) treats this as a failed authentication of the
+  network by the UE. It either re-initiates authentication with a fresh
+  AuthenticationRequest (new RAND/AUTN) or aborts with an AuthenticationReject.
+  Both outcomes are correct and prove the AMF handles mac_failed without
+  advancing the registration. The compliance assertion is that one of these two
+  reactions is received within the timeout.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - auth_rechallenged
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_auth_reaction
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          # Instead of AuthResponse, signal MAC failure (24.501 cause #20).
+          - type: send
+            message: AuthenticationFailure
+            params:
+              cause: 20
+
+  wait_auth_reaction:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # Spec-correct reaction: AMF re-challenges with a fresh AuthenticationRequest,
+      # or aborts authentication with an AuthenticationReject. Either is success.
+      - event:
+          or:
+            - NASDownlinkTransport.AuthenticationRequest
+            - NASDownlinkTransport.AuthenticationReject
+        target: auth_rechallenged
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-410).
+#
+# REG-410 — After AuthenticationFailure(#20), the next N1 downlink is an IDENTITY
+# REQUEST, a new AUTHENTICATION REQUEST or an AUTHENTICATION REJECT, or the context is
+# released. A REGISTRATION ACCEPT is a failure.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `auth_rechallenged`
+    metric: final_state_counts.auth_rechallenged
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NAS UPLINK TRANSPORT was sent (AuthenticationFailure)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  # The one `check` action on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

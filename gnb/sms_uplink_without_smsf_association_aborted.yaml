@@ -1,0 +1,252 @@
+# REG-622 — an SMS payload container submitted by a UE the AMF holds no SMSF
+# association for must be ABORTED, not forwarded.
+#
+# THE CLAUSE, verbatim (TS 24.501 §5.4.5.2.5, "Abnormal cases on the network
+# side", retrieved with matrix/scripts/spec-clause.py):
+#
+#   b) If the Payload container type IE is set to "SMS" and:
+#      1) the AMF does not have an SMSF address associated with the UE;
+#      2) the AMF cannot forward the content of the Payload container IE to the
+#         SMSF associated with the SMSF address available in the AMF; or
+#      3) … satellite NG-RAN …
+#      then the AMF shall abort the procedure.
+#
+# WHY THIS UE HAS NO SMSF ASSOCIATION. The registration omits the 5GS update
+# type IE, and §5.5.1.2.4 makes the consequences of that explicit and paired:
+# case e) "the 5GS update type IE was not included in the REGISTRATION REQUEST
+# message" obliges the AMF to answer "SMS over NAS not allowed"; and the only
+# sentence in that clause that tells the AMF to "store the SMSF address … in the
+# UE 5GMM context and consider the UE available for SMS over NAS" is conditioned
+# on the SMS requested bit being set. A UE that never asked is a UE the AMF must
+# not have an SMSF address for, so §5.4.5.2.5 b)1) is the case under test.
+#
+# The sendable is InitialUEMessageSMSNotRequested. Read its doc comment before
+# reading anything into the name: nas5g emits the 5GS update type IE only when
+# the bit is set, so what goes on the wire is "IE ABSENT", which is §5.5.1.2.4
+# case e) rather than case d). The clause legislates both identically, which is
+# what makes the substitution legitimate; see runner/runner/enrichers_uepolicy.go.
+#
+# WHAT THE CHECKS ASSERT — this row's criterion and nothing else.
+#   1. `nas.sms_allowed equals false` on the REGISTRATION ACCEPT. The
+#      precondition, asserted rather than assumed: if a core answered "SMS
+#      allowed" here it WOULD have an SMSF association and forwarding would be
+#      correct, so the rest of the flow would be scoring the wrong core state.
+#      This check failing is a §5.5.1.2.4 case e) finding in its own right.
+#   2. NOT-A-VACUOUS-PROBE: `ue.Params.sms_mo_rp_ref not_empty` after SMSSubmit.
+#      The SMS enricher only writes that key on the path that actually encoded a
+#      CP-DATA(RP-DATA(SMS-SUBMIT)) into a payload container of type SMS, so a
+#      silent no-op send cannot reach the silence window and be scored as an
+#      abort. The wire proof is in -trace: the UL NAS TRANSPORT carries
+#      payload_container_type 1 (SMS).
+#   3. THE ROW: every one of the six SMS downlink sub-events the runner can name
+#      transitions to `sms_forwarded`, a FAILING terminal. Silence for
+#      absent_after_s (10 s, from the register row) is the conformant answer.
+#      AND A 5GMM STATUS IS NOT SILENCE. §5.4.5.2.5 says "abort the procedure";
+#      it does not license answering. open5gs answers this submit with a 5GMM
+#      STATUS carrying 5GMM cause #96 (invalid mandatory information) — captured
+#      on the wire, NGAP NAS DOWNLINK TRANSPORT `7e 02 .. .. .. .. 7e 00 64 60`,
+#      0x64 = 5GMM STATUS, 0x60 = 96. Until this row named that event the runner
+#      refused it into `bus_audit.refused` and dropped it, and the row scored
+#      open5gs as silent — crediting the core with an absence it did not produce.
+#      It is a FAILING terminal of its own, `status_returned`, so
+#      final_state_counts says WHICH obligation was broken rather than lumping
+#      an answer in with a stall. This is the shape REG-718
+#      (ue_policy_uplink_no_pcf_association_aborted) already uses for the same
+#      clause, and it is why REG-718 went red on open5gs while this row did not.
+#
+#      …PayloadNotForwarded is added for a DIFFERENT and narrower reason, and
+#      not because a core has been seen sending it. Before xp-312 a DL NAS
+#      TRANSPORT that echoed an SMS container back with a 5GMM cause — the
+#      §5.4.5.3.2 refusal — resolved to `…DLNASTransport.SMSContainer` and so hit
+#      `sms_forwarded`, the wrong failing terminal: it reported a DELIVERY of a
+#      container the AMF had explicitly refused to deliver. The resolver now
+#      names that event from the 5GMM layer, which is correct, but it means the
+#      six SMS sub-events above NO LONGER cover it — so leaving it unnamed would
+#      re-open, for the refusal case, precisely the drop-the-answer hole this
+#      row is being fixed for. It is named to keep that hole shut.
+#
+#      ErrorIndication and the bare NASDownlinkTransport.DLNASTransport that
+#      REG-718 also enumerates are NOT added: no core has been observed sending
+#      either here, nothing in the runner has changed underneath them, and an
+#      assertion never shown to fail is not evidence.
+#   4. SILENCE IS NOT SCORED ON A BARE TIMER. §5.4.5.2.5's "abort" is an abort of
+#      the NAS TRANSPORT procedure, NOT of the connection, so the row's criterion
+#      requires a positive acceptance observable: after the window the UE sends a
+#      DEREGISTRATION REQUEST on the same N1 connection and the flow only reaches
+#      the passing terminal if the AMF answers it. A core that silently dropped
+#      the UE, or that answered the SMS by tearing the context down, ends in
+#      `failed` or `context_released`, never in `sms_aborted`.
+#
+# DISABLE-THE-VIOLATION CONTROL. The violation this row injects is "submit SMS
+# while unauthorised for SMS". Removing it means registering WITH SMS requested
+# and submitting the same SMS — which is gnb/sms_mo.yaml, a flow that terminates
+# in sms_sent against a core that forwards. The silence detector here and the
+# arrival detector there are the same six events, so a `sms_aborted` terminal
+# cannot be a runner that simply never sees SMS downlinks.
+#
+# Terminals: sms_aborted (PASS), sms_forwarded / status_returned / context_released / failed (FAIL).
+
+kind: flow
+name: sms_uplink_without_smsf_association_aborted
+description: REG-622 — UL NAS TRANSPORT with an SMS payload container from a UE with no SMSF association must be aborted, not forwarded (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - sms_aborted
+  - sms_forwarded
+  - status_returned
+  - context_released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessageSMSNotRequested
+            params:
+              # TS 24.501 §5.5.1.2.2 — this UE HAS pending uplink signalling after
+              # the registration (the payload container this row is about), so the
+              # Follow-on request indicator belongs in the 5GS registration type IE.
+              # Without it §5.5.1.2.4 lets the AMF release the N1 connection the
+              # moment registration ends, and free5GC does exactly that; the row
+              # would then measure a release it asked for. FOR is a cleartext-IE bit
+              # (part of the 5GS registration type octet), so it travels on the
+              # first message with no §4.4.6 complication.
+              follow_on_request: true
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: sms_settle
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          # (1) §5.5.1.2.4 case e) — no 5GS update type IE went up, so the
+          # SMS allowed bit of the 5GS registration result must be clear.
+          - { type: check, field: nas.sms_allowed, op: equals, expected: false }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+  # The same CM-CONNECTED settle gnb/sms_mo.yaml uses, and for the same reason:
+  # an AMF that activates SMS asynchronously must be given the chance to finish
+  # doing so. Here that is a fairness measure, not a prerequisite — the row wants
+  # the AMF in the state it would ordinarily be in when the submit lands, so a
+  # PASS cannot be an artefact of racing the AMF's own bookkeeping.
+  sms_settle:
+    on_timeout:
+      duration: 2s
+      target: wait_sms_silence
+      actions:
+        - type: send
+          message: SMSSubmit
+          params:
+            destination: "19995550123"
+            text: "d3x REG-622 unauthorised submit"
+
+  # (2) + (3). The check runs on the way in and proves the CP-DATA was really
+  # encoded; the six transitions are the row's assertion.
+  wait_sms_silence:
+    on_timeout:
+      duration: 10s
+      target: wait_liveness_answer
+      actions:
+        - { type: check, field: ue.Params.sms_mo_rp_ref, op: not_empty }
+        - { type: send, message: DeregistrationRequest }
+    transitions:
+      - { event: NASDownlinkTransport.DLNASTransport.SMSCpAck, target: sms_forwarded }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSCpError, target: sms_forwarded }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport, target: sms_forwarded }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSDeliver, target: sms_forwarded }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSRpError, target: sms_forwarded }
+      - { event: NASDownlinkTransport.DLNASTransport.SMSContainer, target: sms_forwarded }
+      # A DL NAS TRANSPORT that ECHOES the container back with a 5GMM cause is
+      # TS 24.501 §5.4.5.3.2's "I did not forward this" — a refusal, and an
+      # answer. It is not the six above (nothing was delivered) and it is not
+      # silence either, so it gets the same failing terminal as the status: this
+      # row's criterion is that NO downlink NAS message answers the submit.
+      - { event: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded, target: status_returned }
+      # THE ANSWER open5gs ACTUALLY GIVES — see (3) in the header. 5GMM cause 96.
+      - { event: NASDownlinkTransport.5GMMStatus, target: status_returned }
+      # An abort of the NAS TRANSPORT procedure is not an abort of the UE: a core
+      # that answers an unauthorised SMS by releasing the context has done
+      # something §5.4.5.2.5 does not license, and the row's criterion requires
+      # the connection to stay up. Named terminal, not `failed`, so
+      # final_state_counts distinguishes it from a runner stall.
+      - { event: UEContextReleaseCommand, target: context_released }
+
+  # (4) The positive acceptance observable. DEREGISTRATION REQUEST rides the SAME
+  # N1 NAS connection and the SAME NG-C UE association the SMS did, so its normal
+  # answer is direct evidence both survived — which is exactly what the row's
+  # pass criterion asks for and what a bare timer could never show.
+  wait_liveness_answer:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - { event: NASDownlinkTransport.DeregistrationAccept, target: sms_aborted }
+      - { event: UEContextReleaseCommand, target: sms_aborted }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-622 (negative, expected_terminal: sms_aborted) —
+# No downlink NAS message carrying a payload container of type SMS arrives within
+# absent_after_s; the NG-C association and the UE's NAS connection stay up, proved by a
+# following UL NAS message that still draws its normal response
+#
+# REG-622: "No downlink NAS message carrying a payload container of type SMS arrives
+# within absent_after_s; the NG-C association and the UE's NAS connection stay up,
+# PROVED BY a following UL NAS message that still draws its normal response."
+# `sms_aborted` is that proof; `sms_forwarded` is the AMF relaying SMS for a UE it holds
+# no SMSF address for; `context_released` is a teardown TS 24.501 §5.4.5.2.5 case b) 1)
+# does not call for.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `sms_aborted` — the terminal this row claims
+    metric: final_state_counts.sms_aborted
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

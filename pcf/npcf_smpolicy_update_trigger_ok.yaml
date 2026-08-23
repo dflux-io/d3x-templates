@@ -1,0 +1,158 @@
+# Npcf_SMPolicyControl — Update SM policy (SMF-reported trigger round-trip).
+# 3GPP TS 29.512 §4.2.4 (POST /sm-policies/{id}/update with
+# SmPolicyUpdateContextData → 200 + SmPolicyDecision).
+#
+# Create, extract Location, then POST .../update with a minimal
+# repPolicyCtrlReqTriggers report (the trigger contract is A1's;
+# SmPolicyUpdateContextData is schemaless in d3xproto, so the body stays
+# minimal — Risk 6). Asserts the update answers 200 and the decision survives
+# the round (bare decision in the update response, no policy. prefix per E6).
+# Two update rounds: the first reports RES_MO_RE, the second a newly-armed
+# mobility trigger (PLMN_CH) from the broadened armed set (PCF-5).
+
+kind: flow
+name: npcf_smpolicy_update_trigger_ok
+description: POST sm-policies → POST .../update (RES_MO_RE) → POST .../update (PLMN_CH) → 200 + decision intact
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_update
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/update",
+                "body": {
+                  "repPolicyCtrlReqTriggers": ["RES_MO_RE"]
+                }
+              }
+
+  wait_update:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_update2
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # `.length greater_or_equal 1`, NOT `not_empty`: `sessRules` is a JSON
+          # object/array, and `not_empty` is `value != nil && value != "" &&
+          # value != 0.0` — an EMPTY `{}` / `[]` satisfies all three, so
+          # `not_empty` passed on a decision carrying NO session rules, which is
+          # precisely the answer this row exists to reject.
+          - type: check
+            field: sbi.body.sessRules.length
+            op: greater_or_equal
+            expected: 1
+          # Second update round with a NEWLY-armed mobility trigger (PLMN_CH,
+          # broadened from the original RES_MO_RE/DEF_QOS_CH/SE_AMBR_CH set):
+          # the PCF now subscribes to and acts on it, still answering 200 with
+          # the decision intact.
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/update",
+                "body": {
+                  "repPolicyCtrlReqTriggers": ["PLMN_CH"]
+                }
+              }
+
+  wait_update2:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_cleanup
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # See the same check on the first update round above: an empty
+          # sessRules satisfies `not_empty`, so it is counted, not tested for
+          # mere presence.
+          - type: check
+            field: sbi.body.sessRules.length
+            op: greater_or_equal
+            expected: 1
+          # Suite-isolation cleanup: release this (supi,dnn) association so a
+          # later N5 app-session install binds unambiguously (ruling R6). Reuses
+          # the sm_policy_loc extracted on create.
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/delete",
+                "body": {}
+              }
+
+  wait_cleanup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

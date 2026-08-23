@@ -1,0 +1,251 @@
+# REG-569 — a mandatory IE is missing, and the AS security must not soften.
+#
+# TS 38.413 §9.2.3.8 lists UE Security Capabilities as an M (mandatory) IE of
+# the PATH SWITCH REQUEST, with criticality "ignore". §10.3.5 governs what a
+# receiver does with a missing IE: an IE marked "ignore" and missing is
+# ignored, and the receiving node continues with the procedure — it does NOT
+# get to invent a capability set. TS 33.501 §6.9.2.3.2 is why that matters: the
+# acknowledge is where the AMF hands the target the {NH, NCC} pair the AS keys
+# come from, and an AMF that answered a capability-less request by echoing an
+# empty or null-algorithm capability set would have let a malformed request
+# re-open a negotiated security context.
+#
+# THE VIOLATION IS ON THE WIRE, and it is an OMISSION: `sec_caps: false` makes
+# the encoder skip IE id=119 entirely, so the PATH SWITCH REQUEST goes out with
+# five IEs instead of six and the mandatory one is simply absent. The -trace
+# hex dump shows the IE container count and no 0x0077 IE header. Remove the
+# param and the IE is present again — the control.
+#
+# WHAT COUNTS AS A PASS. Three answers are conformant: an acknowledge that
+# still carries a Security Context and the STORED capabilities; a
+# PATH SWITCH REQUEST FAILURE; or an ERROR INDICATION. What is NOT conformant
+# is an acknowledge whose capability set is empty or null-algorithm-only, and
+# that is asserted positively on the acknowledge path rather than left to a
+# terminal that could be reached by accident. Silence is a failure here: this
+# is not a clause that permits a silent discard.
+#
+# THE REQUEST LEAVES ON THE TARGET ASSOCIATION, AND THAT IS THE WHOLE POINT.
+# An Xn path switch is by definition sent by the TARGET NG-RAN node after the
+# UE has already moved to it over the air (TS 38.413 §8.4.4, TS 23.502
+# §4.9.1.2) — the 5GC hears nothing until the request arrives on the target's
+# own association. The predecessor of these rows sent PATH SWITCH REQUEST on
+# the association the UE was already on; a conformant AMF answers that by
+# refusing to switch a path to where the UE already is, and the refusal was
+# scored as core behaviour when it was the harness's. So the send carries
+# `xn_move: true`, which relocates the UE's RAN leg to the peer gNB with NO
+# NG-C signalling at all (a fresh RAN-UE-NGAP-ID allocated there, the
+# AMF-UE-NGAP-ID untouched because it is the identity that spans both legs) —
+# which is exactly what an Xn handover looks like from the core's side.
+#
+# NEEDS TWO gNBs (register preconditions.gnbs: 2). With one, there is no peer
+# to move to and the send fails outright rather than measuring anything.
+
+kind: flow
+name: xn_path_switch_missing_ue_security_capabilities
+description: Xn path switch with the mandatory UE Security Capabilities IE omitted; assert the AMF neither acknowledges with a null capability set nor breaks
+detail: |
+  Registration, one PDU session, then an Xn path switch sent from the peer gNB
+  the UE moved to, with the mandatory UE Security Capabilities IE omitted.
+
+  A PATH SWITCH REQUEST ACKNOWLEDGE is accepted only if it carries a Security
+  Context IE and the UE Security Capabilities the AMF has stored for this UE
+  (0xFE00 in each NR bitmap — the algorithms the UE advertised at
+  registration); an empty or null-algorithm echo fails the row. A PATH SWITCH
+  REQUEST FAILURE or an ERROR INDICATION is also a conformant answer and has
+  its own terminal. A timeout is a failure.
+category: robustness
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - path_switch_caps_preserved
+  - path_switch_refused
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_path_switch_response
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: PathSwitchRequest
+            params:
+              xn_move: true
+              sec_caps: false
+
+  wait_path_switch_response:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PathSwitchRequestAcknowledge
+        target: path_switch_caps_preserved
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # --- TS 33.501 §6.9.2.3.2: the key material still has to be there ---
+          - type: check
+            field: security_context
+            op: ie_present
+          - type: check
+            field: security_context.next_hop_nh
+            op: not_empty
+          # --- TS 38.413 §9.3.1.86 / §10.3.5: the STORED capabilities, echoed.
+          # ie_present before the value comparisons: `equals` on an absent IE
+          # would report "<missing>" and fail, but the presence assertion is
+          # what names "the AMF dropped the capabilities entirely" as distinct
+          # from "the AMF echoed the wrong ones".
+          - type: check
+            field: ue_security_capabilities
+            op: ie_present
+          - type: check
+            field: ue_security_capabilities.nr_encryption_algorithms
+            op: equals
+            expected: 65024
+          - type: check
+            field: ue_security_capabilities.nr_integrity_protection_algorithms
+            op: equals
+            expected: 65024
+      # Refusing the request outright is equally conformant — the IE was
+      # mandatory and it was not there.
+      - event: PathSwitchRequestFailure
+        target: path_switch_refused
+      - event: ErrorIndication
+        target: path_switch_refused
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-569 (robustness, expected_terminal:
+# path_switch_caps_preserved) — Either PathSwitchRequestAcknowledge is received with a
+# Security Context IE present and the stored UE Security Capabilities echoed, or
+# PathSwitchRequestFailure / ErrorIndication is received — in no case is an
+# acknowledgement returned with an empty or null-algorithm capability set.
+#
+# NO NON-FAILURE TERMINAL IS PINNED. REG-569's criterion accepts "EITHER
+# PathSwitchRequestAcknowledge ... with the stored UE Security Capabilities echoed, OR
+# PathSwitchRequestFailure / ErrorIndication" — `path_switch_caps_preserved` and
+# `path_switch_refused` respectively — because §9.2.3.8 gives the omitted IE criticality
+# `ignore`, so continuing and refusing are both spec-legal. The register's
+# `expected_terminal: path_switch_caps_preserved` is one of the two, not the only one.
+# The obligation the criterion states without an alternative — "in no case is an
+# acknowledgement returned with an empty or null-algorithm capability set" — is carried
+# by the per-step checks on the acknowledgement, i.e. by `checks_failed`.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` (the association or the preamble died)
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 7
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

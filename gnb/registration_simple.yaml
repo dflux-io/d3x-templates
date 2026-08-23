@@ -1,0 +1,119 @@
+# Simple registration wiring check (gNB side).
+#
+# Client counterpart of amf/registration_amf.yaml: sends an
+# InitialUEMessage (carrying the NAS Registration Request built by
+# EnrichInitialUEMessage from subscriber state), then waits for the
+# stub AMF's UEContextReleaseCommand and confirms with
+# UEContextReleaseComplete. No auth / security mode / registration
+# accept — the AMF-side NAS TX enrichers for those don't exist yet
+# (see the follow-ups note in amf/registration_amf.yaml).
+#
+# NGSetup is NOT part of this flow: the NGAP client transport performs
+# auto-NGSetup at connect time, and the server-mode AMF auto-admits —
+# both exchanges still appear on the wire (useful for pcap inspection).
+#
+# Intended for runner-vs-runner runs (e.g. the docker/ SCTP-over-Docker lab
+# in d3x-run): one container runs registration_amf, this flow
+# dials it.
+
+kind: flow
+name: registration_simple
+description: "gNB-side stub: send InitialUEMessage, expect UEContextReleaseCommand, confirm release (YAML)"
+detail: |
+  Wiring-validation flow pairing with the server-mode registration_amf
+  stub. Proves the full client pipeline against an runner-simulated AMF:
+  SCTP dial → auto-NGSetup → InitialUEMessage with a real NAS
+  Registration Request → AMF FSM responds UEContextReleaseCommand →
+  UEContextReleaseComplete → terminal state.
+
+  Grows into the full registration.yaml exchange (Auth → SecurityMode →
+  RegistrationAccept) once the AMF-side NAS TX enrichers land.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_release
+        actions:
+          # Pre-populated fields survive the enricher (it zero-gates);
+          # RanUeNgapId, UserLocationInformation and the NAS PDU are
+          # filled from UE state. Cause 3 = mo-Signalling — what a real
+          # registration carries (0 decodes as "emergency" in Wireshark).
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 3,
+                "ue_context_request": 1
+              }
+
+  wait_release:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: released
+        actions:
+          - type: check
+            field: ran_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: UEContextReleaseComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `released`
+    metric: final_state_counts.released
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # The one `check` action on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

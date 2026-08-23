@@ -1,0 +1,70 @@
+# SBI wire-fuzz driver — W2-F3.
+#
+# udm/ueau_generate_auth_data_ok.yaml with a `fuzz:` block and relaxed
+# assertions. Fuzzes the JSON request body of
+# POST /nudm-ueau/v1/{supi}/security-information/generate-auth-data against a
+# live UDM.
+#
+# For SBI the mutate stage does not touch the internal envelope (path/headers).
+# It mutates the envelope's BODY and re-marshals around it, so a well-formed
+# HTTP POST carries a corrupt generate-auth-data body — the real request that
+# crosses the network.
+#
+# ORACLE
+#   survived  the UDM answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400 on a corrupt body is CORRECT.
+# Only that a status EXISTS is checked.
+
+kind: flow
+name: fuzz_udm_ueau_body
+description: Wire-level fuzz of the Nudm_UEAU generate-auth-data request body against a live UDM
+category: robustness
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [Nudm_UEAuthentication_GetAuthData]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nudm_UEAuthentication_GetAuthData
+            peer: udm
+            message_body: |
+              {
+                "path": "/nudm-ueau/v1/imsi-001010000000001/security-information/generate-auth-data",
+                "body": {
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org",
+                  "ausfInstanceId": "11111111-2222-3333-4444-555555555555"
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 200, 400, 403, 500 — means the NF
+    # parsed, decided and replied, which is what F3 asserts.
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.Nudm_UEAuthentication_GetAuthData_Answer
+        target: survived
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

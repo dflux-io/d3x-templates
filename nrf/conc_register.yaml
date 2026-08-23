@@ -1,0 +1,68 @@
+# CONC-01 — 100 distinct registrations (Layer B burst).
+#
+# One UE = one PUT to a FRESH random UUID. The burst runner fires N=100
+# of these at once (`run-flow -repetitions 100 -rate 0`), so the NRF sees
+# 100 concurrent PUTs to 100 distinct nf-instance IDs. Each must land its
+# own row; the cross-UE invariant — "exactly 100 NFs exist afterwards" —
+# is checked by the runner's curl step (a single UE/flow can't see other
+# UEs' results), NOT here.
+#
+# DELIBERATELY no cleanup (no deregister): the post-burst list count is
+# the assertion, so the rows must survive the flow.
+#
+# Layer A counterpart: TestConcurrency_CONC01_DistinctRegistrations in
+# d3x-core nrf/concurrency_test.go. Plan: docs/nrf/concurrency-test-plan.md.
+
+kind: flow
+name: nrf_conc_register
+description: One distinct registration; burst N=100 for CONC-01.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: Register
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-conc01.local",
+                  "ipv4Addresses": ["10.0.1.1"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.Register_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.headers.Location
+            op: contains
+            expected: "/nnrf-nfm/v1/nf-instances/"
+          - type: check
+            field: rest.body.nfInstanceId
+            op: not_empty
+
+  done: {}
+  failed: {}

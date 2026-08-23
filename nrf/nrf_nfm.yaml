@@ -1,0 +1,117 @@
+# Nnrf_NFManagement service suite — depth + negatives.
+#
+# 13 flows total (NFM-13 is deferred to nrf_longrun because of its
+# ~1 min wall-clock cost). Positives use stop_on_failure: true so the
+# first broken contract halts the suite for clear CI signal. Negatives
+# use stop_on_failure: false so a single missing 400/404 doesn't mask
+# the others — they're informational and the suite still gates pass/
+# fail via flows_failed + checks_failed in final_checks.
+#
+# Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.2):
+#   NFM-01  register_then_deregister     — lifecycle smoke
+#   NFM-02  register_201_location        — 201 vs 200 idempotency
+#   NFM-14  update_via_put               — full-replace PUT semantics
+#   NFM-03  register_full_profile        — every optional field round-trips
+#   NFM-05  patch_all_fields             — JSON-Patch per allowed field
+#   NFM-04  list_filtered                — filter + limit boundaries
+#   NFM-06  get_unknown                  — 404 + ProblemDetails on GET
+#   NFM-07  delete_unknown               — 404 + ProblemDetails on DELETE
+#   NFM-08  register_bad_heartbeat       — 400 on heartBeatTimer 5 / 100000
+#   NFM-09  register_missing_required    — 400 on missing nfType
+#   NFM-10  register_invalid_nftype      — 400 on nfType="BOGUS"
+#   NFM-11  patch_invalid_path           — 400 on bogus JSON-Patch path/op
+#   NFM-12  patch_replace_immutable      — 400 on PATCH /nfInstanceId
+
+kind: suite
+name: nrf_nfm
+description: Nnrf_NFManagement — register / get / patch / delete + edge cases + negatives.
+
+steps:
+  # --- Positives (stop_on_failure: true — first broken contract halts) ---
+
+  - name: lifecycle
+    flow: nrf_nfm_register_then_deregister
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: register_201_location
+    flow: nrf_nfm_register_201_location
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: update_via_put
+    flow: nrf_nfm_update_via_put
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: register_full_profile
+    flow: nrf_nfm_register_full_profile
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: patch_all_fields
+    flow: nrf_nfm_patch_all_fields
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: list_filtered
+    flow: nrf_nfm_list_filtered
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: list_hal
+    flow: nrf_nfm_list_hal
+    repetitions: 1
+    stop_on_failure: true
+
+  # --- Negatives (stop_on_failure: false — informational; suite-level gate
+  #     is flows_failed + checks_failed in final_checks) ---
+
+  - name: get_unknown
+    flow: nrf_nfm_get_unknown
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: delete_unknown
+    flow: nrf_nfm_delete_unknown
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: register_bad_heartbeat
+    flow: nrf_nfm_register_bad_heartbeat
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: register_missing_required
+    flow: nrf_nfm_register_missing_required
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: register_invalid_nftype
+    flow: nrf_nfm_register_invalid_nftype
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: patch_invalid_path
+    flow: nrf_nfm_patch_invalid_path
+    repetitions: 1
+    stop_on_failure: false
+
+  - name: patch_replace_immutable
+    flow: nrf_nfm_patch_replace_immutable
+    repetitions: 1
+    stop_on_failure: false
+
+final_checks:
+  - name: all_flows_succeeded
+    metric: flows_succeeded
+    op: equals
+    value: 14
+  - name: no_failed_flows
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no_failed_checks
+    metric: checks_failed
+    op: equals
+    value: 0

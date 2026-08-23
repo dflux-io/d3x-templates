@@ -1,0 +1,252 @@
+# PDU session establishment whose request asks for a DNS server address through
+# the Extended protocol configuration options IE — and what the Accept is
+# allowed to answer.
+#
+# REG-313 — Extended protocol configuration options: DNS server address
+# returned in the Accept.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §6.6.1 (Exchange of extended protocol configuration options) —
+#   the whole clause, and it is short:
+#     "The UE and the SMF can exchange protocol configuration options via 5GSM
+#      procedures. The protocol configuration options shall be exchanged via
+#      the Extended protocol configuration options IE."
+#   That "shall" is the one hard failure this row can report on the delivery
+#   side: configuration options — a DNS server address among them — travel in
+#   the ePCO IE, not somewhere else in the message.
+#
+#   TS 24.501 §6.2.4.1 (IP address allocation, General) — why an ACCEPT WITHOUT
+#   any DNS container is NOT a failure. For an IPv4 session the UE:
+#     "b) may obtain IPv4 configuration parameters (e.g. DNS server address)
+#      via DHCPv4 as specified in IETF RFC 2132 [33F] or may receive IPv4
+#      configuration parameters (e.g. DNS server address) as specified in
+#      subclause 6.4.1 and subclause 6.3.2."
+#   and for IPv6: stateless DHCPv6, or an RFC 8106 recursive-DNS-server option
+#   in a Router Advertisement. NAS delivery is one permitted mechanism of
+#   several, so "no DNS container" is a legitimate core that expects DHCP —
+#   RECORDED here, not failed. §6.4.1.3 obliges the ePCO answer only when the
+#   SMF has DNS server address(es) to provide.
+#
+# WHAT THIS ROW THEREFORE ASSERTS (all three are real failures):
+#   1. The request genuinely carried the ePCO IE with a DNS Server IPv4 Address
+#      Request container (0x000D, TS 24.008 Table 10.5.154) — see the wire note
+#      below. Without that, everything after it would be vacuous.
+#   2. The Accept DECODES. An ePCO the core echoes malformed would surface as a
+#      decode failure and the accept-derived params below would never appear.
+#   3. No container of an IP version the UE did NOT request, and none the
+#      selected PDU session type does not include: this flow requests IPv4 DNS
+#      on an IPv4 session, so a DNS Server IPv6 Address container in the answer
+#      fails on `pdu_accept_epco_dns_ipv6_count equals 0`.
+#   The IPv4 DNS container count is RECORDED (`exists`), not required — that is
+#   the (a)/(b) split the criterion spells out.
+#
+# THE REQUEST IS ON THE WIRE, NOT JUST IN THE YAML. `epco_dns: ipv4` makes
+# EnrichPDUSessionEstablishmentRequest attach an Extended PCO IE with one
+# empty-contents container id 0x000D (pduSessionRequestEPCO,
+# runner/runner/enrichers_pdu_session_accept.go); encodeExtendedPCO writes it
+# as ext|protocol octet + id(2) + len(1) = 4 octets, carried in the TLV-E IE
+# 0x7B (1 + 2 length octets), i.e. SEVEN octets more than the same request
+# without it. MEASURED against tinycore: the UL NAS TRANSPORT carrying this
+# request is 88 bytes here versus 81 bytes for the otherwise identical request
+# in pdu_session_setup.yaml — the 7-octet difference is the ePCO IE, visible in
+# the trace's per-message byte counts even though the NAS payload is ciphered.
+#
+# MEASURED ON tinycore (2026-08-11): the accept carries NO ePCO IE at all
+# (pdu_accept_epco_container_count == -1), i.e. branch (b) — recorded, not
+# failed. Its accept builder (buildPDUSessionEstablishmentAccept,
+# tinycore/dmf/smf/bridge.go) never sets ExtendedPco, so this core does not
+# deliver DNS over NAS at all.
+#
+# HARNESS NOTE — the accept's IEs are read from ue.Params, not `nas.*`: the
+# accept rides on the per-item NAS-PDU IE that extractNasPdu() never sees (see
+# pdu_session_setup.yaml). exposePduSessionAcceptParams projects it, counting
+# DNS containers per IP version and writing -1 for "ePCO IE absent" so that
+# "no ePCO" and "an ePCO with no containers" stay different observations.
+
+kind: flow
+name: pdu_session_epco_dns_request
+description: PDU session establishment requesting a DNS server address via the Extended PCO IE — the Accept must not answer with an unrequested IP version (YAML)
+detail: |
+  Registration, then a UE-requested PDU session establishment for an IPv4 PDU
+  session whose 5GSM request carries an Extended protocol configuration options
+  IE with a DNS Server IPv4 Address Request container.
+
+  Per TS 24.501 §6.4.1.3 the SMF answers with DNS server address(es) in the
+  ePCO IE of the accept when it has any to provide; §6.2.4.1 lets it leave them
+  to DHCPv4 / stateless DHCPv6 / RFC 8106 Router Advertisements instead. So an
+  accept with no DNS container is recorded rather than failed, while a
+  container of an IP version the UE never asked for — or one the selected PDU
+  session type does not include — is a failure, as is delivering configuration
+  options outside the ePCO IE (§6.6.1).
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # DNS Server IPv4 Address Request container (0x000D) in the ePCO
+              # IE. IPv4 only, because this is an IPv4 PDU session — asking for
+              # a v6 DNS here would make the "unrequested version" assertion
+              # below untestable.
+              epco_dns: ipv4
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          # The accept is carried and DECODED — the projected params below only
+          # exist if the 5GSM decode (including any ePCO the core echoed)
+          # succeeded.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          - { type: check, field: ue.Params.pdu_accept_selected_pdu_session_type, op: equals, expected: 1 }  # IPv4
+
+          # RECORDED, NOT REQUIRED (§6.2.4.1: DHCP and RA are permitted
+          # alternatives to NAS delivery). -1 == no ePCO IE in the accept.
+          # NOT `exists`: it passes on the -1 absent sentinel. A container count of 0 is a
+          # legitimate answer (§6.2.4.1 permits DHCP/RA delivery instead), so assert the key
+          # resolved to a real count rather than to the sentinel.
+          - { type: check, field: ue.Params.pdu_accept_epco_container_count, op: greater_or_equal, expected: 0 }
+          - { type: check, field: ue.Params.pdu_accept_epco_dns_ipv4_count, op: greater_or_equal, expected: 0 }
+
+          # --- THE row's failures -----------------------------------------
+          # A DNS server address of an IP version the UE did not request, and
+          # which this IPv4 session does not even have, must not come back.
+          - { type: check, field: ue.Params.pdu_accept_epco_dns_ipv6_count, op: equals, expected: 0 }
+
+          # Context: a real session, with the IPv4 address whose DNS the UE
+          # asked about.
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-313).
+#
+# REG-313 — Given a PDU SESSION ESTABLISHMENT REQUEST whose Extended protocol
+# configuration options IE carried a DNS server IPv4 address request, a DNS server IPv6
+# address request or both, the PDU SESSION ESTABLISHMENT ACCEPT decodes and either (a)
+# carries an Extended protocol configuration options IE with at least one DNS server
+# address container whose IP version was requested and is consistent with the Selected
+# PDU session type, or (b) carries no DNS server address container at all — TS 24.501
+# §6.4.1.3 obliges (a) only when the SMF has DNS server address(es) to provide, and
+# §6.2.4.1 permits DHCPv4 / stateless DHCPv6 / RFC 8106 RA instead, so (b) is recorded,
+# not failed. It is a failure if a DNS server address is delivered outside the Extended
+# protocol configuration options IE (§6.6.1), or if a returned container is of an IP
+# version the UE did not request or that the Selected PDU session type does not include.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `established`
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 11 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 11 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 11
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,223 @@
+# REG-433 — after SECURITY MODE COMPLETE, all subsequent NAS is integrity
+# protected AND ciphered.
+#
+# TS 24.501 §5.4.2.4 (retrieved, operative sentence verbatim):
+#
+#   "The AMF shall, upon receipt of the SECURITY MODE COMPLETE message, stop
+#    timer T3560. From this time onward the AMF shall integrity protect and
+#    encipher all signalling messages with the selected 5GS integrity and
+#    ciphering algorithms."
+#
+# TS 24.501 §4.4.2.5: "Secure exchange of NAS messages via a NAS signalling
+# connection is usually established by the AMF during the registration procedure
+# by initiating a security mode control procedure. After successful completion of
+# the security mode control procedure, all NAS messages exchanged between the UE
+# and the AMF are sent integrity protected using the current 5G security
+# algorithms, and except for the messages specified in subclause 4.4.5, all NAS
+# messages exchanged between the UE and the AMF are sent ciphered using the
+# current 5G security algorithms."
+#
+# TS 24.501 §9.3 table 9.3.1: wire security header type 2 = "integrity protected
+# and ciphered". The REGISTRATION ACCEPT is not one of the §4.4.5 exceptions.
+#
+# WHY nas.security.* AND NOT nas.header.security_header_type
+# ----------------------------------------------------------
+# DecodeSecure strips the outer header before the inner message is decoded, so
+# nas.header.security_header_type is ALWAYS the inner plaintext value. A flow
+# that asserted on it would pass against an AMF that sent the REGISTRATION
+# ACCEPT in the clear — which is the whole failure mode this row exists to
+# detect. nas.security.* is the outer header read straight off the wire.
+#
+# "DECRYPTS AND VERIFIES UNDER THE NEWLY ACTIVATED CONTEXT" is asserted as three
+# independent facts, not one:
+#   - mac_verified: DecodeSecure recomputed the MAC under KNASint of the context
+#     activated by the SMC and it matched in constant time;
+#   - the inner message_type is 0x42 (REGISTRATION ACCEPT): the deciphered bytes
+#     parse as the expected 5GMM message, so the decipher produced plaintext and
+#     not plausible-looking garbage;
+#   - has_sequence_number: only a security-protected PDU carries a NAS sequence
+#     number, so a plain PDU cannot present as "sequence number 0".
+#
+# MEASURED (2026-08-10, this lab) — both cores PASS this row:
+#   open5gs  — outer 7e 02 …, header_type=2, SN=1, mac_verified=true
+#   tinycore — outer 7e 02 …, header_type=2, SN=0, mac_verified=true
+# CAVEAT worth recording alongside the green: Open5GS's default ciphering order
+# starts at 5G-EA0, so its REGISTRATION ACCEPT is "ciphered" with the NULL
+# cipher and its payload is readable on the wire even though the security header
+# type correctly says 2. §5.4.2.4 is satisfied literally — the message IS
+# enciphered with the SELECTED algorithm — and the row's criterion is written in
+# those terms, so this is a pass and not a fudge. Whether the SELECTED cipher
+# ought to be non-null is a different row (registration_ciphering_non_null).
+
+kind: flow
+name: registration_accept_ciphered_after_smc
+description: Initial registration; assert the REGISTRATION ACCEPT following SECURITY MODE COMPLETE is integrity protected and ciphered (outer header type 2) and verifies under the new context
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # The context this row measures must actually exist before
+          # SECURITY MODE COMPLETE is sent; §5.4.2.4 is anchored on the AMF
+          # RECEIVING that message.
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          # --- §5.4.2.4 / §4.4.2.5: integrity protected AND enciphered.
+          - type: check
+            field: nas.security.header_type
+            op: equals
+            expected: 2
+          - type: check
+            field: nas.security.header_type_name
+            op: equals
+            expected: integrity_protected_ciphered
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.ciphered
+            op: equals
+            expected: true
+          # Not a NEW context: the SMC already activated it; a 3/4 here would
+          # mean the AMF restarted security instead of applying it.
+          - type: check
+            field: nas.security.new_context
+            op: equals
+            expected: false
+          - type: check
+            field: nas.security.has_sequence_number
+            op: equals
+            expected: true
+          # --- "verifies under the newly activated context"
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+          # --- "and decrypts": the deciphered bytes parse as REGISTRATION
+          # --- ACCEPT (TS 24.501 §9.7, message identity 0x42 = 66).
+          - type: check
+            field: nas.header.message_type
+            op: equals
+            expected: 66
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-433).
+#
+# REG-433 — The REGISTRATION ACCEPT following SECURITY MODE COMPLETE has security header
+# type 'integrity protected and ciphered' and decrypts and verifies under the newly
+# activated context.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The ten `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all ten declared checks ran
+    metric: checks_total
+    op: equals
+    value: 10
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

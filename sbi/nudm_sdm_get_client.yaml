@@ -1,0 +1,34 @@
+# SBI smoke — client side.
+# d3x-run calls Nudm_SDM_GetSubscriptionData against udm-peer
+# (which resolves to a sibling d3x-run running the server-side
+# template, or any UDM that responds to /nudm-sdm/v2/{supi}/am-data).
+
+kind: flow
+name: sbi_nudm_sdm_get_client
+description: Client GET against UDM Nudm_SDM_GetSubscriptionData
+category: functional
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nudm_SDM_GetSubscriptionData
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.Nudm_SDM_GetSubscriptionData_Answer
+        target: completed

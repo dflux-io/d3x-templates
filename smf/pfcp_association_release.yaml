@@ -1,0 +1,57 @@
+# N4/PFCP — Association Release (compliance).
+# 3GPP TS 29.244 §6.2.8 / §7.4.6.
+#
+# runner (SMF) sets up a PFCP association, then tears it down with a
+# PFCPAssociationReleaseRequest (NodeID auto-filled). The UPF replies with
+# PFCPAssociationReleaseResponse carrying Cause=Request accepted, asserted via
+# the pfcp.cause resolver. Exercises the new AssociationRelease send.
+kind: flow
+name: smf_pfcp_association_release
+description: SMF releases a PFCP association — expect Cause Request accepted
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: smf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_release
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPAssociationReleaseRequest
+
+  wait_release:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationReleaseResponse
+        target: released
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

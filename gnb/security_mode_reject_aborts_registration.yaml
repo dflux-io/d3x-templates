@@ -1,0 +1,306 @@
+# REG-440 — a SECURITY MODE REJECT with 5GMM cause #23 aborts the registration
+# it interrupted; no REGISTRATION ACCEPT and no further SECURITY MODE COMMAND
+# follow it.
+#
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE (xp-245 negative-probe audit).
+#
+# TS 24.501 §5.4.2.5 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim):
+#
+#   "If the security mode command cannot be accepted, the UE shall send a
+#    SECURITY MODE REJECT message. The SECURITY MODE REJECT message contains a
+#    5GMM cause that typically indicates one of the following cause values:
+#      #23  UE security capabilities mismatch.
+#      #24  security mode rejected, unspecified."
+#
+#   "If the UE detects that the received Replayed UE security capabilities IE
+#    has been altered compared to the latest values that the UE sent to the
+#    network, the UE shall set the cause value to #23 'UE security capabilities
+#    mismatch'."
+#
+#   "Upon receipt of the SECURITY MODE REJECT message, the AMF shall stop timer
+#    T3560. The AMF shall also ABORT THE ONGOING PROCEDURE that triggered the
+#    initiation of the NAS security mode control procedure."
+#
+#   "Both the UE and the AMF shall apply the 5G NAS security context in use
+#    before the initiation of the security mode control procedure, if any, to
+#    protect the SECURITY MODE REJECT message …"
+#
+# WHY THE REJECT GOES OUT PLAIN, AND WHY THAT IS NOT A SECOND VIOLATION
+# ---------------------------------------------------------------------
+# The last sentence quoted says "if any". This is an initial registration: the
+# only context in existence is the one the SECURITY MODE COMMAND is trying to
+# take into use, and it is by definition not yet "in use before the initiation
+# of the security mode control procedure". So there is nothing to protect the
+# reject with. §4.4.4.3 confirms the AMF must accept it that way, listing
+# SECURITY MODE REJECT among the messages it "shall process … unless the secure
+# exchange of NAS messages has been established". A secured reject here would be
+# the deviation, and would give a conformant AMF a reason to drop the message
+# that has nothing to do with what this row measures.
+#
+# WHAT IS ACTUALLY ON THE WIRE
+# ----------------------------
+# MEASURED (2026-08-11, this lab, `-trace` TX #8), the whole NAS PDU — three
+# header octets and one cause octet, and nothing else:
+#
+#     7e 00 5f 17
+#     ^^ EPD 5GMM
+#        ^^ security header type 0 = PLAIN
+#           ^^ message type 0x5F = SECURITY MODE REJECT (TS 24.501 §9.7)
+#              ^^ 5GMM cause 0x17 = 23 decimal = "UE security capabilities
+#                 mismatch" (§9.11.3.2 table 9.11.3.2.1)
+#
+# The row is therefore not a vacuous probe: the message the register names is
+# the message on the wire, with the cause value the register names.
+#
+# THE CRITERION IS SLIGHTLY STRONGER THAN THE CLAUSE, AND THE CRITERION IS WHAT
+# THIS ROW SCORES
+# -----------------------------------------------------------------------------
+# The register's criterion ends "…the connection is released or the registration
+# is rejected". §5.4.2.5 imposes only "abort the ongoing procedure": it does not
+# oblige the AMF to emit anything at all, and an AMF that simply stops and lets
+# the connection be reaped has aborted. This template used to resolve that
+# tension by quietly scoring a silent abort as the pass — on the flow's TIMEOUT
+# target — which disagreed with the register AND rested on nothing.
+#
+# The disagreement is now recorded in the terminal rather than hidden in a timer.
+# `rejected` requires the message the CRITERION names; a silent-but-alive abort
+# gets its own terminal, `aborted_no_signalling`, which is neither the pass nor
+# the security finding; and total silence is `unproven`.
+#
+# What §5.4.2.5 forbids has two shapes and both are messages:
+#   REGISTRATION ACCEPT  -> the AMF activated security on a context the UE
+#                           refused and completed the procedure it was told to
+#                           abort                                 -> tolerated
+#   a further SECURITY MODE COMMAND -> the AMF retried the procedure instead of
+#                           aborting it                           -> tolerated
+#
+# ============================================================================================
+# WHY THE PASS COULD NOT STAY ON THE TIMER, MEASURED
+# ============================================================================================
+#
+# 50effc0 baseline:
+#   tinycore  sent NOTHING after the reject — 2 downlink NAS for the whole run,
+#             the AUTHENTICATION REQUEST and the SECURITY MODE COMMAND — and
+#             "timed out in state=wait_reaction after 10.0s — terminal
+#             target=rejected". lib/outcome.py DEFENCE 11 voided the verdict.
+#             `inconclusive`.
+#   open5gs   sent NGAP_UE_CONTEXT_RELEASE_COMMAND. The criterion's own words,
+#             on a message. `pass`.
+#   free5gc   reached `tolerated` on a message (3 downlink NAS, no timeout) —
+#             i.e. something followed the reject that §5.4.2.5 forbids.
+#             `wrong-response`, in the review queue with a message to read.
+#
+# So two of the three cells were already carried by messages and only tinycore's
+# rested on silence. The cure is not to invert the timer (that makes silence
+# always mean pass) nor to exempt the row from DEFENCE 11 (that is how the most
+# conformant core comes to read as tolerating an attack), but to ASK.
+#
+# THE DISCRIMINATOR. After the absence window the flow reallocates the
+# RAN-UE-NGAP-ID and sends a fresh INITIAL UE MESSAGE carrying the SUCI.
+# TS 24.501 §5.4.1.3 obliges the AMF to run a primary authentication for a
+# subscriber it holds no context for, so an AUTHENTICATION REQUEST here proves
+# three things at once: the AMF is alive, our messages arrive, and it did not
+# complete the registration the SECURITY MODE REJECT told it to abort. It is
+# measured, not hoped for — a fresh SUCI registration draws an AUTHENTICATION
+# REQUEST from all three cores in this very flow's own `wait_auth_request`.
+#
+#   `rejected`                 the criterion satisfied on a message: the
+#                              connection is released, or the registration is
+#                              rejected in words.
+#   `aborted_no_signalling`    nothing followed the reject, AND the AMF is proved
+#                              alive and still requiring authentication. The
+#                              clause is satisfied and the criterion is not; a
+#                              real, reportable difference between the two, not
+#                              an outage and not a pass.
+#   `tolerated`                the AMF completed or retried the procedure. The
+#                              finding.
+#   `unproven`                 nothing answers even a fresh registration.
+#
+# ACCEPTANCE TEST (mandatory for a negative row) — MEASURED 2026-08-11:
+#   SecurityModeReject (as authored)  -> rejected  (nothing follows the reject)
+#   SecurityModeComplete instead      -> tolerated (the REGISTRATION ACCEPT that
+#                                        scores the finding arrives and is
+#                                        scored, on the same event this flow
+#                                        listens for)
+# Both terminals are reachable, so the row is testing something.
+
+kind: flow
+name: security_mode_reject_aborts_registration
+description: SECURITY MODE REJECT with 5GMM cause #23 must abort the registration — no REGISTRATION ACCEPT and no further SECURITY MODE COMMAND (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, aborted_no_signalling, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        actions: [{ type: send, message: InitialUEMessage }]
+        target: wait_auth_request
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_reaction
+        actions:
+          # The procedure this reject is aborting has to exist first: a
+          # SECURITY MODE COMMAND that never arrived would make the reject an
+          # unsolicited message and the row a measurement of nothing.
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          # cause 23 = "UE security capabilities mismatch" (§5.4.2.5), the value
+          # §5.4.2.5 names for an altered Replayed UE security capabilities IE.
+          - { type: send, message: SecurityModeReject, params: { cause: 23 } }
+  wait_reaction:
+    # THE ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. §5.4.2.5's "abort the
+    # ongoing procedure" emits nothing, so falling out of this window is the
+    # substance of the clause being obeyed — but on its own it is not evidence
+    # that the AMF was even there, and the register's criterion asks for more
+    # than an abort. So the window ends in a QUESTION, not a verdict.
+    on_timeout:
+      duration: 6s
+      target: probe_registration_not_completed
+      actions:
+        # THE DISCRIMINATOR. A fresh RAN-UE-NGAP-ID and a fresh INITIAL UE
+        # MESSAGE carrying the SUCI: §5.4.1.3 obliges the AMF to authenticate a
+        # subscriber it holds no context for, so an answer proves the AMF is
+        # alive, our messages arrive, and the registration this reject aborted was
+        # not quietly completed.
+        - { type: ngap_realloc }
+        - { type: send, message: InitialUEMessage }
+    transitions:
+      # The AMF completed the registration the reject told it to abort.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+      # The AMF retried the security mode control procedure instead of
+      # aborting it.
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: tolerated }
+      # Explicit aborts — all conformant, all stronger than the clause requires,
+      # and all of them the criterion's "the connection is released or the
+      # registration is rejected". The two that carry a mandatory 5GMM cause
+      # (TS 24.501 §8.2.9, §8.2.29) assert on it, so the branch asserts on the
+      # message that fired it rather than merely noting that one arrived.
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions: [{ type: check, field: nas.gmm_cause, op: ie_present }]
+      - { event: NASDownlinkTransport.AuthenticationReject, target: rejected }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: rejected
+        actions: [{ type: check, field: nas.abba, op: ie_present }]
+      - { event: UEContextReleaseCommand, target: rejected }
+      # An NGAP ERROR INDICATION says our SECURITY MODE REJECT was not processed
+      # as sent, which is the "never received it as sent" branch of the failure
+      # list rather than an abort of the procedure it never saw. Named so the bus
+      # never has to refuse it; `unproven` because crediting it as an abort would
+      # credit the AMF for aborting a procedure on a message it may not have
+      # decoded.
+      - { event: ErrorIndication, target: unproven }
+  probe_registration_not_completed:
+    # Silence to a fresh SUCI registration is silence to the one message every AMF
+    # in this corpus answers within milliseconds. It separates nothing, so it
+    # scores `unproven` rather than crediting an abort that may have been an
+    # outage.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      # THE DISCRIMINATOR FIRING. Nothing followed the SECURITY MODE REJECT — the
+      # clause is satisfied — and the AMF is alive, reached, and still requires a
+      # primary authentication, so the registration was not completed behind our
+      # back. What it did NOT do is release the connection or reject the
+      # registration in words, which is what the register's criterion asks for, so
+      # this is its own terminal and not the pass. RAND is mandatory in
+      # AUTHENTICATION REQUEST (TS 24.501 §8.2.1).
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: aborted_no_signalling
+        actions: [{ type: check, field: nas.authentication_param_rand, op: ie_present }]
+      - event:
+          or:
+            - NASDownlinkTransport.IdentityRequest
+            - NASDownlinkTransport.AuthenticationReject
+        target: aborted_no_signalling
+      # A release or a refusal arriving after the window is still the criterion
+      # satisfied: the verdict must not depend on which side of a 6 s boundary the
+      # core's own timer falls.
+      - { event: UEContextReleaseCommand, target: rejected }
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions: [{ type: check, field: nas.gmm_cause, op: ie_present }]
+      # Still the finding, arriving late: a REGISTRATION ACCEPT means the AMF
+      # completed the registration it was told to abort. No checks — a gate on the
+      # branch whose target is the finding is a way for the finding to vanish into
+      # `wrong-response`.
+      #
+      # NOTE WHAT IS NOT HERE. A further SECURITY MODE COMMAND is `tolerated` in
+      # wait_reaction, because there it is the AMF retrying the very procedure the
+      # reject aborted. In THIS state it would be a command on a NEW connection
+      # opened by our own fresh SUCI registration — a new procedure, not a retry of
+      # the old one — so reading it as the finding would score the wrong thing. It
+      # is `aborted_no_signalling` instead: alive, reached, and not accepting the
+      # registration off the refused context.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: aborted_no_signalling }
+      - { event: ErrorIndication, target: unproven }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-440 (negative, expected_terminal: rejected) —
+# After a SECURITY MODE REJECT with 5GMM cause #23, no REGISTRATION ACCEPT and no
+# further SECURITY MODE COMMAND arrive; the connection is released or the registration
+# is rejected, ON A MESSAGE — silence is not that. An AMF that emits nothing at all is
+# scored separately, and only once it has been shown still to be alive and still to
+# require a new authentication, in that a fresh INITIAL UE MESSAGE on a reallocated RAN-
+# UE-NGAP-ID draws an AUTHENTICATION REQUEST. TS 24.501 §5.4.2.5 obliges the AMF only to
+# 'abort the ongoing procedure', which a silent abort satisfies, so that outcome is a
+# difference between this criterion and the clause rather than a defect — and it is
+# neither the pass nor the security finding.
+#
+# REG-440: "the connection is released or the registration is rejected, ON A MESSAGE —
+# silence is not that." `rejected` is that message. `tolerated` is a REGISTRATION ACCEPT
+# or a further SECURITY MODE COMMAND, both of which the criterion forbids;
+# `aborted_no_signalling` is the silent abort, which the criterion says is "neither the
+# pass nor the security finding" and which TS 24.501 §5.4.2.5 permits; `unproven` is the
+# probe going unanswered.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

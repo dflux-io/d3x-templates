@@ -1,0 +1,51 @@
+# Npcf_SMPolicyControl — provisioning-driven UpdateNotify receiver (server half).
+# The PCF-2 counterpart to npcf_smpolicy_update_notify_receiver. Unlike the
+# app-session path (two notifies: install + PATCH), the provisioning path emits
+# exactly ONE POST /update: the create returns its decision synchronously (no
+# notify), and only the subsequent provisioned-data/sm-data write drives the PCF
+# re-evaluation → a single SmPolicyNotification.
+#
+# runner binds a rest-listen listener on :39998 and waits for dpf's PolicyNotifier
+# to POST the delta SmPolicyNotification {resourceUri, smPolicyDecision} to
+# /sm-policy-notify/update. The trigger half is
+# pcf/npcf_smpolicy_provision_trigger.yaml (which PUTs sessionAmbr→999/1500 Mbps);
+# the assertion of record is that the re-derived default session-rule carries the
+# newly provisioned session-AMBR "1500 Mbps". Per E4, absence of exact
+# runtime-UUID keys is handled with `contains` over the stringified sessRules.
+# on_timeout→failed so a missing notify fails the flow rather than hanging.
+
+kind: flow
+name: npcf_smpolicy_provision_notify_receiver
+description: Receive + assert dpf's provisioning-driven Npcf SmPolicyNotification (session-AMBR delta) over REST.
+type: server
+protocol: rest
+nf: external
+initial_state: waiting_update
+final_states: [done, failed]
+
+states:
+  waiting_update:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      - event: rest.POST./sm-policy-notify/update
+        target: done
+        actions:
+          - type: check
+            field: rest.body.smPolicyDecision
+            op: exists
+          - type: check
+            field: rest.body.resourceUri
+            op: not_empty
+          - type: check
+            field: rest.body.smPolicyDecision.sessRules
+            op: contains
+            expected: "1500 Mbps"
+          - type: send
+            message: Notify_Answer
+            message_body: |
+              {"status": 204}
+
+  done: {}
+  failed: {}

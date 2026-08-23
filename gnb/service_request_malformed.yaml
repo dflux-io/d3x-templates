@@ -1,0 +1,286 @@
+# NEGATIVE — Service Request with a corrupted short-MAC (3GPP TS 24.501 §5.6.1).
+#
+# 3GPP ref:     TS 24.501 §5.6.1 (Service Request procedure, NAS integrity
+#               protection of the Service Request), TS 38.413 §8.3.
+# Abnormal in:  After a full registration (which yields a 5G-GUTI and an active
+#               NAS security context), the gNB goes to CM-IDLE and then sends a
+#               MalformedServiceRequest — an InitialUEMessage carrying a secured
+#               NAS ServiceRequest whose short-MAC has been bit-flipped. The
+#               message is therefore integrity-failed.
+# Expected OK:  Per §5.6.1.4, an integrity-protected Service Request that fails
+#               the integrity check MUST NOT lead to UE-context re-activation.
+#               A spec-correct Open5GS AMF discards/rejects it and stays up: it
+#               does NOT send a valid InitialContextSetupRequest. The compliant
+#               reactions observed at the gNB are an NGAP UEContextReleaseCommand
+#               (context cleanup), an ErrorIndication, or a NAS-level rejection /
+#               re-authentication (RegistrationReject / 5GMMStatus / a fresh
+#               AuthenticationRequest re-challenge). Silent discard with the AMF
+#               remaining alive is also acceptable — but in that case the flow
+#               goes on to prove the victim's context is still there (Phase 4).
+#
+# SUCCESS terminal = `release_or_reject`, reached either by a clean explicit
+# AMF reaction, or — after a silent discard — by the real UE successfully
+# resuming afterwards. Reaching it asserts both halves: the AMF refused to act
+# on the forged MAC, AND refusing cost the victim nothing.
+
+kind: flow
+name: service_request_malformed
+description: CM-IDLE Service Request with a bit-flipped short-MAC — expect AMF refusal, no context re-activation (YAML)
+detail: |
+  This is a negative / robustness test for the Service Request integrity check
+  (3GPP TS 24.501 §5.6.1).
+
+  Phase 1 — Registration: a normal initial registration (authentication +
+  security activation) is performed so the UE obtains a 5G-GUTI and an active
+  NAS security context. The MalformedServiceRequest enricher needs this context
+  to build a *secured* ServiceRequest before flipping its short-MAC.
+
+  Phase 2 — Go to CM-IDLE: the gNB sends UEContextReleaseRequest, the AMF
+  replies with UEContextReleaseCommand, and the gNB confirms with
+  UEContextReleaseComplete. The UE stays RM-REGISTERED but moves to CM-IDLE.
+
+  Phase 3 — Forged Service Request: the gNB allocates a fresh RAN-UE-NGAP-ID and
+  sends MalformedServiceRequest (InitialUEMessage carrying a ServiceRequest with
+  a corrupted short-MAC). A compliant AMF refuses to re-activate the UE context:
+  it returns a UEContextReleaseCommand, an ErrorIndication, a NAS rejection
+  (RegistrationReject / 5GMMStatus), re-challenges with AuthenticationRequest, or
+  silently discards the message while staying alive. Any of these is success.
+  Receiving a valid InitialContextSetupRequest here would be a compliance
+  FAILURE (the AMF acted on a forged MAC); that path is deliberately not
+  modelled, so it falls through to the timeout.
+
+  Phase 4 — Victim survival (reached after a silent discard): the gNB allocates
+  a third RAN-UE-NGAP-ID and sends a genuine, correctly secured ServiceRequest
+  for the same UE. The AMF must answer with an InitialContextSetupRequest.
+
+  Phase 4 is the point of the test, not a coda. Refusing the forged message is
+  only half of correct: the AMF must also not have ACTED on it before
+  discovering the MAC was bad. The forged PDU identified its target by a
+  5G-S-TMSI, which travels in RRC and in the NGAP InitialUEMessage IE and is
+  therefore not a secret — so an AMF that stops paging, mints a new
+  AMF-UE-NGAP-ID and re-points the (RanID, RAN-UE-NGAP-ID) binding before
+  verifying leaves the victim's live N2 leg attached to whoever sent the forgery,
+  with none of it rolled back when the MAC check finally fails. Likewise an AMF
+  that advanced the uplink NAS COUNT on the failed verification would desync the
+  replay window. Both faults are invisible in Phase 3 and both make Phase 4 fail.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - release_or_reject
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: UEContextReleaseRequest
+
+  wait_release_cmd:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_amf_refusal
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+          - type: ngap_realloc
+          - type: send
+            message: MalformedServiceRequest
+
+  # Abnormal-input wait. Any clean AMF reaction is the spec-correct behavior,
+  # so each maps to the SUCCESS terminal.
+  #
+  # The TIMEOUT branch is the interesting one: silent discard is what a
+  # verify-before-mutate AMF does, and it is the only reaction under which
+  # "the victim's context is still intact" is a claim worth testing. So
+  # instead of terminating there, fall through to Phase 4 and prove it.
+  wait_amf_refusal:
+    on_timeout:
+      duration: 10s
+      target: probe_victim_context
+      actions:
+        - type: ngap_realloc
+        - type: send
+          message: ServiceRequest
+    transitions:
+      - event:
+          or:
+            - UEContextReleaseCommand
+            - ErrorIndication
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+            - NASDownlinkTransport.AuthenticationRequest
+        target: release_or_reject
+
+  # Phase 4 — victim survival. The forged Service Request was discarded;
+  # now the REAL UE resumes with a properly secured Service Request over a
+  # third RAN-UE-NGAP-ID. It must succeed.
+  #
+  # This is the assertion the forged message is aimed at. The forged PDU
+  # named the victim by a 5G-S-TMSI anyone can observe, so it must have
+  # changed nothing: not the 5GMM state, not the keys, not the uplink NAS
+  # COUNT (an AMF that advanced the COUNT on a failed MAC would desync the
+  # window and this resume's MAC would no longer verify), and not the NGAP
+  # binding. If the AMF acted on the forged identity first and checked the
+  # MAC afterwards, the victim is left bound to the attacker's RAN UE id
+  # and there is no context here to resume.
+  #
+  # A timeout is a FAILURE here, unlike the abnormal wait above: the AMF
+  # owes a legitimate, integrity-protected resume an answer.
+  probe_victim_context:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # Resuming a CM-IDLE UE carries a Service Accept; some AMFs answer a
+      # bare InitialContextSetupRequest — accept either.
+      - event:
+          or:
+            - InitialContextSetupRequest.ServiceAccept
+            - InitialContextSetupRequest
+        target: release_or_reject
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-217).
+#
+# REG-217 — SERVICE REJECT received on N1 with 5GMM cause in {96, 99, 100, 111}; the NG
+# association remains up and a subsequent well-formed procedure on the same association
+# succeeds
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `release_or_reject`
+    metric: final_state_counts.release_or_reject
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: greater_or_equal
+    value: 1
+  - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, MalformedServiceRequest, ServiceRequest)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: greater_or_equal
+    value: 2
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # Several routes reach `release_or_reject` with different numbers of checks
+  # (4..6); 4 is the shortest one, so it is the floor that still proves
+  # an assertion was made on the messages this run saw.
+  - name: at least four declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

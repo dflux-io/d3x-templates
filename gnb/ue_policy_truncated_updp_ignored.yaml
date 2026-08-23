@@ -1,0 +1,231 @@
+# REG-709 — a UPDS message too short to contain a message type is IGNORED, and
+# the AMF is still there afterwards.
+#
+# THE CLAUSE (TS 24.501 §D.8.2.1, retrieved with matrix/scripts/spec-clause.py,
+# quoted in full because it is two sentences long):
+#
+#   D.8.2.1 Message too short
+#   When a message is received that is too short to contain a complete message
+#   type information element, that message shall be ignored, c.f. 3GPP TS 24.007.
+#
+# A UPDS message is PTI (1 octet, §9.6) followed by the UE policy delivery
+# service message type (1 octet, §D.6.1). This flow sends a container of ONE
+# octet — 0x01, a PTI and nothing else — so the message type IE is not merely
+# malformed, it is absent. That is §D.8.2.1's case exactly, and it is reachable
+# by any registered subscriber, which is why the register scores the row P0.
+#
+# The container is delivered by the §5.4.5 UL NAS TRANSPORT path (§5.4.5.2.1),
+# so the NAS layer around it is entirely well formed: correct EPD, correct
+# message type, correct Payload container type IE ("UE policy container"),
+# correctly integrity-protected and ciphered. ONLY the UPDS payload is short.
+# That is deliberate — a probe that also broke the NAS envelope would be
+# answered under §5.4.5.2.5 or the 5GMM error handling and would never reach the
+# UPDS parser this row is about.
+#
+# NOT A VACUOUS PROBE — and for a truncation row this is the whole game, because
+# a send that silently did nothing looks identical to a network that correctly
+# ignored something. Two checks pin the wire:
+#   `ue.Params.updp_container_len equals 1` and `ue.Params.updp_container equals
+#   "01"`. The enricher writes both from the bytes it actually handed the NAS
+#   encoder (runner/runner/enrichers_uepolicy.go sendUEPolicyContainer), so they
+#   cannot agree unless a one-octet UPDS message really went out. `equals 1` and
+#   not `less_than 2`: the row is about THIS truncation, and a zero-length
+#   container is a different case (an empty Payload container IE, §9.11.3.39).
+#
+# HOW "IGNORED, NOT FATAL" IS ESTABLISHED. §D.8.2.1's requirement is silence, so
+# silence must not be scored on a bare timer:
+#   - Within the 10 s window (the register row's absent_after_s), a
+#     UEContextReleaseCommand, an NGAP ErrorIndication, or a 5GMM STATUS each
+#     has its OWN failing terminal, so final_state_counts names the breach.
+#   - An SCTP abort or reset surfaces as the runner's Error event; the window
+#     names it explicitly and lands in `association_down` rather than the generic
+#     `failed`, because "the two-byte payload knocked the association over" is
+#     the exact failure the row exists to catch and must not be reported as a
+#     harness stall.
+#   - The passing terminal is reached ONLY after the criterion's own positive
+#     observable: the UE goes CM-IDLE and performs a MOBILITY REGISTRATION
+#     REQUEST, and `updp_ignored` requires a REGISTRATION ACCEPT in answer. An
+#     AMF that faulted, wedged its NAS state or forgot the subscriber cannot
+#     produce one.
+#
+# The UEContextReleaseRequest that starts that second half is OURS and is sent
+# after the window has closed, so it can never be confused with a release the
+# network initiated — those are two different states with two different targets.
+#
+# Terminals: updp_ignored (PASS); context_released / status_returned /
+# error_indicated / association_down / failed (FAIL).
+
+kind: flow
+name: ue_policy_truncated_updp_ignored
+description: REG-709 — a one-octet UPDS message (no message type) is ignored, the AMF survives and still answers a mobility registration (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - updp_ignored
+  - context_released
+  - status_returned
+  - error_indicated
+  - association_down
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params:
+              # TS 24.501 §5.5.1.2.2 — this UE has pending uplink signalling
+              # (the UPDS container) after the registration, so the Follow-on
+              # request indicator belongs in the 5GS registration type IE.
+              # Without it §5.5.1.2.4 lets the AMF release the connection as soon
+              # as registration ends, and the row would then score a release it
+              # had asked for as the truncated message's doing.
+              follow_on_request: true
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_updp_silence
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # The probe. `container` replaces the well-formed MANAGE UE POLICY
+          # COMPLETE the enricher would otherwise build with one raw octet — the
+          # only way to put a message on the wire that no correct builder can
+          # produce.
+          - type: send
+            message: ManageUEPolicyComplete
+            params:
+              container: "01"
+
+  wait_updp_silence:
+    on_timeout:
+      duration: 10s
+      target: wait_release_cmd
+      actions:
+        # NOT-A-VACUOUS-PROBE — see the header.
+        - { type: check, field: ue.Params.updp_container_len, op: equals, expected: 1 }
+        - { type: check, field: ue.Params.updp_container, op: equals, expected: "01" }
+        # Go CM-IDLE so the registration that follows is a genuine mobility
+        # registration, which is what the row's criterion names.
+        - { type: send, message: UEContextReleaseRequest }
+    transitions:
+      - { event: UEContextReleaseCommand, target: context_released }
+      - { event: ErrorIndication, target: error_indicated }
+      - { event: NASDownlinkTransport.5GMMStatus, target: status_returned }
+      - { event: Error, target: association_down }
+
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - type: send
+            message: RegistrationUpdate
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  # The positive observable. §5.5.1.3.2 lets the AMF re-authenticate before
+  # accepting, so those legs loop back here; only a REGISTRATION ACCEPT ends the
+  # flow in the passing terminal.
+  wait_update_reaction:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: updp_ignored
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: updp_ignored
+        actions:
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_update_reaction
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_update_reaction
+        actions:
+          - { type: send, message: IdentityResponse }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-709 (robustness, expected_terminal: updp_ignored)
+# — No UEContextReleaseCommand, NGAP ErrorIndication or SCTP abort follows within 10 s,
+# and a subsequent mobility REGISTRATION REQUEST from the same UE is answered with
+# REGISTRATION ACCEPT
+#
+# REG-709: "No UEContextReleaseCommand, NGAP ErrorIndication or SCTP abort follows
+# within 10 s, AND a subsequent mobility REGISTRATION REQUEST from the same UE is
+# answered with REGISTRATION ACCEPT." The second clause is what makes the first
+# scoreable, and it is the only route into `updp_ignored`. The other four non-failure
+# terminals are the three reactions the criterion forbids (`context_released`,
+# `error_indicated`, `status_returned`) and the association dropping
+# (`association_down`).
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `updp_ignored` — the terminal this row claims
+    metric: final_state_counts.updp_ignored
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

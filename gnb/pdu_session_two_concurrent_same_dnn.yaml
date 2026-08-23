@@ -1,0 +1,261 @@
+# Two CONCURRENT PDU sessions for one UE towards the same DNN and the same
+# S-NSSAI — distinct PDU session IDs, distinct uplink GTP-U tunnels, and the
+# first session still alive when the second comes up.
+#
+# REG-307 — Two concurrent PDU sessions towards the same DNN and S-NSSAI.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 23.502 §4.3.2.2.4 (UE Requested PDU Session Establishment for
+#   home-routed/multiple sessions) and §4.3.2.2.1 step 1:
+#     "In order to establish a new PDU Session, the UE generates a new PDU
+#      Session ID."
+#   i.e. the id — not the (DNN, S-NSSAI) pair — is what separates two sessions.
+#   A network that treats a second request on the same DNN and slice as a
+#   duplicate of the first has collapsed two sessions into one.
+#
+#   TS 23.502 §4.3.2.2.1 step 11: the N2 SM information of each session carries
+#   its own "CN Tunnel Info". Two live sessions therefore have two uplink
+#   F-TEIDs; sharing one would make the UPF unable to tell the sessions apart
+#   (TS 29.281 §5.1 — the TEID identifies the tunnel endpoint).
+#
+# WHAT IS ASSERTED
+#   * the second setup request names PDU session id 2 while the first named 1;
+#   * both setup requests name the SAME S-NSSAI (SST and SD) and both accepts
+#     the SAME DNN — compared against the FIRST session's values (extracted),
+#     not against literals, so the row asserts sameness rather than a
+#     configuration constant;
+#   * the two uplink TEIDs DIFFER (`not_equals`) and both are usable (non-zero);
+#   * the first session is not torn down to make room for the second: no
+#     release command for it arrives while the second is being established
+#     (the `wait_second_accept` state fails on a release command).
+#
+# WHY `not_equals` AND NOT `not_contains`. Stringified containment is a
+# substring test: TEID 1 vs TEID 12 would score "different" as a FAILURE
+# because "12" contains "1". That is a false red on a correct core, so the
+# distinctness check uses the exact-inequality op (fsm.CheckOpNotEquals).
+#
+# HARNESS NOTE — the second establishment request must carry `pdu_session_id: 2`
+# EXPLICITLY. EnrichPDUSessionEstablishmentRequest reuses ue.NGAP.PduSessionId
+# when the param is absent, so an unqualified second request would silently ask
+# for session 1 again and this row would be testing duplicate-id handling
+# instead (that is pdu_session_duplicate_id_establishment.yaml's job).
+#
+# MEASURED ON tinycore (2026-08-11): both sessions establish; ids 1 and 2;
+# uplink TEIDs distinct; same DNN "internet" and same S-NSSAI SST 1 / SD 1 on
+# both; no release of session 1.
+#
+# KNOWN RUNNER LIMIT, DELIBERATELY NOT ASSERTED: the gNB-side downlink TEID
+# (ue.NGAP.LocalTeid) is assigned once per UE, so both PDU SESSION RESOURCE
+# SETUP RESPONSEs this flow sends carry the same downlink TEID. That is a
+# property of the simulated gNB, not of the core, so nothing here asserts it —
+# but it means this flow cannot be used to judge a core's handling of distinct
+# DOWNLINK tunnels.
+
+kind: flow
+name: pdu_session_two_concurrent_same_dnn
+description: Two concurrent PDU sessions on the same DNN and S-NSSAI — distinct session IDs and distinct uplink GTP-U TEIDs (YAML)
+detail: |
+  Registration, then two UE-requested PDU session establishments on the same
+  DNN ("internet") and the same S-NSSAI, using PDU session IDs 1 and 2
+  (TS 23.502 §4.3.2.2.1, §4.3.2.2.4).
+
+  The flow asserts that the core answers each with its own PDU SESSION RESOURCE
+  SETUP REQUEST carrying its own PDU session id and its own uplink GTP-U TEID,
+  that the slice and DNN of the second session match the first, and that
+  establishing the second does not release the first.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - two_sessions
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_id: 1
+
+  wait_first_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_second_accept
+        actions:
+          # Session ONE: established, on the slice and DNN the row compares
+          # session two against.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: extract, field: ue.UpfTeid, store: first_upf_teid }
+          - { type: extract, field: pdu_session_resource_setup_request_items.0.snssai_SST, store: first_sst }
+          - { type: extract, field: pdu_session_resource_setup_request_items.0.snssai_SD, store: first_sd }
+          - { type: extract, field: ue.Params.pdu_accept_dnn, store: first_dnn }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+          # The SECOND session: same DNN, same slice, new id. Sent immediately —
+          # "concurrent" is the point, so the first session is still up.
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_id: 2
+
+  wait_second_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: two_sessions
+        actions:
+          # --- THE row: a second, distinct session ------------------------
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 2 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+
+          # --- …towards the SAME DNN and S-NSSAI as the first -------------
+          - { type: check, field: pdu_session_resource_setup_request_items.0.snssai_SST, op: equals, expected: '{{ue.Params.first_sst}}' }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.snssai_SD, op: equals, expected: '{{ue.Params.first_sd}}' }
+          - { type: check, field: ue.Params.pdu_accept_dnn, op: equals, expected: '{{ue.Params.first_dnn}}' }
+
+          # --- …on its own uplink GTP-U tunnel ----------------------------
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: not_equals, expected: '{{ue.Params.first_upf_teid}}' }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: not_contains, expected: '0.0.0.0' }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+      # Establishing the second session must not cost the UE the first one.
+      # A release arriving in this window is the collapse this row is looking
+      # for, so it fails rather than being ignored.
+      - event:
+          or:
+            - PDUSessionReleaseCommand
+            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+            - NASDownlinkTransport.DLNASTransport.PDUSessionReleaseCommand
+        target: failed
+
+      # A core that refuses the second session (e.g. #35 "PTI already in use",
+      # #54, or a DNN/slice reject) has not established two concurrent
+      # sessions. Explicit edge so the verdict is a decision, not a timeout.
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-307).
+#
+# REG-307 — Two PDUSessionEstablishmentAccept messages received for the same DNN and
+# S-NSSAI with different PDU session IDs, and two PDUSessionResourceSetupRequest
+# messages with different UL GTP-U TEIDs
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `two_sessions`
+    metric: final_state_counts.two_sessions
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 5
+  - name: two PDU SESSION RESOURCE SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 2
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: two PDU SESSION RESOURCE SETUP REQUEST messages arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 2
+  # The 14 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 14 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 14
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

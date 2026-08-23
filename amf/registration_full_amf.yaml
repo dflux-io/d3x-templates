@@ -1,0 +1,127 @@
+# AMF-side full 5G registration responder (3GPP TS 24.501 §5.5.1, TS 33.501 §6.1).
+#
+# The network half of the registration procedure: drives a real 5G-AKA
+# challenge and NAS security activation against a gNB running the
+# `registration` flow. Pairs with gnb/registration.yaml; used by the
+# d3x-run docker/ SCTP-over-Docker lab.
+#
+# Requires subscribers loaded on the AMF side (-s subscribers.yaml): the
+# RX enrichment resolves the subscriber the inbound RegistrationRequest
+# SUCI identifies, and the AuthenticationRequest enricher generates the
+# 5G-AKA vector (RAND/AUTN + XRES* + KAMF→KGNB) from its K/OPc/SQN. Both
+# ends derive identical NAS keys, so the secured SecurityModeCommand /
+# RegistrationAccept verify on the gNB and the gNB's secured uplink
+# (SecurityModeComplete / RegistrationComplete) verifies here.
+#
+# Event names: the demux resolves UE-originated NAS-bearing frames to the
+# dotted form (NASUplinkTransport.<nas>); InitialUEMessage carrying the
+# NAS Registration Request resolves to InitialUEMessage.RegistrationRequest.
+
+kind: flow
+name: registration_full_amf
+description: "AMF-side full registration: 5G-AKA challenge, security activation, registration accept (YAML)"
+detail: |
+  Server-mode AMF flow that completes a full UE registration:
+
+    InitialUEMessage(RegistrationRequest) → AuthenticationRequest
+    AuthenticationResponse                → SecurityModeCommand   (check RES* == XRES*)
+    SecurityModeComplete                  → RegistrationAccept (via InitialContextSetupRequest)
+    InitialContextSetupResponse           → (wait)
+    RegistrationComplete                  → registered
+
+  AuthenticationRequest/SecurityModeCommand ride DownlinkNASTransport;
+  RegistrationAccept rides the InitialContextSetupRequest NasPdu with the
+  derived KGNB as SecurityKey. Crypto is exercised end to end — this is
+  not a stub.
+category: functional
+type: server
+protocol: ngap
+nf: amf
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event:
+          or:
+            - InitialUEMessage
+            - InitialUEMessage.RegistrationRequest
+        target: wait_auth_response
+        actions:
+          - type: send
+            message: AuthenticationRequest
+
+  wait_auth_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASUplinkTransport.AuthenticationResponse
+        target: wait_security_mode_complete
+        actions:
+          # enrichAmfAuthResponse compared the received RES* against the
+          # XRES* stashed at vector-generation time.
+          - type: check
+            field: ue.Params.auth_result
+            op: equals
+            expected: xres-match
+          - type: send
+            message: SecurityModeCommand
+
+  wait_security_mode_complete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASUplinkTransport.SecurityModeComplete
+        target: wait_context_setup_response
+        actions:
+          - type: send
+            message: RegistrationAccept
+
+  # ORDER-TOLERANT (W5-A, xp-205). The gNB acks the InitialContextSetupRequest
+  # and sends RegistrationComplete — gnb/registration.yaml emits both from ONE
+  # transition, i.e. in a single burst — and this side sends nothing in
+  # between, so both are in flight at once. The runner's EventBus gives per-UE
+  # mutual exclusion but not per-UE ORDERING (shared work queue, striped lock),
+  # so it can present them either way
+  # round, and a state that does not name an event drops it silently and
+  # unrecoverably. That is the same defect that made gnb/sms_mo_loopback flaky
+  # for three waves; this flow carried it too and was never measured only
+  # because it runs in runner/docker/, outside tinycore's gate. Both frames are
+  # still mandatory — only their order is no longer asserted, and it could not
+  # honestly be asserted from here while the harness itself reorders.
+  wait_context_setup_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupResponse
+        target: wait_registration_complete
+      - event: NASUplinkTransport.RegistrationComplete
+        target: wait_context_setup_response_after_complete
+
+  wait_registration_complete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASUplinkTransport.RegistrationComplete
+        target: registered
+
+  # RegistrationComplete overtook the InitialContextSetupResponse; the ICS
+  # response is still required before the registration counts as complete.
+  wait_context_setup_response_after_complete:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupResponse
+        target: registered
+
+any_state_transitions:
+  - event: Error
+    target: failed

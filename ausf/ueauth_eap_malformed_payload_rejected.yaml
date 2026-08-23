@@ -1,0 +1,83 @@
+# Nausf_UEAuthentication — malformed EAP session payload (security / negative).
+# 3GPP TS 29.509 §6.1.6.2.x; §6.1.7.3 (400); §6.1.3.4 (eap-session resource).
+# Chained: initiate (POST) -> extract context Location -> POST an EapSession to
+# .../{authCtxId}/eap-session whose eapPayload is junk (not a valid EAP packet),
+# via the generic SBI_Request. The AUSF must REJECT the malformed payload (400,
+# or a 200 carrying an EAP-Failure) and STAY UP. No EAP/AKA' codec is needed —
+# a deliberately-malformed payload is exactly the negative input.
+#
+# NOTE: this initiate uses the default 5G-AKA subscriber; if the AUSF answers the
+# initiate with a 5G-AKA context (no eap-session resource), the eap-session POST
+# itself returns 404/400 — still a spec-correct rejection of an inapplicable
+# request, satisfying the liveness/reject goal.
+
+kind: flow
+name: ausf_ueauth_eap_malformed_payload_rejected
+description: eap-session POST with a junk eapPayload is rejected; AUSF stays up
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_initiate
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            peer: ausf
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_initiate:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: wait_eap
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: authCtxLocation
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.authCtxLocation}}/eap-session",
+                "body": {
+                  "eapPayload": "bm90LWEtdmFsaWQtZWFwLXBhY2tldA=="
+                }
+              }
+
+  wait_eap:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          # Must not be a clean success: the AUSF either rejects (4xx) or returns
+          # an EAP-Failure; in no case may it report a success authResult.
+          - type: check
+            field: sbi.body.authResult
+            op: not_contains
+            expected: AUTHENTICATION_SUCCESS

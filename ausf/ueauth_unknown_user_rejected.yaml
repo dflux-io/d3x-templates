@@ -1,0 +1,52 @@
+# Nausf_UEAuthentication — unknown subscriber (security / negative).
+# 3GPP TS 29.509 §6.1.7.3 (cause USER_NOT_FOUND, 404).
+# runner initiates with a well-formed but unprovisioned SUPI. The AUSF reaches UDM
+# internally, finds no subscriber, and must REJECT with 404 + ProblemDetails and
+# STAY UP.
+
+kind: flow
+name: ausf_ueauth_unknown_user_rejected
+description: POST ue-authentications for an unprovisioned SUPI is rejected 404 USER_NOT_FOUND
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            peer: ausf
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001019999999999",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404
+          - type: check
+            field: sbi.body.cause
+            op: contains
+            expected: USER_NOT_FOUND

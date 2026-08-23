@@ -1,0 +1,77 @@
+# BSTR-02 — bootstrapping remains public when oauth2_required is on.
+#
+# TS 29.510 §6.5.3: the bootstrapping endpoint must be reachable
+# without authentication even when the NRF requires OAuth2 for all
+# other services (otherwise a fresh NF can never bootstrap into the
+# deployment). Catches a regression where someone moves
+# oauth_required enforcement too early in the middleware chain so
+# that it gates /nnrf-bstr too.
+#
+# Two requests, no Authorization header on either:
+#   1. GET /nnrf-bstr/v1/bootstrapping  → 200 (must be public)
+#   2. GET /nnrf-nfm/v1/nf-instances    → 401 (proves oauth2 mode is
+#                                             actually active — without
+#                                             this control the BSTR 200
+#                                             could be a fluke from
+#                                             oauth2 being disabled)
+#
+# Verification requires the NRF to be running with -oauth2.
+
+kind: flow
+name: nrf_bstr_oauth_required_still_public
+description: Under -oauth2 mode, bootstrap stays 200 (no auth) and NFM stays 401.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: probing_bstr
+        actions:
+          - type: send
+            message: BootstrapNoAuth
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-bstr/v1/bootstrapping"
+              }
+
+  probing_bstr:
+    transitions:
+      - event: rest.BootstrapNoAuth_Answer
+        target: probing_nfm
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body._links
+            op: exists
+          - type: send
+            message: NfmNoAuth
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances",
+                "query": {"nf-type": "SMF"}
+              }
+
+  probing_nfm:
+    transitions:
+      - event: rest.NfmNoAuth_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 401
+
+  done: {}
+  failed: {}

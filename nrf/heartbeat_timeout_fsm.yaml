@@ -1,0 +1,128 @@
+# LONG-04 — heartbeat-timeout FSM. See d3x-core
+# docs/nrf/sanity-tests.md §4.7.9 (LONG-04) and §2.14-adjacent longrun
+# notes.
+#
+# Proves the NRF actually times out NFs that stop heart-beating, walking
+# the status FSM REGISTERED → SUSPENDED → DEREGISTERED (resource gone).
+# Catches a monitor that never ticks, or that flips state in memory but
+# never persists it.
+#
+# Timing (verified against the SUT):
+#   NRF runs with -heartbeat 20  → the heartbeat monitor ticks every 20s.
+#   Register with heartBeatTimer=10 → the NF's heartbeat expires at t≈10s.
+#   First monitor tick after expiry (t≈20s):  REGISTERED → SUSPENDED.
+#   Next tick (t≈40s):                         SUSPENDED  → DELETE (404).
+#   So the SUSPENDED observation window is ≈20-40s (one monitor interval;
+#   the monitor does not refresh expiry on suspend, so the second miss is
+#   detected on the very next tick).
+#
+# The `on_timeout` blocks are the delay primitive — runner has no sleep
+# action, but a state with on_timeout fires its actions after `duration`
+# with no driving event. We probe at t≈28s (well inside the SUSPENDED
+# window) and again at t≈50s (well past the DELETE tick).
+#
+# REQUIRES the NRF to run with `-heartbeat 20`. Run with a per-flow
+# timeout > 55s (e.g. -timeout 90s).
+
+kind: flow
+name: nrf_heartbeat_timeout_fsm
+description: Register, stop heart-beating, observe REGISTERED → SUSPENDED → DEREGISTERED (LONG-04).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/bbbb0004-0000-4000-8000-000000000004",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 10,
+                  "fqdn": "hb-timeout.local",
+                  "ipv4Addresses": ["10.0.9.4"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: waiting_for_suspend
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.body.nfStatus
+            op: equals
+            expected: REGISTERED
+
+  # No driving event — just wait out the first monitor tick, then probe.
+  waiting_for_suspend:
+    on_timeout:
+      duration: 28s
+      target: checking_suspended
+      actions:
+        - type: send
+          message: GetSuspended
+          peer: nrf-peer
+          message_body: |
+            {
+              "method": "GET",
+              "url": "/nnrf-nfm/v1/nf-instances/bbbb0004-0000-4000-8000-000000000004"
+            }
+
+  checking_suspended:
+    transitions:
+      - event: rest.GetSuspended_Answer
+        target: waiting_for_delete
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfStatus
+            op: equals
+            expected: SUSPENDED
+
+  waiting_for_delete:
+    on_timeout:
+      duration: 22s
+      target: checking_deleted
+      actions:
+        - type: send
+          message: GetDeleted
+          peer: nrf-peer
+          message_body: |
+            {
+              "method": "GET",
+              "url": "/nnrf-nfm/v1/nf-instances/bbbb0004-0000-4000-8000-000000000004"
+            }
+
+  checking_deleted:
+    transitions:
+      - event: rest.GetDeleted_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 404
+
+  done: {}
+  failed: {}

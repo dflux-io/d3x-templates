@@ -1,0 +1,307 @@
+# Nudr_DataRepository runtime subscriber provisioning — create → read-back →
+# delete over SBI (UDM-1 + UDR-1). Exercises the write leaves the facade
+# gained for runtime provisioning (TS 29.504/29.505):
+#   PUT .../authentication-data/authentication-subscription       → 201
+#   PUT .../provisioned-data/am-data (carries the full nssai)     → 201
+#   PUT .../provisioned-data/smf-selection-subscription-data      → 201
+#   PUT .../provisioned-data/sm-data (array, whole-set)           → 201
+#   GET .../provisioned-data (aggregate)                          → 200 round-trip
+#   GET /nudm-sdm/v2/{supi}/nssai (peer: udm)                     → 200 round-trip
+#   DELETE auth-subscription + am-data                            → 204
+#   GET .../provisioned-data/am-data (after delete)               → 404
+#   GET /nudm-sdm/v2/{supi}/nssai (after delete)                  → 404
+#
+# The SDM nssai legs pin the UDR-1 derivation: the subscribed NSSAI has no
+# standalone Nudr leaf (TS 29.505 carries it inside am-data), so the UDM SDM
+# /nssai read must serve — and stop serving — an API-provisioned subscriber
+# purely off its am-data writes.
+#
+# SCOPE (be honest): this validates the Nudr provisioning WRITE round-trip
+# ONLY. The create→AUTHENTICATE→delete leg (the freshly provisioned SUPI
+# generating a real 5G-AKA vector through the AUSF) is covered by the Go
+# integration test dpf/integration TestProvision_Auth_Delete_E2E — it needs the
+# UE-side Milenage crypto the runner AUSF flow doesn't drive here.
+#
+# A fresh SUPI (imsi-001010000000042) not in the canonical seed is used so the
+# create starts from a clean 404 and the delete fully removes it. Credentials
+# use the open5gs default K/OPc (matching dpf/seed.go) in the internal hex wire
+# form. Drives the UDR role against the seeded dpf (peer: udr).
+
+kind: flow
+name: nudr_provisioning_crud_ok
+description: PUT auth-subscription + provisioned-data (201) → GET aggregate + SDM nssai (200, round-trip) → DELETE (204) → GET am-data + SDM nssai (404)
+category: functional
+type: client
+protocol: sbi
+nf: udr
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_put_auth
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/authentication-data/authentication-subscription",
+                "body": {
+                  "permanentKey": "465B5CE8B199B49FAA5F0A2EE238A6BC",
+                  "opc": "E8ED289DEBA952E4283B54E88E6183CA",
+                  "authenticationManagementField": "8000",
+                  "sequenceNumber": "000000000020",
+                  "authenticationMethod": "5G_AKA",
+                  "algorithmId": "MILENAGE"
+                }
+              }
+
+  wait_put_auth:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_put_am
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/am-data",
+                "body": {
+                  "gpsis": ["msisdn-14155550042"],
+                  "nssai": {
+                    "defaultSingleNssais": [{"sst": 1, "sd": "000001"}],
+                    "singleNssais": [{"sst": 1, "sd": "000001"}, {"sst": 1, "sd": "000002"}]
+                  }
+                }
+              }
+
+  wait_put_am:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_put_smfsel
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/smf-selection-subscription-data",
+                "body": {
+                  "subscribedSnssaiInfos": {"01000001": {"dnnInfos": [{"dnn": "internet"}]}}
+                }
+              }
+
+  wait_put_smfsel:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_put_sm
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/sm-data",
+                "body": [
+                  {
+                    "singleNssai": {"sst": 1, "sd": "000001"},
+                    "dnnConfigurations": {"internet": {"sessionAmbr": {"uplink": "100 Mbps", "downlink": "200 Mbps"}}}
+                  }
+                ]
+              }
+
+  wait_put_sm:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_get_aggregate
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data",
+                "body": {}
+              }
+
+  wait_get_aggregate:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_get_nssai
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # The provisioned AM data round-trips in the aggregate set.
+          - type: check
+            field: sbi.body.amData.gpsis.0
+            op: equals
+            expected: "msisdn-14155550042"
+          # UDR-1: the subscribed NSSAI is derived from the am-data write —
+          # the UDM SDM /nssai leaf must serve the API-provisioned subscriber.
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v2/imsi-001010000000042/nssai",
+                "body": {}
+              }
+
+  wait_get_nssai:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_del_auth
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # Full round-trip: defaults AND the allowed list from the am-data PUT.
+          - type: check
+            field: sbi.body.defaultSingleNssais.0.sd
+            op: equals
+            expected: "000001"
+          - type: check
+            field: sbi.body.singleNssais.1.sd
+            op: equals
+            expected: "000002"
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/authentication-data/authentication-subscription",
+                "body": {}
+              }
+
+  wait_del_auth:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_del_am
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/am-data",
+                "body": {}
+              }
+
+  wait_del_am:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_get_absent
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204
+          # After deleting AM data the subscriber no longer exists → 404.
+          - type: send
+            message: SBI_Request
+            peer: udr
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/am-data",
+                "body": {}
+              }
+
+  wait_get_absent:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_nssai_absent
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404
+          # With the am-data gone, the derived SDM nssai read must 404 too —
+          # no stale NSSAI may survive the delete (UDR-1).
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nudm-sdm/v2/imsi-001010000000042/nssai",
+                "body": {}
+              }
+
+  wait_nssai_absent:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404

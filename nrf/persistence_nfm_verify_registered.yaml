@@ -1,0 +1,79 @@
+# PERSIST-01 (flow B — verify after restart). See d3x-core
+# docs/nrf/sanity-tests.md §2.14 and §4.7.6.
+#
+# Run AFTER the harness has restarted the NRF against the same -db-dsn.
+# GETs the fixed UUID that persistence_nfm_register registered and
+# asserts every field of the profile round-trips byte-for-byte. The
+# server is allowed to add fields; we assert the ones we sent rather
+# than blob-comparing, so a future server-side timestamp won't break it.
+#
+# The fixed UUID MUST match persistence_nfm_register.yaml.
+
+kind: flow
+name: nrf_persistence_nfm_verify_registered
+description: GET the fixed-UUID SMF after restart, assert profile survived (PERSIST-01 post-restart).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: fetching
+        actions:
+          - type: send
+            message: GetNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/nf-instances/aaaa0001-0000-4000-8000-000000000001"
+              }
+
+  fetching:
+    transitions:
+      - event: rest.GetNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfInstanceId
+            op: equals
+            expected: aaaa0001-0000-4000-8000-000000000001
+          - type: check
+            field: rest.body.nfType
+            op: equals
+            expected: SMF
+          - type: check
+            field: rest.body.nfStatus
+            op: equals
+            expected: REGISTERED
+          - type: check
+            field: rest.body.fqdn
+            op: equals
+            expected: smf-persist.local
+          - type: check
+            field: rest.body.heartBeatTimer
+            op: equals
+            expected: 30
+          - type: check
+            field: rest.body.ipv4Addresses.0
+            op: equals
+            expected: 10.0.0.10
+          - type: check
+            field: rest.body.plmnList.0.mcc
+            op: equals
+            expected: "001"
+          - type: check
+            field: rest.body.sNssais.0.sst
+            op: equals
+            expected: 1
+
+  done: {}
+  failed: {}

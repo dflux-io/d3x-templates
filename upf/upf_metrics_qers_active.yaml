@@ -1,0 +1,54 @@
+# UPF metrics scrape — assert upf_qers_active == 1 (post-establish-with-QER).
+#
+# Final step of the upf_metrics suite's QER leg, after exactly one session
+# carrying one QER has been established (pfcp_session_establish_qer). Together
+# with the upf_qers_active baseline (0) this proves the QER is actually
+# programmed at establishment and externally observable via /metrics — the
+# black-box "QoS programmed" assertion (rebuilds the gnbsim-only QER-programming
+# check; see d3x-core docs/dmf/sanity-tests.md §Coverage-to-rebuild item 3).
+#
+# upf_qers_active is an unlabelled gauge, so it renders as the exposition line
+# `upf_qers_active 1`; assert via substring `contains` (JSON-path resolution
+# misses on a raw-text /metrics body). Requires the runner http1 REST option (#309).
+
+kind: flow
+name: upf_metrics_qers_active
+description: Assert the UPF reports upf_qers_active 1 after one establish-with-QER
+category: functional
+type: client
+protocol: rest
+nf: external
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: ScrapeMetrics
+            peer: metrics
+            message_body: |
+              { "method": "GET", "url": "/metrics" }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: rest.ScrapeMetrics_Answer
+        target: completed
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body
+            op: contains
+            expected: "upf_qers_active 1"

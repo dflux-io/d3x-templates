@@ -1,0 +1,65 @@
+# Nausf_UEAuthentication — ProblemDetails fidelity + no-leak (security / negative).
+# 3GPP TS 29.571 §5.2.4.1 (ProblemDetails); TS 29.500 §5.2.7.2.
+# Layered over an implementable negative initiate (unauthorized serving network).
+# Asserts the rejection is a well-formed RFC7807 problem: Content-Type
+# application/problem+json, body.status mirrors the HTTP code, body.cause/title
+# present, and the body does NOT leak the SUPI or any auth vector. Best-effort
+# structural fidelity check (runner has no typed RFC7807 op).
+
+kind: flow
+name: ausf_ueauth_problem_details_fidelity_check
+description: A rejected initiate returns a well-formed problem+json that does not leak the SUPI
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            peer: ausf
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc999.mcc999.3gppnetwork.org"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 403
+          - type: check
+            field: sbi.headers.Content-Type
+            op: contains
+            expected: application/problem+json
+          - type: check
+            field: sbi.body.status
+            op: equals
+            expected: 403
+          - type: check
+            field: sbi.body.cause
+            op: not_empty
+          - type: check
+            field: sbi.body
+            op: not_contains
+            expected: imsi-001010000000001

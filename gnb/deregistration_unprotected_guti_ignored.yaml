@@ -1,0 +1,268 @@
+# NEGATIVE — an UNPROTECTED DEREGISTRATION REQUEST naming a securely registered
+# UE's 5G-GUTI must not evict it (register row REG-184).
+#
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE. Read the whole of this header
+# before touching a terminal: the spec-mandated behaviour here is to DISCARD,
+# a discard emits nothing, and a flow that scores nothing as "the core tolerated
+# it" gives the most conformant core the worst mark. That inversion is exactly
+# what the 2026-08-11 audit found in six security rows.
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §4.4.4.3, final paragraph — "Once the secure exchange of NAS
+#   messages has been established for the NAS signalling connection, the
+#   receiving 5GMM entity in the AMF shall not process any NAS signalling
+#   messages unless they have been successfully integrity checked by the NAS. …
+#   If any NAS signalling message is received, as not integrity protected even
+#   though the secure exchange of NAS messages has been established, then the
+#   NAS shall discard this message."
+#
+#   TS 24.501 §4.4.4.3 NOTE 2 — "The DEREGISTRATION REQUEST message can be sent
+#   by the UE without integrity protection, e.g. if the UE is registered for
+#   emergency services and there is no valid 5G NAS security context available…
+#   For these cases the network can attempt to use additional criteria (e.g.
+#   whether the UE is subsequently still performing periodic registration update
+#   or still responding to paging) before marking the UE as
+#   5GMM-DEREGISTERED."
+#
+#   TS 24.501 §4.4.4.3, DEREGISTRATION REQUEST failing the integrity check —
+#   "If it is not a deregistration request due to switch off, and the AMF can
+#   initiate an authentication procedure, the AMF should authenticate the
+#   subscriber before processing the deregistration request any further." and
+#   "the AMF may ignore the deregistration request and remain in state
+#   5GMM-REGISTERED."
+#
+#   TS 24.501 §5.3.3 — "A UE supporting N1 mode includes a valid 5G-GUTI, if any
+#   is available, in the REGISTRATION REQUEST and DEREGISTRATION REQUEST
+#   messages."
+#
+# WHY THIS IS NOT `post_smc_unprotected_uplink_discarded` (REG-451).
+# That flow probes the same clause with the same message SHAPE, and this one
+# reuses its structure deliberately. The difference is the identity the forged
+# message names, and it is the whole of REG-184. REG-451's probe names a SUCI;
+# an AMF has reasons to dismiss an unprotected SUCI-identified de-registration
+# that have nothing to do with integrity protection (it may not map it to the
+# live connection at all), so a green there does not establish that a UE
+# IDENTIFIED BY ITS ASSIGNED 5G-GUTI cannot be evicted. This flow sends
+# `identity: guti`, which per §5.3.3 is what a registered UE actually puts in a
+# DEREGISTRATION REQUEST — and what an attacker who watched the REGISTRATION
+# ACCEPT go past holds. The AMF therefore has everything it needs to resolve the
+# message to the live 5GMM context, and the only thing standing between the
+# forgery and an evicted subscriber is the integrity check.
+#
+# THE VIOLATION IS ON THE WIRE. Measured on tinycore 2026-08-11 from -trace, the
+# probe's whole NAS PDU (TX after REGISTRATION COMPLETE):
+#
+#     7e 00 45 01 00 0b f2 00 f1 10 aa aa 2a 7a de 05 30
+#     ^^ EPD 5GMM
+#        ^^ security header type 0 = PLAIN — no MAC, no sequence number
+#           ^^ message type 0x45 = DEREGISTRATION REQUEST (UE originating)
+#              ^^ de-registration type: normal, not switch-off
+#                 ^^^^^ 5GS mobile identity, LV, 11 octets
+#                       ^^ 0xf2 = identity type 2 (5G-GUTI), odd/even + type
+#                          ^^^^^^^^^^^^^^ MCC/MNC + AMF region/set/pointer
+#                                        ^^^^^^^^^^^ the 4-octet 5G-TMSI, equal
+#                                        to the `tmsi_5g` the REGISTRATION
+#                                        ACCEPT assigned earlier in the same run
+#
+# Compare the frame the same UE sent two messages earlier on the same
+# connection: `7e 02 <MAC×4> <SN> …`, security header type 2, integrity
+# protected and ciphered. Same UE, same association, same active context, and no
+# protection at all on the probe.
+#
+# NOT switch-off, on purpose: §5.5.2.2 tells the network to send no
+# DEREGISTRATION ACCEPT for a switch-off de-registration, which would delete the
+# acceptance observable this row depends on.
+#
+# THE PRECONDITION IS ASSERTED, NOT ASSUMED. §4.4.4.3's last paragraph only
+# applies "once the secure exchange of NAS messages has been established", so
+# the REGISTRATION ACCEPT that precedes the probe is checked to have arrived
+# integrity protected, ciphered and MAC-verified — read off `nas.security.*`,
+# the OUTER header, because the inner header is always plain after DecodeSecure
+# and would pass against a core that sends everything in the clear (xp-248).
+#
+# HOW THE ABSENCE IS MADE FALSIFIABLE. Never on a bare timer:
+#
+#   * every way the AMF could ACT on the forgery has an explicit transition to
+#     `tolerated` — a DEREGISTRATION ACCEPT (it completed the procedure) or a
+#     UEContextReleaseCommand (it acted on the only stimulus this connection has
+#     had since REGISTRATION COMPLETE);
+#
+#   * when the window closes the flow does not terminate. It sends a correctly
+#     integrity-protected DEREGISTRATION REQUEST — the row's own criterion, "the
+#     UE's existing NG connection still answers a subsequent integrity-protected
+#     uplink NAS message" — and only an answer to THAT reaches `rejected`. An
+#     AMF that had quietly evicted the UE has no context left to verify it with
+#     and cannot answer. So a flow that sent nothing at all scores `tolerated`,
+#     not green.
+#
+# TERMINALS.
+#   rejected   the forgery was discarded AND the connection still serves a
+#              protected message. CONFORMANT — this is the PASS.
+#   tolerated  the AMF acted on the unprotected message, or the connection could
+#              not answer afterwards. The eviction this row exists to catch.
+#   failed     registration never completed, so the probe never ran.
+#
+# MEASURED AGAINST tinycore 2026-08-11: terminal `rejected` — the PASS. The
+# forged, unprotected, GUTI-identified DEREGISTRATION REQUEST drew NOTHING for
+# the full 8 s window, and the correctly integrity-protected DEREGISTRATION
+# REQUEST sent afterwards was answered with a DEREGISTRATION ACCEPT that was
+# itself protected and MAC-verified. tinycore discards per §4.4.4.3 and keeps
+# the 5GMM context; a UE registered on this core cannot be evicted by anyone who
+# merely knows its 5G-GUTI. Conformant.
+#
+# ACCEPTANCE TEST — the violation disabled. Re-running with `protect: true` and
+# nothing else changed (scratchpad only, not committed), i.e. THE SAME
+# DEREGISTRATION REQUEST naming THE SAME 5G-GUTI but correctly integrity
+# protected, reached `tolerated` via a DEREGISTRATION ACCEPT inside the window.
+# So the AMF does process this exact message when it is protected, the silence
+# above is caused by the missing protection and by nothing else, and this flow
+# can report both terminals against the live core.
+#
+# ENVIRONMENT NOTE, not a verdict: one run in three ended `failed` at
+# `ngap.tx.transport: sctp client not connected (state=0)` while other agents
+# were driving the same core. The association went away under the flow; that is
+# infrastructure, and it lands on `failed`, never on a false `rejected`.
+kind: flow
+name: deregistration_unprotected_guti_ignored
+description: NEGATIVE — unprotected DEREGISTRATION REQUEST naming the registered UE's 5G-GUTI; assert the AMF discards it and the connection still answers a protected message (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration (TS 24.501 §9.11.3.7).
+            params: { follow_on_request: true }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_discard
+        actions:
+          # "Once the secure exchange of NAS messages has been established" —
+          # the clause's precondition, read off the OUTER security header.
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+          - { type: check, field: nas.security.ciphered, op: equals, expected: true }
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          # …and the UE must hold the 5G-GUTI the probe is going to name, or the
+          # forgery would name nobody. (The enricher refuses to build it in that
+          # case, but failing here says why.)
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # THE forgery. `protect: true` is the acceptance-test switch.
+          - type: send
+            message: PlainUplinkNas
+            params: { inner: deregistration_request, identity: guti, protect: false }
+
+  wait_discard:
+    # The §4.4.4.3 absence window (register absent_after_s: 8). A discard emits
+    # nothing, so the window hands over to the state-integrity leg instead of
+    # resolving on its own timer.
+    on_timeout:
+      duration: 8s
+      target: prove_connection_intact
+      actions:
+        - { type: send, message: DeregistrationRequest }
+    transitions:
+      # The AMF completed a 5GMM procedure off an unprotected NAS message.
+      - { event: NASDownlinkTransport.DeregistrationAccept, target: tolerated }
+      # Releasing the context is acting on the forgery just as much as answering
+      # it: nothing else has been sent on this connection since REGISTRATION
+      # COMPLETE.
+      - { event: UEContextReleaseCommand, target: tolerated }
+      # Refusals. None of these completes the procedure the forgery asked for,
+      # and §4.4.4.3's discard is a floor, not a ceiling — "the AMF should
+      # authenticate the subscriber before processing the deregistration request
+      # any further" is the clause's own stronger alternative.
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+
+  prove_connection_intact:
+    # THE row's criterion. No answer to a message the AMF *can* verify means the
+    # forgery moved the registration state after all.
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: rejected
+        actions:
+          # And the answer itself is protected — an AMF answering in the clear
+          # would satisfy the letter of "still answers" while having thrown away
+          # the security context the row is about.
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-184 (negative, expected_terminal: rejected) —
+# After an unprotected DEREGISTRATION REQUEST naming the registered UE's 5G-GUTI, the
+# UE's existing NG connection still answers a subsequent integrity-protected uplink NAS
+# message
+#
+# REG-184: "the UE's existing NG connection still answers a subsequent integrity-
+# protected uplink NAS message" — prove_connection_intact -> `rejected`. `tolerated` is
+# the AMF acting on the UNPROTECTED de-registration (answering it, or releasing the
+# context on it), or the protected follow-up going unanswered because the UE had already
+# been evicted.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 8
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

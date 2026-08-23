@@ -1,0 +1,67 @@
+# NRF smoke suite — CI gate.
+#
+# Picks one happy-path flow per Nnrf service so a green run proves the
+# basic protocol contract is intact. Cheapest "is the NRF reachable"
+# check (bstr_get) runs first; lifecycle smoke runs next; register
+# variations and OAuth round out the suite. Every step is gated with
+# stop_on_failure: true so a CI report points at the first broken
+# contract instead of cascading failures masking the root cause.
+#
+# Coverage maps to d3x-core/docs/nrf/sanity-tests.md §2.7.1:
+#   Nnrf_Bootstrapping  — bstr_get                       (BSTR-01)
+#   Nnrf_NFManagement   — nfm_register_then_deregister   (NFM-01)
+#   Nnrf_NFManagement   — nfm_register_201_location      (NFM-02)
+#   Nnrf_NFManagement   — nfm_list_hal                   (NFM-15)
+#   Nnrf_AccessToken    — oauth_token                    (OAUTH-01)
+#   Nnrf_AccessToken    — oauth_token_headers            (OAUTH-02)
+#
+# Renamed from nrf_sanity_tranche_a as part of the per-service reorg.
+
+kind: suite
+name: nrf_smoke
+description: One happy-path per Nnrf service. CI gate — must stay green on main.
+
+steps:
+  - name: bootstrapping
+    flow: nrf_bstr_get
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: nfm_lifecycle
+    flow: nrf_nfm_register_then_deregister
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: register_variations
+    flow: nrf_nfm_register_201_location
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: nfm_list_hal
+    flow: nrf_nfm_list_hal
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: oauth_basic
+    flow: nrf_oauth_token
+    repetitions: 1
+    stop_on_failure: true
+
+  - name: oauth_headers_and_negative
+    flow: nrf_oauth_token_headers
+    repetitions: 1
+    stop_on_failure: true
+
+final_checks:
+  - name: all_flows_succeeded
+    metric: flows_succeeded
+    op: equals
+    value: 6
+  - name: no_failed_flows
+    metric: flows_failed
+    op: equals
+    value: 0
+  - name: no_failed_checks
+    metric: checks_failed
+    op: equals
+    value: 0

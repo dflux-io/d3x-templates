@@ -1,0 +1,67 @@
+# PERSIST-01 (flow A — register). See d3x-core docs/nrf/sanity-tests.md
+# §2.14 and §4.7.6.
+#
+# Registers one SMF profile under a FIXED, client-chosen nfInstanceId.
+# NF instances are client-named (the UUID lives in the PUT path), so the
+# verify flow (B) can GET the same UUID after the restart without any
+# cross-process ID handoff — there is no sidecar fixture for this pair.
+# The harness (scripts/nrf-restart.sh) runs this flow, restarts the NRF
+# against the same -db-dsn, then runs persistence_nfm_verify_registered.
+#
+# The fixed UUID below MUST stay in lock-step with the one in
+# persistence_nfm_verify_registered.yaml.
+
+kind: flow
+name: nrf_persistence_nfm_register
+description: Register one SMF under a fixed UUID (PERSIST-01 pre-restart).
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: registering
+        actions:
+          - type: send
+            message: RegisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/aaaa0001-0000-4000-8000-000000000001",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-persist.local",
+                  "ipv4Addresses": ["10.0.0.10"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  registering:
+    transitions:
+      - event: rest.RegisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.headers.Location
+            op: contains
+            expected: /nnrf-nfm/v1/nf-instances/aaaa0001-0000-4000-8000-000000000001
+          - type: check
+            field: rest.body.nfInstanceId
+            op: equals
+            expected: aaaa0001-0000-4000-8000-000000000001
+
+  done: {}
+  failed: {}

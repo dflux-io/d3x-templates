@@ -1,0 +1,214 @@
+# Initial registration identified by a valid native 5G-GUTI from a previous
+# registration (register row REG-107).
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.5.1.2.2 b)1) — "if the UE is registering with a PLMN and the UE
+#   holds a valid 5G-GUTI that was previously assigned, over 3GPP access or
+#   non-3GPP access, by the same PLMN with which the UE is performing the
+#   registration, the UE shall indicate the 5G-GUTI in the 5GS mobile identity
+#   IE". A SUCI is only used (case e) when no valid 5G-GUTI is held — so a
+#   GUTI-identified INITIAL registration is the NORMAL case for any UE that has
+#   registered before, not an edge case.
+#
+#   TS 24.501 §5.3.3 — the AMF assigns the 5G-GUTI during a successful initial
+#   registration; it is that assigned value which this flow feeds back.
+#
+# WHY THIS FLOW IS NOT `registration` AND NOT `registration_guti_unknown`.
+# `registration` identifies the UE with a SUCI and never exercises GUTI lookup
+# at all. `registration_guti_unknown` sends a BOGUS GUTI, so its pass terminal
+# accepts a REGISTRATION REJECT — for this row a reject is the FAILURE, because
+# the GUTI is one the AMF itself assigned seconds earlier and it must resolve to
+# the stored 5GMM context. That opposite polarity is the whole point of the row
+# and neither existing flow makes it.
+#
+# WHAT IS ON THE WIRE. Phase 1 is an ordinary SUCI registration, which ends with
+# a REGISTRATION ACCEPT carrying the assigned 5G-GUTI; the runner stores it on
+# the UE (ue.NGAP.Guti*). The gNB then releases the UE context so the UE is back
+# in CM-IDLE, reallocates its RAN UE NGAP ID (`ngap_realloc`), and phase 2 sends
+# `RegistrationUpdate` with `registration_type: 1` — the enricher
+# EnrichRegistrationUpdate builds a REGISTRATION REQUEST whose 5GS mobile
+# identity IE is identity type 2 (5G-GUTI) populated from exactly those stored
+# fields, and whose registration type is INITIAL (1), secured as an initial NAS
+# message under an existing context per §4.4.6.
+#
+# Measured on tinycore 2026-08-11 from the -trace decode, phase 1 vs phase 2 of
+# the same run:
+#   phase 1 TX REGISTRATION REQUEST: registration_type 1, mobile_identity
+#                                    identity_type 1 (SUCI), scheme_output the
+#                                    MSIN
+#   RX REGISTRATION ACCEPT:          guti.tmsi_5g = "5YB2kA=="
+#   phase 2 TX REGISTRATION REQUEST: registration_type 1, mobile_identity
+#                                    identity_type 2 (5G-GUTI),
+#                                    tmsi_5g = "5YB2kA==" — byte-identical to
+#                                    what the accept assigned
+# So the stimulus really is a native-GUTI INITIAL registration, and not a second
+# SUCI registration wearing the row's name.
+#
+# THE ASSERTION. The criterion is "a RegistrationAccept, AuthenticationRequest,
+# SecurityModeCommand or IdentityRequest is received within absent_after_s —
+# never silence and never an NGAP error". Each of those four has an explicit
+# transition to the pass terminal, and every other outcome is explicitly a
+# failure:
+#   * silence                  -> on_timeout -> failed
+#   * NGAP ErrorIndication     -> explicit transition -> ngap_error
+#   * NAS REGISTRATION REJECT  -> explicit transition -> rejected
+# The reject transition is what stops this from being "the AMF said something":
+# an AMF that cannot resolve its own freshly issued 5G-GUTI and rejects the
+# registration lands on its own terminal instead of quietly passing.
+#
+# The phase-1 checks (`nas.guti ie_present`, identity type 2, `tmsi_5g`
+# present) are preconditions, not the row: without an assigned 5G-GUTI phase 2
+# would send a GUTI of all zeroes and the row would be testing nothing. They
+# fail the flow before it can produce a meaningless phase-2 verdict.
+#
+# MEASURED AGAINST tinycore 2026-08-11: PASS, terminal `guti_resolved`, reached
+# via NASDownlinkTransport.AuthenticationRequest — tinycore re-authenticates
+# rather than accepting directly, which §5.5.1.2.3 explicitly permits.
+#
+# FLAKINESS SEEN, AND IT IS IN PHASE 1: one run in three timed out in
+# `wait_release_cmd` — tinycore did not answer the gNB's UE CONTEXT RELEASE
+# REQUEST with a UE CONTEXT RELEASE COMMAND within 10 s. That is the same
+# phase-1 teardown `mobility_registration_updating` and
+# `periodic_registration_updating` depend on, so it is a property of the core
+# under concurrent load, not of this flow. It shows up as `failed`, never as a
+# false `guti_resolved`. If it recurs at scale, the 10 s in `wait_release_cmd`
+# is the knob, not the assertion.
+kind: flow
+name: registration_initial_with_native_guti
+description: Initial registration identified by the native 5G-GUTI assigned by a previous registration; assert the AMF resolves it (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - guti_resolved
+  - rejected
+  - ngap_error
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          # PRECONDITION, not the row assertion: phase 2 is only a native-GUTI
+          # registration if phase 1 actually assigned a native 5G-GUTI.
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.identity_type, op: equals, expected: 2 }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # Back to CM-IDLE, so phase 2 is a genuine initial NAS message on a
+          # fresh UE-associated connection rather than more traffic on this one.
+          - { type: send, message: UEContextReleaseRequest }
+
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_guti_reaction
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # registration_type 1 = INITIAL (TS 24.501 §9.11.3.7), identified by
+          # the stored native 5G-GUTI. This is the row's stimulus.
+          - type: send
+            message: RegistrationUpdate
+            params: { registration_type: 1 }
+
+  # The row's observation window (register absent_after_s: 6). Every conformant
+  # reaction has its own transition; so does every non-conformant one.
+  wait_guti_reaction:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # "either accepts directly ..."
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: guti_resolved
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: guti_resolved
+        actions:
+          - { type: send, message: RegistrationComplete }
+      # "... or re-runs authentication" — §5.5.1.2.3 lets the AMF start a 5GMM
+      # common procedure before it accepts. All three are the AMF having
+      # resolved the identity to a context it is willing to work on.
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: guti_resolved }
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: guti_resolved }
+      - { event: NASDownlinkTransport.IdentityRequest, target: guti_resolved }
+      # "it does not fail the registration" — the failure polarity that
+      # registration_guti_unknown treats as success, because there the GUTI was
+      # bogus. Here the AMF issued this GUTI itself.
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: ErrorIndication, target: ngap_error }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-107 (positive, expected_terminal: guti_resolved) —
+# A RegistrationAccept, AuthenticationRequest, SecurityModeCommand or IdentityRequest is
+# received within absent_after_s — never silence and never an NGAP error
+#
+# REG-107: "A RegistrationAccept, AuthenticationRequest, SecurityModeCommand or
+# IdentityRequest is received within absent_after_s — never silence and never an NGAP
+# error." Those four messages are exactly the routes into `guti_resolved`; `rejected`
+# and `ngap_error` are the two outcomes the criterion names as failures.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `guti_resolved` — the terminal this row claims
+    metric: final_state_counts.guti_resolved
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

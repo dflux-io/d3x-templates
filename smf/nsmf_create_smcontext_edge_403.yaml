@@ -1,0 +1,64 @@
+# Signature demo Act 4 — forged CreateSMContext blocked at EdgeGuard.
+#
+# Same abuse as smf_nsmf_create_smcontext_unauthorized_token, but pins
+# sbi.status == 403 (edge PolicyRule "block-forged" path deny). Use after
+# edgectl apply -f demo-policy.yaml (or policy-rules add @block-forged.json).
+#
+# Do not use against a bare SMF: Open5GS/TinyCore may return a different 4xx.
+kind: flow
+name: smf_nsmf_create_smcontext_edge_403
+description: CreateSMContext with forged token — expect edge 403 Forbidden
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer not-a-valid-jwt.forged.token"
+                },
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 10,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1"
+                }
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 403

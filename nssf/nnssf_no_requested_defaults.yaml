@@ -1,0 +1,62 @@
+# Nnssf_NSSelection — empty/absent Requested NSSAI uses default subscribed
+# S-NSSAIs (TS 23.501 §5.15.4 / TS 29.531). The seeded UDR subscriber has
+# DefaultSingleNssais = {sst=1,sd=000001} and SingleNssais also includes
+# 000002; with no requestedNssai the producer must grant only the default
+# (000001), which is also in the lab configured plan.
+kind: flow
+name: nnssf_no_requested_defaults
+description: GET network-slice-information with no requestedNssai -> 200 allowed from DefaultSingleNssais (000001)
+category: functional
+type: client
+protocol: sbi
+nf: nssf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_select
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: nssf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nnssf-nsselection/v1/network-slice-information",
+                "query": {
+                  "nf-type": "AMF",
+                  "slice-info-request-for-registration": "{}"
+                }
+              }
+
+  wait_select:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # Fail if the producer only echoes configuredNssai (which also
+          # contains 000001) without granting defaults under allowedNssaiList.
+          - type: check
+            field: sbi.body.allowedNssaiList
+            op: exists
+          - type: check
+            field: sbi.body.allowedNssaiList
+            op: contains
+            expected: "000001"
+          - type: check
+            field: sbi.body.allowedNssaiList.0.allowedSnssaiList.0.allowedSnssai.sd
+            op: equals
+            expected: "000001"

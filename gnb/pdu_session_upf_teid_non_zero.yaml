@@ -1,0 +1,259 @@
+# REG-912 — the CN tunnel endpoint the core hands back must be addressable.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 29.281 §5.1 (GTP-U header, TEID field) — the prohibition this row exists
+#   for: "The TEID ... shall not be assigned the value 'all zeros' by the GTP-U
+#   entity that allocates it", the all-zeros value being reserved for path
+#   management and for tunnels the receiver cannot yet resolve. A zero TEID is
+#   therefore not merely unhelpful, it collides with a reserved encoding.
+#
+#   TS 23.501 §5.8.2.3.3 (N3 tunnel establishment) — the UPF allocates the CN
+#   tunnel info for the uplink and it is returned to the NG-RAN, which is why
+#   this value is observable from the gNB at all.
+#
+#   TS 38.413 §9.3.2.2 / §9.3.4.1 — where it lands on the wire: the PDU SESSION
+#   RESOURCE SETUP REQUEST TRANSFER carries UL NG-U UP Transport Layer
+#   Information, a GTP Tunnel of (Transport Layer Address, GTP-TEID).
+#
+# WHY THIS IS A ROW OF ITS OWN AND NOT A LINE IN pdu_session_setup. REG-300 owns
+# `pdu_session_setup` and its criterion is "the session establishes" — a verdict
+# that is reached by the ACCEPT arriving. This row is about ONE FIELD inside the
+# N2 message that accompanies it, and flow-ownership.yaml records exactly that
+# separation: "asserts the GTP-TEID field value in the UL NG-U UP Transport
+# Layer Information". Sharing REG-300's flow would have scored this row on a
+# criterion that never looks at the TEID.
+#
+# THE ASSERTION IS ON THE DECODED WIRE FIELD, NOT ON A DERIVED ONE. The check
+# path is
+#
+#   pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid
+#
+# which resolves through resolveNGAPField — a json.Marshal of the decoded
+# ngap5g message — onto NGAPPduSessionConnectionInfo.RemoteTeid, the value
+# ngap5g's PDU Session Resource Setup Request Transfer decoder read out of the
+# GTP-TEID octets. `ue.UpfTeid` is checked too, but SECOND and for a different
+# reason: it is the copy enrichPduSessionSetupItems stashed on the UE, i.e. the
+# number the runner's own datapath would tunnel to. Both must be non-zero, or
+# the row is asserting about a field the rest of the runner does not use.
+#
+# VACUITY, ALL FOUR CLASSES, CHECKED.
+#   * `not_contains` — not used here.
+#   * `exists` — not used here. `ie_present` is used for the container object
+#     (`connection_info`) precisely because it FAILS on a path that does not
+#     resolve, so a renamed or absent IE cannot pass the row; and the TEID
+#     itself is asserted with `greater_than 0`, never `exists` or `not_empty`.
+#     `not_empty` WOULD BE VACUOUS HERE and it is worth saying why: its
+#     implementation is `value != nil && value != "" && value != 0.0`, and the
+#     resolved TEID is a uint32 — `any(uint32(0)) != any(float64(0.0))` is TRUE
+#     in Go, so `ue.UpfTeid not_empty` passes on the exact value this row
+#     exists to reject. Three existing flows spell it `not_empty`; this one
+#     must not.
+#   * `pkt_tx` — no user-plane leg in this row.
+#   * zero checks evaluated — impossible: `teid_verified` is reachable only
+#     through the transition that carries the ten checks below.
+#
+# THE FIELD SURVIVES BEING ZERO. NGAPPduSessionConnectionInfo.RemoteTeid carries
+# no `,omitempty` (proto/ngap5g/messages.go), so a zero TEID marshals as
+# `"remote_teid": 0` and is READ as zero rather than vanishing into a missing
+# path. That is the 61cdc4f property this row depends on: without it "the core
+# sent zero" and "the decoder lost the field" would be the same observation, and
+# the row could only ever report the second.
+#
+# NOT A BARE TIMER: `teid_verified` is reached by a PDU SESSION RESOURCE SETUP
+# REQUEST arriving. Every on_timeout targets `failed`.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; the
+# matrix was held by a concurrent run and this flow has never been executed.
+
+kind: flow
+name: pdu_session_upf_teid_non_zero
+description: PDU session establishment; assert the UL NG-U GTP-TEID the core returns is not all-zeros (TS 29.281 §5.1)
+detail: |
+  Registration, then one PDU session establishment. When the N2 PDU SESSION
+  RESOURCE SETUP REQUEST arrives the flow asserts the CN tunnel it carries is
+  usable: the setup list is non-empty, the item carries a connection info
+  object, its GTP-TEID is not 0x00000000, and it names a transport layer
+  address to send that TEID to.
+
+  TS 29.281 §5.1 forbids a GTP-U entity from assigning 'all zeros' as its own
+  TEID — the value is reserved — so a zero here is not a cosmetic defect: the
+  tunnel is unaddressable and the reserved encoding is claimed.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - teid_verified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration (the PDU SESSION
+            # ESTABLISHMENT REQUEST below), so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) or the AMF may release the N1 connection
+            # the moment registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_setup_request
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest }
+
+  wait_setup_request:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: teid_verified
+        actions:
+          # There is an item to read at all. `greater_or_equal 1` rather than
+          # `ie_present` on the list, because an empty list would satisfy
+          # presence and carry no tunnel.
+          - { type: check, field: pdu_session_resource_setup_request_items.length, op: greater_or_equal, expected: 1 }
+          # GUARD. `ie_present` fails on a path that does not resolve, so a
+          # setup request with no transfer — or a decoder that stopped
+          # producing this object — cannot reach the TEID check below and pass
+          # it by accident.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info, op: ie_present }
+          # ---- THE ROW. TS 29.281 §5.1: not 'all zeros'. ----
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          # A TEID with nowhere to send it is not a tunnel either: §5.1 makes
+          # the TEID meaningful only together with the peer address, and
+          # TS 38.413 §9.3.2.2 carries both in one GTP Tunnel IE.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: ie_present }
+          # The same two values as the runner itself took off this message
+          # (enrichPduSessionSetupItems). If these disagreed with the wire
+          # fields above, the row would be asserting about a field nothing
+          # else in the runner uses. `greater_than 0`, never `not_empty` —
+          # see the header.
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfAddr, op: ie_present }
+          # The session this tunnel belongs to really was established.
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-912).
+#
+# REG-912 — The UL NG-U UP Transport Layer Information in the PDU Session Resource Setup
+# Request observed on n2 has a GTP-TEID field that is not 0x00000000
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `teid_verified`
+    metric: final_state_counts.teid_verified
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 12 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 12 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 12
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

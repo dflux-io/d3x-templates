@@ -1,0 +1,390 @@
+# SERVICE REQUEST with an Uplink data status IE re-establishes user-plane resources (REG-201).
+#
+# Clauses, operative sentences (retrieved with matrix/scripts/spec-clause.py):
+#
+#   §5.6.1.2.1 "For cases d) and e) in subclause 5.6.1.1, the Uplink data status IE shall be
+#              included in the SERVICE REQUEST message to indicate the PDU session(s) the UE has
+#              pending user data to be sent. ... b) otherwise, the service type IE in the SERVICE
+#              REQUEST message shall be set to 'data'."
+#
+#   §5.6.1.4.1 "If the Uplink data status IE is included in the SERVICE REQUEST message and the UE
+#              is: a) not in NB-N1 mode ... the AMF shall: a) indicate the SMF to re-establish the
+#              user-plane resources for the corresponding PDU sessions; b) INCLUDE THE PDU SESSION
+#              REACTIVATION RESULT IE IN THE SERVICE ACCEPT MESSAGE to indicate the user-plane
+#              resources re-establishment result of the PDU sessions for which the UE requested to
+#              re-establish the user-plane resources"
+#
+#   §4.4.6     "When the initial NAS message is a SERVICE REQUEST message, the cleartext IEs are:
+#              Extended protocol discriminator; Security header type; Spare half octet; ngKSI;
+#              Service request message identity; Service type; and 5G-S-TMSI."
+#              "b) If the UE has a valid 5G NAS security context and: 1) the UE needs to send
+#              non-cleartext IEs in a ... SERVICE REQUEST message, the UE includes the entire ...
+#              SERVICE REQUEST message (i.e. containing both cleartext IEs and non-cleartext IEs)
+#              in the NAS message container IE and shall cipher the value part of the NAS message
+#              container IE."
+#
+#   Table 9.11.3.50.1: service type 0001 = data.
+#
+# ============================================================================================
+# BLOCKED ON A RUNNER FIX — READ BEFORE TREATING A RED CELL HERE AS A CORE DEFECT
+# ============================================================================================
+# The Uplink data status IE is NOT in §4.4.6's cleartext list for a SERVICE REQUEST, so a
+# conformant UE must send it inside a CIPHERED NAS message container. runner/runner/enrichers.go
+# EnrichServiceRequest puts it in the CLEARTEXT part instead (`svcReq.UplinkDataStatus = ...`
+# straight into the message body, then EncodeSecureInitial) and never builds the container; the
+# proto has the field (proto/nas5g/messages_5gmm.go NAS_ServiceRequest.NasMessageContainer,
+# encoded at nas_5gmm.go:1181) but nothing populates it and nothing ciphers its value part.
+#
+# MEASURED CONSEQUENCE, 2026-08-10, this flow's exact SERVICE REQUEST
+# (`7e 00 4c 01 ... 40 02 02 00` — service type 0001 = data, Uplink data status IEI 0x40 with
+# PSI-1 set, in the clear):
+#   - Open5GS answers SERVICE REJECT with 5GMM cause #95 "semantically incorrect message". That
+#     is Open5GS being RIGHT and the runner being wrong. It is OUR defect, not a core finding.
+#   - tinycore accepts the malformed request — which is its own leniency — and then omits the
+#     PDU session reactivation result IE from the SERVICE ACCEPT anyway (decoded accept is the
+#     3 bytes `7e 00 4e`), which the §5.6.1.4.1 "shall" above forbids.
+#
+# So REG-201 CANNOT be scored against a core until EnrichServiceRequest builds the §4.4.6 NAS
+# message container. The assertions below are written to the clause and are ready for that day;
+# until then the row's binding should carry gap: needs-harness rather than a core verdict.
+# The flow is NOT softened to make either core look good: no lenient terminal, no
+# timeout-to-success.
+# ============================================================================================
+#
+# WHAT ELSE CHANGED (xp-245). The old flow declared a `service_attempted` terminal reached from
+# `wait_service_response`'s on_timeout — an AMF that said nothing passed REG-201. It also never
+# established a PDU session, so its Uplink data status IE flagged PSI-1 on a UE that had no PDU
+# session at all: there was nothing for the AMF to reactivate and the row's entire subject was
+# absent. Phase 2 below (PDU SESSION ESTABLISHMENT before the AN Release) is what gives the
+# Uplink data status IE something to refer to.
+#
+# ============================================================================================
+# THE PSI BIT POLARITY — corrected 2026-08-12 (xp-277). THIS FLOW IS UNBOUND.
+# ============================================================================================
+# No register row names this flow: REG-201 moved to `service_request_reactivates_user_plane`
+# (see matrix/register/parts/connection-management.verified.yaml, which records why — this
+# flow drives `ServiceRequest`, which puts the non-cleartext Uplink data status IE in the
+# CLEAR, and §4.4.6 forbids that). So nothing below can move a cell. It is corrected anyway,
+# because the same inverted assertion sat in four places here and would be inherited by
+# whoever binds it next.
+#
+# TS 24.501 table 9.11.3.42.1: for PSI(1)-PSI(15), **1 indicates establishment of the
+# user-plane resource of the PDU session is NOT SUCCESSFUL**; 0 indicates it is successful,
+# OR that it was never requested. The four checks below asserted 1 and therefore demanded that
+# the AMF report failure — open5gs answered 0 (success) on the sister rows and was scored red
+# for it (measured, b72afec, 2026-08-12).
+#
+# 0 IS NOT A POSITIVE ON ITS OWN, and this flow does not pretend otherwise: each site pairs it
+# with `ie_present` (the IE is owed by §5.6.1.4.1 b) only because an Uplink data status IE was
+# received) and the row's terminal is gated on the N2 resource setup with a non-zero TEID. See
+# service_request_reactivates_user_plane.yaml for the full argument.
+#
+# SERVICE TYPE — ENUM VALUE (SVC_TYPE_DATA=2; svcTypeToWire maps it to wire 0001 "data").
+# Was a raw wire value until encodeServiceRequest was fixed on 2026-08-10 (xp-253).
+# Superseded note: `service_type: 1` reaches the wire as 0001 = "data", which is
+# what §5.6.1.2.1 requires here. It looks like the enum SVC_TYPE_SIGNALLING because proto/nas5g's
+# NAS_ServiceType enum is offset by one from the wire and encodeServiceRequest writes it raw — see
+# the long note in service_request_signalling.yaml. The old value 2 reached the wire as 0010 =
+# "mobile terminated services". When encodeServiceRequest is fixed this must become 2.
+
+kind: flow
+name: service_request_with_uplink_data_status
+description: PDU session, AN release, then SERVICE REQUEST with Uplink data status; assert reactivation result and a re-established GTP-U tunnel (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - connected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS pending after registration (the PDU session request),
+            # so the Follow-on request indicator must say so — TS 24.501
+            # §9.11.3.7 — or the AMF may release N1 before phase 2 starts.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: extract, field: ue.RanUeNgapId, store: pre_release_ran_ue_ngap_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  # Phase 2 — establish the PDU session the Uplink data status IE will later
+  # name. Without this the row has no user plane to re-establish.
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest }
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_cmd
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # AN Release (TS 23.502 §4.2.6) — go CM-IDLE with the PDU session
+          # still established but its user-plane resources torn down.
+          - { type: send, message: UEContextReleaseRequest }
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_pdu_session_accept
+
+  wait_release_cmd:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_response
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - type: send
+            message: ServiceRequest
+            params:
+              # ENUM SVC_TYPE_DATA=2 -> wire 0001 "data". See the header block.
+              service_type: 2
+              # PSI-1 — the session established in phase 2.
+              uplink_data_status: true
+      # Absorbed, not answered: the AMF is already releasing this connection.
+      #
+      # UNREVIEWED INTERACTION WITH ccd6864 (#362) — recorded 2026-08-18, NOT acted
+      # on. The scoping is deliberate and it still holds where it is written: a
+      # declared transition beats fsm.DispatchRx's tail default, so this state stays
+      # silent. But the SAME command arriving in any OTHER state of this flow now
+      # draws a CONFIGURATION UPDATE COMPLETE from that default — the very uplink
+      # this line refuses to send here. Latent rather than live today: the default
+      # is gated on the Configuration update indication ACK bit, and open5gs's
+      # command carries no such IE at all (decoded off the v1 sweep). Whether the
+      # silence should become flow-wide is an owner's call, not a template edit.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_cmd
+
+  wait_service_response:
+    # §5.6.1.4.1 completion is the SERVICE ACCEPT. Silence is a failure.
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      # Carrier 1 — the accept rides an INITIAL CONTEXT SETUP REQUEST.
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: wait_up_resources
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 78 }
+          # THE row assertion on N1: §5.6.1.4.1's "shall include the PDU session
+          # reactivation result IE ... to indicate the user-plane resources
+          # re-establishment result", with PSI-1 marked re-established.
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          # 0, NOT 1 — see THE PSI BIT POLARITY block in the header. 1 is the
+          # FAILURE code in TS 24.501 table 9.11.3.42.1.
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: "{{ue.RanUeNgapId}}" }
+          - { type: check, field: ran_ue_ngap_id, op: greater_than, expected: "{{ue.Params.pre_release_ran_ue_ngap_id}}" }
+          - { type: send, message: InitialContextSetupResponse }
+      # Carrier 2 — the accept travels alone in a DOWNLINK NAS TRANSPORT.
+      - event: NASDownlinkTransport.ServiceAccept
+        target: wait_up_resources
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 78 }
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          # 0, NOT 1 — see THE PSI BIT POLARITY block in the header. 1 is the
+          # FAILURE code in TS 24.501 table 9.11.3.42.1.
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: "{{ue.RanUeNgapId}}" }
+          - { type: check, field: ran_ue_ngap_id, op: greater_than, expected: "{{ue.Params.pre_release_ran_ue_ngap_id}}" }
+      # A refusal is a failure of this row, scored, not tolerated. (Today
+      # Open5GS lands here because OUR SERVICE REQUEST is malformed — see the
+      # BLOCKED block at the top before reading this as a core defect.)
+      # REORDER SAFETY. The EventBus does not preserve per-UE RX order, so the
+      # PDU SESSION RESOURCE SETUP REQUEST can be dispatched BEFORE the SERVICE
+      # ACCEPT even though the core sent them the other way round. Without this
+      # transition that message is dropped in this state and the row reds for a
+      # harness reason wearing a core's clothes. Same two assertions, reached
+      # from the other order; `wait_service_accept` then waits for the accept.
+      - event: PDUSessionResourceSetupRequest
+        target: wait_service_accept
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: not_empty }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: "{{ue.RanUeNgapId}}" }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+      - event: NASDownlinkTransport.ServiceReject
+        target: failed
+
+  # THE row assertion on N2: "PDUSessionResourceSetupRequest ... received on N2
+  # with a downlink GTP-U TEID". The TEID and transport-layer address are read
+  # out of THIS message rather than from ue.UpfTeid, which still holds phase 2's
+  # tunnel and would pass vacuously.
+  #
+  # KNOWN LIMIT: a core that delivers the PDU session list INSIDE the INITIAL
+  # CONTEXT SETUP REQUEST (PDU Session Resource Setup List CxtReq, TS 38.413
+  # §9.2.2.1 — free5GC does, see proto/ngap5g/messages.go) satisfies the row's
+  # "or InitialContextSetupRequest carrying the PDU session list" alternative and
+  # would need a third transition asserting
+  # pdu_session_resource_setup_list_cxt_req.0.pdu_session.connection_info.*.
+  # Neither lab core does that today (tinycore sends the standalone request;
+  # Open5GS rejects the request outright) and free5GC is not in the lab, so that
+  # branch is deliberately left unwritten rather than written unverified.
+  # Reached only when the bus delivered the N2 setup request first. The N2 half
+  # is already asserted and answered; §5.6.1.4.1 completion still requires the
+  # SERVICE ACCEPT, so it is asserted here with the same N1 checks.
+  wait_service_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: connected
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 78 }
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          # 0, NOT 1 — see THE PSI BIT POLARITY block in the header. 1 is the
+          # FAILURE code in TS 24.501 table 9.11.3.42.1.
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: send, message: InitialContextSetupResponse }
+      - event: NASDownlinkTransport.ServiceAccept
+        target: connected
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 78 }
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          # 0, NOT 1 — see THE PSI BIT POLARITY block in the header. 1 is the
+          # FAILURE code in TS 24.501 table 9.11.3.42.1.
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+      - event: NASDownlinkTransport.ServiceReject
+        target: failed
+
+  wait_up_resources:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: connected
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: not_empty }
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: "{{ue.RanUeNgapId}}" }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `connected`
+    metric: final_state_counts.connected
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: greater_or_equal
+    value: 1
+  - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, ServiceRequest)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: two PDU SESSION RESOURCE SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 2
+  - name: one UE CONTEXT RELEASE COMPLETE was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
+    op: equals
+    value: 1
+  - name: one UE CONTEXT RELEASE REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: two PDU SESSION RESOURCE SETUP REQUEST messages arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 2
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+  # Several routes reach `connected` with different numbers of checks
+  # (13..15); 13 is the shortest one, so it is the floor that still proves
+  # an assertion was made on the messages this run saw.
+  - name: at least 13 declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 13
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,302 @@
+# Registration + PDU session establishment with GTP-U tunnel setup.
+#
+# REG-300 — UE-requested PDU session establishment, IPv4, default DNN + slice.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py, printed in the run log):
+#
+#   TS 38.413 §8.2.1.2 (PDU Session Resource Setup, Successful Operation):
+#     "For each PDU session the NG-RAN node shall store the UL NG-U UP TNL
+#      Information IE included in the PDU Session Resource Setup Request
+#      Transfer IE contained in the PDU SESSION RESOURCE SETUP REQUEST message
+#      and use it as the uplink termination point for the user plane data for
+#      this PDU session."
+#     …and: "The PDU SESSION RESOURCE SETUP REQUEST message shall contain the
+#      information required by the NG-RAN node to setup the PDU session related
+#      NG-RAN configuration consisting of at least one PDU session resource".
+#     A UL NG-U UP TNL Information the gNB cannot use — TEID 0 or no transport
+#     layer address — is not a setup, so those are asserted as VALUES below.
+#
+#   TS 24.501 §6.4.1.3 (UE-requested PDU session establishment accepted):
+#     "If the connectivity with the requested DN is accepted by the network,
+#      the SMF shall create a PDU SESSION ESTABLISHMENT ACCEPT message."
+#     "If the selected PDU session type is 'IPv4', the SMF shall include the
+#      PDU address IE in the PDU SESSION ESTABLISHMENT ACCEPT message and
+#      shall set the PDU address IE to an IPv4 address […] allocated to the UE"
+#
+#   TS 38.413 §9.3.1.52 (PDU Session Type): ENUMERATED (Ipv4, Ipv6, Ipv4v6,
+#     ethernet, unstructured, ...) — so Ipv4 is the 0 asserted below.
+#
+# HARNESS NOTE — DO NOT use `nas.*` in wait_pdu_session_accept.
+# The NAS PDU carried by a PDU SESSION RESOURCE SETUP REQUEST sits on the
+# per-item NAS-PDU IE, not the message-level one, so extractNasPdu() misses it
+# and ue.NGAP.LastNas is never updated for this message. MEASURED: at this
+# state `nas.header.message_type` reads 66 (REGISTRATION ACCEPT) on tinycore
+# and 84 (CONFIGURATION UPDATE COMMAND) on open5gs — i.e. the previous
+# message, silently. The NAS accept is instead asserted through ue.PduAddress,
+# which enrichPduSessionAccept (runner/runner/ue_enrichment.go) populates ONLY
+# by decoding that item's NAS PDU as a PDU SESSION ESTABLISHMENT ACCEPT with a
+# 4-byte IPv4 PDU address. Paired with the `nas_pdu` IE-present check below,
+# that is the criterion's "NAS payload is a PDUSessionEstablishmentAccept with
+# a PDU address".
+#
+# YAML mirror of the built-in `pdu_session_setup` flow defined in
+# runner/flows/gnb/flow_pdu_session.go. Composes registrationStates +
+# pduSessionStates. Exercises the DFL-379 extract → $-ref → path-set
+# pipeline: pilot_amf_id is stashed in wait_auth_request, consumed in
+# wait_pdu_session_accept's PDUSessionResourceSetupResponse params.
+
+kind: flow
+name: pdu_session_setup
+description: Registration + PDU session establishment with GTP-U tunnel setup (YAML)
+detail: |
+  Performs UE registration followed by PDU session establishment (3GPP TS 24.501
+  §6.4.1, TS 38.413 §8.2). This flow sets up a user-plane data path between the
+  UE and the data network.
+
+  After completing the registration procedure (authentication, security activation,
+  context setup), the UE sends an UplinkNASTransport carrying a NAS
+  PDUSessionEstablishmentRequest specifying the requested DNN, S-NSSAI, and PDU
+  session type. The AMF sends a PDUSessionResourceSetupRequest at the NGAP level,
+  which contains the NAS PDUSessionEstablishmentAccept plus the GTP-U tunnel
+  endpoint information. The gNB responds with PDUSessionResourceSetupResponse.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # This UE has uplink signalling pending after registration — the PDU
+            # session request below — so the FOR bit must say so (TS 24.501
+            # §9.11.3.7). Without it the AMF is entitled to release the N1
+            # signalling connection as soon as registration completes, and
+            # free5GC does exactly that.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: settle_no_release
+        actions:
+          # --- N2: at least one PDU session resource (§8.2.1.2) -----------
+          - { type: check, field: pdu_session_resource_setup_request_items.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: greater_than, expected: 0 }
+
+          # --- N2: UL NG-U UP TNL Information is USABLE (§8.2.1.2) --------
+          # `greater_than 0`, not `not_empty`: ue.UpfTeid is a uint32 and the
+          # not_empty predicate compares the boxed value against the untyped
+          # float 0.0, which is never equal for a uint32 — so `not_empty`
+          # passes on TEID 0. Measured TEIDs: tinycore 1..5, open5gs 6589 /
+          # 26603. The row demands a NON-ZERO TEID, so compare numerically.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          # Transport layer address of the UPF's N3 endpoint: must be a dotted
+          # quad and must not be the unspecified address. RE2 has no negative
+          # lookahead, so the "not 0.0.0.0" half is a separate not_contains.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: not_contains, expected: '0.0.0.0' }
+
+          # --- N2: PDU Session Type is Ipv4 (§9.3.1.52, Ipv4 == 0) --------
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.type.pdu_session_type, op: equals, expected: 0 }
+
+          # --- N1: the PDU SESSION ESTABLISHMENT ACCEPT (§6.4.1.3) --------
+          # The NAS-PDU IE is actually carried…
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          # …and it decoded as an establishment accept carrying an IPv4 PDU
+          # address (see the HARNESS NOTE at the top of this file for why this
+          # is the sound way to assert it here).
+          - { type: check, field: ue.PduAddress, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: ue.PduAddress, op: not_contains, expected: '0.0.0.0' }
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+
+          # Pilot wiring (#241): message_body template pulls the value
+          # stashed in wait_auth_request (ue.Params.pilot_amf_id). The TX
+          # enrich scaffold evaluates the template per send and the
+          # enricher fills any remaining fields.
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+
+  # "…and the gNB's PDUSessionResourceSetupResponse is not followed by any
+  # release from the core." The absence of a message is only observable by
+  # waiting, so this state's TIMEOUT is the success edge and every transition
+  # out of it is a failure — the inverse of the usual shape, and the reason
+  # `established` stays the flow's only success terminal. 5s is the row's
+  # declared absent_after_s.
+  #
+  # Guarded on PDU-SESSION teardown and on the core refusing our setup
+  # response. Deliberately NOT on UEContextReleaseCommand: releasing the
+  # UE-associated logical NG-connection leaves the PDU session established in
+  # CM-IDLE, so treating it as a session release would be a false red.
+  settle_no_release:
+    on_timeout:
+      duration: 5s
+      target: established
+    transitions:
+      - event:
+          or:
+            - PDUSessionReleaseCommand
+            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+            - NASDownlinkTransport.DLNASTransport.PDUSessionReleaseCommand
+            - ErrorIndication
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-300).
+#
+# REG-300 — PDUSessionResourceSetupRequest received on N2 whose transfer IE carries a
+# non-zero GTP-U TEID and transport-layer address, and whose NAS payload is a
+# PDUSessionEstablishmentAccept with a PDU address; the gNB's
+# PDUSessionResourceSetupResponse is not followed by any release from the core
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL, AND WHAT IT DOES NOT PROVE ON ITS OWN. Every path to `established` in
+  # this flow ends on a TIMER — the absence window is the point of the row — so this pin
+  # says "the flow got as far as the window and nothing knocked it out", and the message
+  # assertions below are what say the run happened at all.
+  - name: the flow reached `established`
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # "…the gNB's PDUSessionResourceSetupResponse is not followed by any
+  # release from the core" (REG-300). `settle_no_release` waits out the
+  # row's absent_after_s and sends any release to `failed`, so this pair
+  # adds the arrivals that landed in a state with no transition for them —
+  # counted on arrival, before dispatch, which is the only place our own
+  # unhandled-receive gap cannot hide them.
+  - name: no PDU SESSION RELEASE COMMAND followed
+    metric: rx_events.PDUSessionReleaseCommand
+    op: equals
+    value: 0
+  - name: and no ERROR INDICATION followed
+    metric: rx_events.ErrorIndication
+    op: equals
+    value: 0
+  # The 15 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 15 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 15
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

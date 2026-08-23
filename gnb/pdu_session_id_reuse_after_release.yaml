@@ -1,0 +1,317 @@
+# Establish a PDU session, release it, then establish AGAIN with THE SAME
+# PDU session ID — the id must be reusable the moment the release completes.
+#
+# REG-371 — PDU session ID is reusable immediately after release.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 38.413 §8.2.2.2 (PDU Session Resource Release, Successful Operation) —
+#   THE operative sentence for this row:
+#     "After sending a PDU SESSION RESOURCE RELEASE RESPONSE message, the
+#      NG-RAN node shall be prepared to receive a PDU SESSION RESOURCE SETUP
+#      REQUEST message requesting establishment of a PDU session with a PDU
+#      Session ID corresponding to one of the PDU Session IDs that was present
+#      in the PDU Session Resource to Release List IE of the PDU SESSION
+#      RESOURCE RELEASE COMMAND message."
+#   The clause is written as a gNB obligation, but it only makes sense against
+#   a core that actually re-issues the id — which is what this flow drives.
+#
+#   TS 24.501 §6.4.1.2 (UE-requested PDU session establishment initiation):
+#     the UE allocates the PDU session id for the new session; nothing in the
+#     procedure reserves a released id, so a core that answers #35 "PTI already
+#     in use", #54 "PDU session does not exist" or simply nothing to a reused
+#     id has leaked the previous session's state.
+#
+# HOW THE FLOW IS SEQUENCED. The second establishment is sent from the TIMEOUT
+# action of `settle_release`, 3 seconds after the gNB's PDU SESSION RESOURCE
+# RELEASE RESPONSE. That delay is deliberate, and it is not padding: the AMF
+# tears the session down asynchronously when the release response lands
+# (ReleaseSmContext → PFCP Session Deletion), so a re-establishment racing that
+# teardown would be testing the race, not the criterion. "Immediately" in the
+# row's name means "without any further procedure in between" — no
+# re-registration, no new NGAP context, same UE, same N1 connection.
+#
+# WHAT IS ASSERTED, AND WHAT IS DELIBERATELY NOT.
+#   * The second PDU SESSION RESOURCE SETUP REQUEST names THE SAME PDU session
+#     id the release command named, and carries a usable uplink GTP-U tunnel
+#     (non-zero TEID, a real UPF transport address) plus a decodable
+#     establishment accept with a PDU address. That is the criterion.
+#   * The TEIDs of the two sessions are RECORDED (extract → `first_upf_teid`,
+#     then a check that reads both) but NOT asserted to differ. Nothing in
+#     TS 38.413 forbids an allocator from reusing a TEID once the tunnel it
+#     belonged to is gone, so "the number changed" would be an assertion about
+#     the core's allocator rather than about conformance — and the check ops
+#     available here (`not_contains` on the stringified value) would misjudge
+#     it anyway the moment one TEID is a substring of the other (1 vs 11).
+#     What matters for a reused id is that the NEW tunnel is usable, which is
+#     asserted on the value.
+#
+# MEASURED ON tinycore (2026-08-11): the second establishment on PDU session id
+# 1 is accepted and answered with a fresh setup request; both TEIDs non-zero.
+
+kind: flow
+name: pdu_session_id_reuse_after_release
+description: Release a PDU session then re-establish with the same PDU session ID — the id must be immediately reusable (YAML)
+detail: |
+  Registration, PDU session establishment, UE-requested release, then a SECOND
+  PDU session establishment reusing the same PDU session ID on the same UE and
+  the same N1 connection (TS 38.413 §8.2.2.2, TS 24.501 §6.4.1.2).
+
+  The flow asserts the release command named the established id, then — after
+  the gNB's release response has been sent and the core has had time to tear
+  the session down — that a fresh establishment for that same id is accepted
+  and answered with a usable uplink GTP-U tunnel and a decodable establishment
+  accept carrying a PDU address.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - reestablished
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              pdu_session_id: 1
+
+  wait_first_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          # Recorded for the report, not asserted against — see the header.
+          - { type: extract, field: ue.UpfTeid, store: first_upf_teid }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          - { type: send, message: PDUSessionReleaseRequest }
+
+  wait_release_command:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event:
+          or:
+            - PDUSessionReleaseCommand
+            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: settle_release
+        actions:
+          # The release the reuse depends on really happened, and for THIS id.
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+
+  # The AMF tears the session down asynchronously on the release response
+  # (ReleaseSmContext → PFCP Session Deletion). Re-establishing inside that
+  # window would test the race rather than the criterion, so the second
+  # request goes out from this state's TIMEOUT action.
+  settle_release:
+    on_timeout:
+      duration: 3s
+      target: wait_second_accept
+      actions:
+        - type: send
+          message: PDUSessionEstablishmentRequest
+          params:
+            # THE row: the SAME id that was just released.
+            pdu_session_id: 1
+
+  wait_second_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: reestablished
+        actions:
+          # --- THE row: the released id is accepted again (§8.2.2.2) -------
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+
+          # …with a USABLE new uplink tunnel: a TEID the gNB can send on and a
+          # real UPF transport address. TEID 0 or 0.0.0.0 is an id handed back
+          # without a datapath behind it.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: not_contains, expected: '0.0.0.0' }
+
+          # …and a real establishment accept, not a bare N2 setup: the NAS-PDU
+          # IE is carried and decoded into a PDU address for the new session.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: not_contains, expected: '0.0.0.0' }
+
+          # Both TEIDs in the evidence line, neither judged (see header).
+          - { type: check, field: ue.Params.first_upf_teid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+      # A core that refuses the reused id says so with a 5GSM reject. That is
+      # the failure this row exists to catch, so it lands in `failed` rather
+      # than in a terminal of its own — there is no reading of §8.2.2.2 in
+      # which refusing a released id is correct.
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: failed
+
+      # PAGING — DECLINED, DELIBERATELY, and CONSUMED so the decision is on the
+      # record instead of on the floor.
+      #
+      # There is no runner-level default for PAGING and there must not be one
+      # (runner/runner/fsm/events.go, EventPaging): the message carries no
+      # RAN-UE-NGAP-ID, so the demux BROADCASTS it to every UE on this gNB, and
+      # TS 24.501 §5.6.2.2.1 obliges only the UE named by the page's UE Paging
+      # Identity IE, and only in 5GMM-IDLE. Dispatch is handed neither the UE nor
+      # the message and can test neither, so deciding is this template's job.
+      # This transition is the decision, and the decision is no.
+      #
+      # THIS UE IS NOT IN 5GMM-IDLE AND NEVER WAS. Unlike paging_response, this
+      # flow never releases its UE CONTEXT — it releases a PDU SESSION and keeps
+      # the UE-associated logical NG-connection up throughout; there is no
+      # UEContextReleaseRequest anywhere above. The UE has been CM-CONNECTED from
+      # `wait_context_setup` to here, with the second PDU SESSION ESTABLISHMENT
+      # REQUEST already in flight. §5.6.2.2.1's precondition does not hold, so a
+      # page arriving here is one this UE owes nothing on.
+      #
+      # AND ANSWERING WOULD DELETE THE ROW. paging_response's answer is
+      # `ngap_realloc` plus a SERVICE REQUEST on a fresh INITIAL UE MESSAGE.
+      # Doing that here would move this UE to a NEW RAN-UE-NGAP-ID while REG-371's
+      # entire question — is the released PDU session id handed back? — is still
+      # outstanding on the old one, so the core's answer would arrive addressed
+      # to a context we had just abandoned and `wait_second_accept` would time
+      # out into `failed` on a core that did everything right. The exact counts
+      # in final_checks say the same thing in the report: INITIAL UE MESSAGE is
+      # pinned at 1, and an answered page would make it 2.
+      #
+      # THE COST OF CONSUMING, PAID KNOWINGLY. dispatchFSMViaBus resets
+      # StateEntered and clears PendingEvents on every consumed event, so each
+      # page restarts this state's 15 s wait. Nothing in this flow accumulates an
+      # AND compound, so the clear costs nothing; the reset is the price of the
+      # page being REPORTED as decided rather than counted in
+      # bus_audit.rx_refused, where this state was one of the three the v1 sweep
+      # found. No actions and no checks: `checks_total` is pinned at 16 below,
+      # and a declined page must not move it.
+      - event: Paging
+        target: wait_second_accept
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-371).
+#
+# REG-371 — After a completed release, a PDUSessionEstablishmentRequest reusing the same
+# PDU session ID yields a PDUSessionEstablishmentAccept and a
+# PDUSessionResourceSetupRequest with a fresh GTP-U TEID
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `reestablished`
+    metric: final_state_counts.reestablished
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 6
+  - name: one PDU SESSION RESOURCE RELEASE RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
+    op: equals
+    value: 1
+  - name: two PDU SESSION RESOURCE SETUP RESPONSE messages went out
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 2
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: two PDU SESSION RESOURCE SETUP REQUEST messages arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 2
+  # The 16 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 16 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 16
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

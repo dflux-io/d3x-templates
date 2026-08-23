@@ -1,0 +1,301 @@
+# NEGATIVE — REGISTRATION REQUEST whose mandatory 5GS mobile identity IE is
+# empty must draw an error report, not silence (register row REG-120).
+#
+# CLAUSES (retrieved with matrix/scripts/spec-clause.py, not recalled). READ ALL
+# THREE BEFORE CHANGING A TERMINAL HERE — they do not say the same thing.
+#
+#   TS 24.501 §5.5.1.2.8 b) "Protocol error" — "If the REGISTRATION REQUEST
+#   message is received with a protocol error, the AMF shall return a
+#   REGISTRATION REJECT message with one of the following 5GMM cause values:
+#   #96 invalid mandatory information; #99 information element non-existent or
+#   not implemented; #100 conditional IE error; or #111 protocol error,
+#   unspecified."
+#
+#   TS 24.501 §7.5.1 — for a message containing "a syntactically incorrect
+#   mandatory IE" (or a "missing mandatory IE" error), "the network shall
+#   proceed as follows: … the network shall either: 1) try to treat the message
+#   (the exact further actions are implementation dependent); or 2) ignore the
+#   message except that it should return a status message (5GMM STATUS or 5GSM
+#   STATUS depending on the EPD) with cause #96 'invalid mandatory
+#   information'."
+#
+#   TS 24.501 §7.5.2 — "No exceptional cases are described for 5GS mobility
+#   management messages."
+#
+#   TS 24.501 Table 8.2.6.1.1 — the 5GS mobile identity is a MANDATORY IE of
+#   REGISTRATION REQUEST, format LV-E, length 6-n.
+#
+# WHAT THAT COMBINATION ACTUALLY LICENSES. §5.5.1.2.8 b) is a "shall" and is
+# specific to this procedure. §7.5.1 is the general rule for the same input and
+# is markedly softer: option 2 is "ignore the message", with only a "should" on
+# the status message. So the honestly assertable statement is "the AMF reports
+# the error — as a REGISTRATION REJECT (§5.5.1.2.8 b) or as a 5GMM STATUS
+# (§7.5.1 option 2) — and stays up", and BOTH are routed to the pass terminal
+# here. Silence is a deviation from a "shall" read narrowly and from a "should"
+# read leniently; it is recorded as its own terminal rather than as either a
+# pass or a crash, because §7.5.1 option 1's "implementation dependent" is real
+# latitude and this harness should not pretend otherwise.
+#
+# WHY A NEW ENRICHER MODE AND NOT `registration_malformed`.
+# `registration_malformed` (mode truncate / flip / garbage-tail) damages the
+# octet stream so the message no longer decodes at all. That answers "does the
+# AMF survive garbage" — robustness — and its pass terminal accordingly accepts
+# a silent drop. It cannot assert a 5GMM cause, because a PDU nothing can parse
+# is not "a REGISTRATION REQUEST received with a protocol error".
+#
+# `mode: empty_mandatory_identity` is surgical instead. negEmptyMandatoryIdentity
+# (runner/runner/enrichers_negative.go) rewrites the 5GS mobile identity's LV-E
+# length to 0x0000 and drops its value, leaving the 5GMM header, the 5GS
+# registration type / ngKSI octet and every following optional IE byte-identical.
+# The message is still a REGISTRATION REQUEST with exactly one thing wrong, and
+# that one thing is verbatim §7.5.1's "syntactically incorrect mandatory IE".
+#
+# THE VIOLATION IS ON THE WIRE. Measured on tinycore 2026-08-11 from -trace, the
+# NAS PDU inside INITIAL UE MESSAGE:
+#
+#   intact:  7e 00 41 71 00 0d 01 00 f1 10 00 … 30  2e 04 ff ff ff ff
+#            ^hdr    ^ty ^len=13 ^-- 13 octets of 5GS mobile identity --^
+#   probe:   7e 00 41 71 00 00  2e 02 f0 f0
+#            ^hdr    ^ty ^len=0  ^UE security capability, untouched
+#
+# — the mandatory IE is PRESENT and carries NOTHING, and the optional IE after
+# it still parses. If the layout is ever not the one the surgery expects the
+# enricher returns an error and the send FAILS; it never falls back to the
+# intact PDU, because a negative probe that quietly sends a valid message is the
+# exact failure mode that made six security rows lie for weeks.
+#
+# SILENCE MUST BE TOLD APART FROM DEATH, and the row's criterion says so: "the
+# AMF stays up and answers a later well-formed registration". Every path out of
+# the probe window therefore runs a LIVENESS PROBE — fresh RAN UE NGAP ID, an
+# ordinary well-formed SUCI registration — so no terminal is reached on a bare
+# timer:
+#
+#   error_reported_and_alive  REGISTRATION REJECT or 5GMM STATUS with an
+#                             enumerated cause, and the clean registration
+#                             afterwards is served. CONFORMANT.
+#   no_report_but_alive       neither (silence, or NGAP-level cleanup only), but
+#                             the AMF is demonstrably still serving. The
+#                             §5.5.1.2.8 b) gap, not a crash.
+#   accepted_invalid          the AMF PROGRESSED a registration whose mandatory
+#                             identity is empty — it cannot know who it is
+#                             talking to. Explicit transitions, so this can
+#                             never drift into a timeout and be scored as
+#                             "no reject seen".
+#   failed                    the follow-up registration was not served either:
+#                             the AMF hung or died. The event log's `state=`
+#                             says which window expired.
+#
+# CAUSE VALUE — WHY NOT EXACTLY #96. The register row's criterion named #96.
+# §5.5.1.2.8 b) enumerates FOUR causes for the same trigger without binding a
+# particular error to a particular one, so `equals 96` would score a core red
+# for a choice the clause explicitly permits. The check still rules out every
+# unrelated cause (#3 illegal UE, #22 congestion, …) — a real assertion, not a
+# shrug.
+#
+# WHY #95 IS ALSO ADMITTED (corrected 2026-08-12, xp-269). `oneof [96, 99, 100,
+# 111]` was still too narrow, and it scored open5gs red for a diagnosis the spec
+# permits. open5gs answered this exact probe with a REGISTRATION REJECT carrying
+# 5GMM cause #95, logging "No Mobile Identity" -> "gmm_handle_registration_request()
+# failed [95]". Four clauses settle it:
+#
+#   TS 24.501 §5.5.1.2.8 b) is conditioned on the message being "received with a
+#   protocol error" — it does not claim to be the only reaction to every malformed
+#   REGISTRATION REQUEST.
+#
+#   TS 24.501 Annex A.4 "Causes related to invalid messages" splits the two causes
+#   on exactly the axis this probe straddles:
+#     #95 "This 5GMM cause is used to report receipt of a message with
+#          semantically incorrect contents."
+#     #96 "This cause 5GMM indicates that the equipment sending this 5GMM cause
+#          has received a message with a non-semantical mandatory IE error."
+#
+#   Clause 7's own structure encodes the same split: §7.5 is titled "Non-semantical
+#   mandatory information element errors" (-> #96 via §7.5.1); §7.8 is "Messages
+#   with semantically incorrect contents" (-> #95).
+#
+#   TS 24.501 §5.5.1.2.7 d) proves a REGISTRATION REJECT carrying #95 is a
+#   spec-FORESEEN message rather than a malformation: "upon reception of the 5GMM
+#   causes #95, #96, #97, #99 and #111 the UE should set the registration attempt
+#   counter to 5." The spec tells the UE what to do with #95 in a REGISTRATION
+#   REJECT, grouped with the very causes this check already accepted.
+#
+# The probe rewrites the 5GS mobile identity's LV-E length to 0x0000 and drops the
+# value, leaving every other octet intact and the following IE parsing cleanly. The
+# IE is therefore structurally well-formed while its CONTENTS identify nobody, so an
+# AMF may legitimately diagnose it either way — non-semantical (length outside the
+# 6-n of Table 8.2.6.1.1) or semantical (an identity that identifies no one). The
+# spec does not bind it to one, so neither may we.
+#
+# #97 IS DELIBERATELY NOT ADMITTED even though §5.5.1.2.7 d) lists it: #97 is
+# "message type non-existent or not implemented", and the message type here is a
+# valid, implemented REGISTRATION REQUEST. Admitting it would weaken the check for
+# no reason.
+#
+# THIS FLOW NEEDS 22s OF BUDGET, NOT 10s. `matrix/scripts/run` passes the register
+# row's `timeout_s` to d3x-run as the GLOBAL engine timeout. The total-silence path
+# through this flow is wait_error_report (10s) THEN the liveness probe (12s). While
+# REG-120 carried `timeout_s: 10` the engine killed the run at the very instant the
+# first state timer fired, so `ngap_realloc` + InitialUEMessage were never sent and
+# NEITHER `error_reported_and_alive` NOR `no_report_but_alive` was reachable against
+# a core that stays silent. That is precisely the empty `actual_terminals` with
+# rx_count 0 measured against tinycore on 2026-08-12, and it is OUR defect, not the
+# core's. The row is now `timeout_s: 30`. If you shorten either duration here,
+# re-check that sum against the row. (xp-269)
+#
+# MEASURED AGAINST tinycore 2026-08-11: terminal `no_report_but_alive`. The
+# probe drew NOTHING for the full 10 s window — no REGISTRATION REJECT, no 5GMM
+# STATUS, no NGAP cleanup — and the clean registration sent immediately
+# afterwards was answered with an AUTHENTICATION REQUEST (amf_ue_ngap_id 61).
+# So tinycore neither honours §5.5.1.2.8 b)'s "shall return a REGISTRATION
+# REJECT" nor §7.5.1 option 2's "should return a status message"; it takes
+# option 1's implementation-dependent path all the way to saying nothing. It
+# does not crash. That is the finding, and this template asserts the behaviour
+# the clauses describe rather than the behaviour the core has.
+#
+# ACCEPTANCE TEST — the violation disabled. Re-running with `message:
+# InitialUEMessage` in place of the malformed send and nothing else changed
+# (scratchpad only, not committed) reached `accepted_invalid` via
+# AUTHENTICATION REQUEST — i.e. with the mandatory identity restored the AMF
+# progresses the registration, and this flow reports the other terminal. The
+# probe is therefore doing the work, not the surrounding scaffolding.
+kind: flow
+name: registration_empty_mandatory_identity
+description: NEGATIVE — REGISTRATION REQUEST with an empty mandatory 5GS mobile identity; assert the AMF reports the protocol error and survives (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - error_reported_and_alive
+  - no_report_but_alive
+  - accepted_invalid
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_error_report
+        actions:
+          - type: send
+            message: MalformedRegistrationRequest
+            params: { mode: empty_mandatory_identity }
+
+  wait_error_report:
+    # No discard branch in §5.5.1.2.8 b) and only an "ignore" option in §7.5.1,
+    # so silence is a gap rather than the spec's answer. It still goes on to the
+    # liveness probe instead of terminating, so "the AMF ignored one message"
+    # and "the AMF is gone" can never be confused.
+    on_timeout:
+      duration: 10s
+      target: prove_amf_alive_after_silence
+      actions:
+        - { type: ngap_realloc }
+        - { type: send, message: InitialUEMessage }
+    transitions:
+      # §5.5.1.2.8 b) — the procedure-specific reaction.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: prove_amf_alive_after_report
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [95, 96, 99, 100, 111] }
+          - { type: ngap_realloc }
+          - { type: send, message: InitialUEMessage }
+      # §7.5.1 option 2 — "ignore the message except that it should return a
+      # status message … with cause #96". Equally an error report, so equally
+      # the pass path; the cause check is the same.
+      - event: NASDownlinkTransport.5GMMStatus
+        target: prove_amf_alive_after_report
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+          - { type: check, field: nas.gmm_cause, op: oneof, expected: [95, 96, 99, 100, 111] }
+          - { type: ngap_realloc }
+          - { type: send, message: InitialUEMessage }
+      # NGAP-level cleanup without any NAS error report: not what either clause
+      # asks for, but explicitly consumed so it cannot masquerade as silence.
+      - event: UEContextReleaseCommand
+        target: prove_amf_alive_after_silence
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - { type: send, message: InitialUEMessage }
+      # Same shape and same reason as the UEContextReleaseCommand branch above,
+      # spelled out because xp-310 read this branch as a construction defect on
+      # the grounds that its terminal cannot satisfy the final_checks. IT IS NOT
+      # ONE, AND THE ROUTING IS DELIBERATE. An NGAP ERROR INDICATION is not a NAS
+      # message and carries no 5GMM cause, so it is neither of the two things
+      # this row's criterion names ("a NAS RegistrationReject ... or 5GMMStatus
+      # ... whose nas.gmm_cause is one of 95, 96, 99, 100, 111"). Routing it to
+      # `prove_amf_alive_after_report` would credit the core with a NAS error
+      # report it never sent; loosening the final_check to accept
+      # `no_report_but_alive` would delete the row's claim and turn tinycore's
+      # measured silence green. `no_report_but_alive` cannot yield a pass BY
+      # DESIGN — that is true of the on_timeout silence path too, and it is the
+      # whole point of the terminal.
+      - event: ErrorIndication
+        target: prove_amf_alive_after_silence
+        actions:
+          - { type: ngap_realloc }
+          - { type: send, message: InitialUEMessage }
+      # THE violation: the procedure advanced for a UE that supplied no identity.
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: accepted_invalid }
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: accepted_invalid }
+      - { event: NASDownlinkTransport.IdentityRequest, target: accepted_invalid }
+      - { event: InitialContextSetupRequest.RegistrationAccept, target: accepted_invalid }
+      - { event: NASDownlinkTransport.RegistrationAccept, target: accepted_invalid }
+
+  # "the AMF stays up and answers a later well-formed registration" — the
+  # positive acceptance observable. A healthy AMF answers an ordinary SUCI
+  # registration with an AUTHENTICATION REQUEST.
+  prove_amf_alive_after_report:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: error_reported_and_alive
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+
+  prove_amf_alive_after_silence:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: no_report_but_alive
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-120 (negative, expected_terminal:
+# error_reported_and_alive) — A NAS RegistrationReject (TS 24.501 §5.5.1.2.8 b) or
+# 5GMMStatus (§7.5.1) is received whose nas.gmm_cause is one of 95, 96, 99, 100, 111;
+# the AMF stays up and answers a later well-formed registration
+#
+# REG-120 needs both halves: an error report carrying a 5GMM cause from the invalid-
+# message family, AND the AMF still answering a later well-formed registration.
+# `error_reported_and_alive` is the only terminal with both. `no_report_but_alive` has
+# the liveness and not the report; `accepted_invalid` is the AMF carrying on with a
+# registration whose mandatory identity IE was empty.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `error_reported_and_alive` — the terminal this row claims
+    metric: final_state_counts.error_reported_and_alive
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

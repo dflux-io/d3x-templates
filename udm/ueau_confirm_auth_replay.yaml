@@ -1,0 +1,79 @@
+# Nudm_UEAU ConfirmAuth replayed twice — security/negative (multi-step).
+# 3GPP TS 29.503 §6.3.3.3. A replayed auth-event must not crash the UDM; it
+# either overwrites (idempotent 2xx) or is rejected — the cross-cutting goal is
+# that the UDM reacts spec-correctly and stays live.
+# Uses SBI_Request POST (AuthEvent body) — unlocked by the new generic SBI message.
+
+kind: flow
+name: udm_ueau_confirm_auth_replay
+description: POST auth-events twice with the same AuthEvent — UDM stays live and answers both
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_first
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-ueau/v1/imsi-001010000000001/auth-events",
+                "body": {
+                  "nfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "success": true,
+                  "timeStamp": "2026-06-05T00:00:00Z",
+                  "authType": "5G_AKA",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_first:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_second
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nudm-ueau/v1/imsi-001010000000001/auth-events",
+                "body": {
+                  "nfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "success": true,
+                  "timeStamp": "2026-06-05T00:00:00Z",
+                  "authType": "5G_AKA",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_second:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: tolerated
+        actions:
+          # Liveness: the replay is answered (idempotent 2xx or 4xx), not a hang.
+          - type: check
+            field: sbi.status
+            op: exists

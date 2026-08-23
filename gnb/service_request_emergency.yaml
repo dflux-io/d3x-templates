@@ -1,0 +1,118 @@
+# ServiceRequest with 5GMM service type = emergency (3GPP TS 24.501 §5.6.1).
+#
+# Registers, goes CM-IDLE via gNB-initiated release, then triggers a
+# ServiceRequest carrying service type emergency. Emergency service: the AMF may accept or (for a non-emergency-registered UE) decline.
+#
+# Lenient terminals: `connected` (AMF resumes the UE with InitialContextSetup),
+# `service_attempted` (the request was sent but the AMF answered via NAS only or
+# declined — still a valid exercise of this service type), `failed` on transport
+# error.
+kind: flow
+name: service_request_emergency
+description: ServiceRequest (service type emergency) from CM-IDLE; assert AMF reaction (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - connected
+  - service_attempted
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_response
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - type: send
+            message: ServiceRequest
+            params:
+              service_type: 4
+  wait_service_response:
+    on_timeout: { duration: 12s, target: service_attempted }
+    transitions:
+      # ICS carries a NAS Service Accept → resolved event is
+      # `InitialContextSetupRequest.ServiceAccept`; accept the bare form too.
+      - event:
+          or:
+            - InitialContextSetupRequest.ServiceAccept
+            - InitialContextSetupRequest
+        target: connected
+        actions:
+          - { type: send, message: InitialContextSetupResponse }
+      # TS 24.501 §5.6.1.4.1 fixes the NAS message ("the UE shall treat the reception of the
+      # SERVICE ACCEPT message as successful completion"), not the NGAP carrier. When the AMF
+      # has nothing to set up alongside the answer it sends the accept in a plain DOWNLINK NAS
+      # TRANSPORT — Open5GS does. No InitialContextSetupResponse here: there was no request to
+      # respond to, and answering one that never arrived would be our own invention.
+      - event: NASDownlinkTransport.ServiceAccept
+        target: connected
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-205 (positive, expected_terminal: null) — SERVICE
+# ACCEPT received on N1 and, where non-emergency sessions were locally released, the PDU
+# session status IE clears only the non-emergency session bits
+#
+# REG-205 declares `expected_terminal: null`; its criterion names one anyway: "SERVICE
+# ACCEPT received on N1". `service_attempted` is the bare 12 s timer, which is the AMF
+# not answering a service request for an emergency PDU session.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `connected` — the terminal this row claims
+    metric: final_state_counts.connected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

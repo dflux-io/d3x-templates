@@ -1,0 +1,138 @@
+# Standalone-UPF N4 depth suite — positives + cause-pinned negatives.
+#
+# The full Class A control-plane pass from docs/upf/sanity-tests.md §5
+# (superset of upf_smoke). Targets the standalone UPF (d3x-core
+# `cmd/upf -datapath stub`) over loopback — NOT Open5GS. Runs on any OS,
+# no privileges.
+#
+# Two halves:
+#   * positives — the lifecycle (heartbeat, association, session
+#     establish/modify/delete), each pinned to its spec-correct terminal.
+#   * negatives — abnormal requests that the standalone UPF rejects with a
+#     SPECIFIC cause; success = the reject Cause is observed (a malformed
+#     request answered "Request accepted" is itself a sanity failure). Each
+#     negative cause was verified against the UPF source:
+#       - F-11 missing CP F-SEID        → "Mandatory IE missing"      (session_handlers.go:66)
+#       - F-12 modify on bogus SEID     → "Session context not found" (session_handlers.go:343)
+#       - F-13 delete on bogus SEID     → "Session context not found" (session_handlers.go:533)
+#       - F-14 establish on unknown DNN → "No resources available"    (session_handlers.go:127)
+#
+# NOT included (and why):
+#   - F-10 assoc setup without NodeID — runner has no suppress_node_id, so the
+#     no-NodeID stimulus can't be authored yet (driver gap, cf. G2).
+#   - F-15 pool exhaustion — needs the UPF launched with a tiny (/30) pool;
+#     lives in a separate mini-suite with its own launch line.
+#   - F-16 association-restart session wipe — the wipe is only observable via
+#     the metrics endpoint (upf_sessions_active → 0); lands with F-20 (P3).
+#   The standalone UPF is also deliberately LENIENT on session-establish
+#   without association, invalid-PDR refs, and remove-of-nonexistent-rule
+#   (it answers "Request accepted"), so those Open5GS-era probes are not
+#   reject-negatives here — see docs/upf/sanity-tests.md §9.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite upf_n4 \
+#       -templates . -c config/lab-upf.yaml \
+#       -gen-subscriber
+#
+# GATE: association setup is the one hard gate (stop_on_failure: true).
+# Every other step runs to completion so the report is full. Pass =
+# checks_failed == 0 with every step on its pinned terminal.
+#
+# NOTE: requires an runner built from current source (the committed binary
+# predates the PFCP read-side field resolver — checks would read <missing>).
+
+kind: suite
+name: upf_n4
+description: Full N4 control-plane pass for the standalone UPF — lifecycle positives + cause-pinned negatives.
+steps:
+  # --- gate ---------------------------------------------------------------
+  - name: association_setup
+    flow: upf_pfcp_association_setup
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: associated
+
+  # --- positives ----------------------------------------------------------
+  - name: heartbeat
+    flow: upf_pfcp_heartbeat
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: session_establish
+    flow: upf_pfcp_session_establish
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
+
+  - name: session_modify
+    flow: upf_pfcp_session_modify
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: modified
+
+  - name: session_delete
+    flow: upf_pfcp_session_delete
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: deleted
+
+  # --- rule lifecycles (QER / URR install + modify) ----------------------
+  - name: session_qer                       # F-08
+    flow: upf_pfcp_session_qer
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: modified
+
+  - name: session_urr                       # F-07
+    flow: upf_pfcp_session_urr
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: deleted
+
+  # --- negatives (assert the spec-correct reject cause) -------------------
+  - name: neg_establish_missing_fseid       # F-11
+    flow: upf_pfcp_session_establish_missing_fseid
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: neg_modify_unknown_seid           # F-12
+    flow: upf_pfcp_session_modify_unknown_fseid
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: neg_delete_unknown_seid           # F-13
+    flow: upf_pfcp_session_delete_unknown_fseid
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: neg_establish_unknown_dnn         # F-14
+    flow: upf_pfcp_session_establish_unknown_dnn
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected

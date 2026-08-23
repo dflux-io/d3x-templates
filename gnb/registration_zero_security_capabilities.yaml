@@ -1,0 +1,161 @@
+# NEGATIVE — Registration with all-zero UE security capabilities is rejected
+# (register row REG-119).
+#
+# CLAUSE (retrieved with matrix/scripts/spec-clause.py, not recalled).
+#
+#   TS 24.501 §5.5.1.2.8 i) "UE security capabilities invalid or unacceptable" —
+#   "If the REGISTRATION REQUEST message is received with invalid or
+#   unacceptable UE security capabilities (e.g. no 5GS encryption algorithms
+#   (all bits zero), no 5GS integrity algorithms (all bits zero), mandatory 5GS
+#   encryption algorithms not supported or mandatory 5GS integrity algorithms
+#   not supported, etc.), the AMF shall return a REGISTRATION REJECT message."
+#
+#   NOTE 2 of the same clause — "5GMM cause value to be used in REGISTRATION
+#   REJECT message is up to the network implementation." So the cause is NOT
+#   assertable here; the reject itself is.
+#
+# THE VIOLATION IS ON THE WIRE, AND IT IS NOT A MALFORMED MESSAGE.
+# `params: { zero_security_caps: true }` makes EnrichInitialUEMessage build the
+# UE security capability IE from the zero value of the struct. Measured on
+# tinycore 2026-08-11 from the -trace decode of the INITIAL UE MESSAGE:
+#
+#   ue_security_capability: {ea0..ea7 false, ia0..ia7 false, eea/eia all false}
+#
+# against ea0..ea7 / ia0..ia7 all true on the same message without the param.
+# On the wire that is the IE `2e 02 00 00` — IEI, length 2, two zero octets.
+# Two content octets is the §9.11.3.54 MINIMUM, so the IE is structurally
+# valid: a core that rejects this rejects it for the semantic reason the clause
+# names, not because it failed to parse. That is the difference between this
+# probe and `registration_malformed`, and it is why this row can assert a
+# specific reaction at all.
+#
+# IT IS ALSO NOT `null_security_caps`. That param (used by
+# smc_null_integrity_rejected_nonemergency) SETS the EA0 and IA0 bits — the null
+# algorithms are real, selectable algorithms, and a UE advertising them has made
+# a legal if unacceptable offer. "All bits zero" is the UE offering nothing at
+# all, which is the case the clause enumerates first.
+#
+# WHAT A CONFORMANT CORE DOES, AND WHY SILENCE IS NOT IT.
+# The clause says "shall return a REGISTRATION REJECT message". There is no
+# discard branch: this is not §4.4.4.3 integrity-failure territory, where the
+# spec-mandated answer is to drop the message and where an on_timeout would have
+# to be inverted. So `on_timeout -> no_reaction` is a FAILURE terminal here and
+# means what it says.
+#
+# WHAT ELSE IS A FAILURE. An AMF that reaches the SECURITY MODE COMMAND has
+# selected a ciphering and an integrity algorithm out of an empty set — the
+# concrete harm the clause exists to prevent — so SecurityModeCommand has its
+# own explicit transition to `accepted_invalid_caps`, as do both carriages of a
+# REGISTRATION ACCEPT. Without those transitions the messages would merely be
+# unconsumed and the flow would drift to a timeout, scoring the worst outcome as
+# "no reject seen".
+#
+# AUTHENTICATION IS NOT A VERDICT. Nothing in §5.5.1.2.8 i) says WHEN the AMF
+# must notice; running primary authentication first and rejecting afterwards is
+# conformant. So AuthenticationRequest is answered as a self-transition and the
+# flow keeps waiting, exactly as mobility_registration_updating learned to do.
+# Terminating on it would have scored "the AMF said something" as a pass.
+#
+# MEASURED AGAINST tinycore 2026-08-11: terminal `rejected`. tinycore ran
+# primary authentication first (answered by the self-transition), then returned
+# a REGISTRATION REJECT with 5GMM cause 23 — "UE security capabilities
+# mismatch", a sensible choice which NOTE 2 leaves to it. Conformant.
+#
+# ACCEPTANCE TEST — the violation disabled. Re-running with the
+# `zero_security_caps` param removed and nothing else changed (scratchpad only,
+# not committed) reached `accepted_invalid_caps` via SECURITY MODE COMMAND: the
+# same UE advertising real algorithms is taken all the way to algorithm
+# selection. So this flow can report BOTH terminals against the live core, and
+# the `rejected` verdict above is caused by the zero capabilities and not by
+# anything else in the flow.
+#
+# NOTE for whoever reads that control run's console output: it printed
+# `RESULT: PASS` while landing on `accepted_invalid_caps`. `RESULT` only means
+# no CHECK failed, and the failure terminals in this flow carry no checks — the
+# terminal is the verdict. Read `Final states` / the event log, never `RESULT`.
+kind: flow
+name: registration_zero_security_capabilities
+description: NEGATIVE — REGISTRATION REQUEST advertising no 5GS encryption and no 5GS integrity algorithms (all bits zero) must be rejected (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - accepted_invalid_caps
+  - no_reaction
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reaction
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params: { zero_security_caps: true }
+
+  wait_reaction:
+    # No discard branch in §5.5.1.2.8 i) — silence is a violation, not the
+    # spec's answer, so this timeout targets a failure terminal.
+    on_timeout: { duration: 12s, target: no_reaction }
+    transitions:
+      # THE conformant reaction.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          # NOTE 2 leaves the value to the implementation, so the assertion is
+          # that a 5GMM cause is carried at all — a REGISTRATION REJECT without
+          # one is not a usable answer. `ie_present` fails on a path that does
+          # not resolve, so this cannot pass on a typo.
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      # The AMF may authenticate before it inspects the capabilities. Answer and
+      # keep waiting; this is not an outcome.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_reaction
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_reaction
+        actions:
+          - { type: send, message: IdentityResponse }
+      # THE violation: algorithms selected out of an empty offer.
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: accepted_invalid_caps }
+      - { event: InitialContextSetupRequest.RegistrationAccept, target: accepted_invalid_caps }
+      - { event: NASDownlinkTransport.RegistrationAccept, target: accepted_invalid_caps }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-119 (negative, expected_terminal: rejected) — A
+# NAS RegistrationReject is received; no SecurityModeCommand and no RegistrationAccept
+# arrive
+#
+# REG-119: "A NAS RegistrationReject is received; no SecurityModeCommand and no
+# RegistrationAccept arrive" (TS 24.501 §5.5.1.2.8 case i). The reject is the only route
+# into `rejected`; both forbidden messages route to `accepted_invalid_caps`, and
+# `no_reaction` is the 12 s timer, which §5.5.1.2.8 i) offers no discard branch for.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

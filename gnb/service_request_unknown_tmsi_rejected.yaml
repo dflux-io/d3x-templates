@@ -1,0 +1,257 @@
+# REG-215 — SERVICE REQUEST under a 5G-S-TMSI the network never allocated must be rejected
+# with 5GMM cause #9.
+#
+# Clauses, retrieved with matrix/scripts/spec-clause.py 24.501 <clause>:
+#
+#   §5.6.1.5 (Service request procedure not accepted by the network) "If the service request
+#            cannot be accepted, the network shall return a SERVICE REJECT message to the UE
+#            including an appropriate 5GMM cause value."
+#
+#   Annex A / Table 9.11.3.2.1 — 5GMM cause #9 is "UE identity cannot be derived by the
+#            network", which is precisely the condition here: the AMF holds no 5GMM context
+#            under the presented temporary identity, so it cannot even decide whether the
+#            request is genuine, and the UE's only recovery is a new initial registration.
+#
+# WHY THE ROW MATTERS: after a core restart every device in the cell presents a temporary
+# identity the network no longer knows. Telling them so — rather than dropping the message —
+# is the only way the network recovers, because a UE that hears nothing keeps retrying the
+# same dead identity.
+#
+# WHAT IS ON THE WIRE, AND WHY IT IS THE FLOW THAT CARRIES IT. The UE registers normally, is
+# put into CM-IDLE by a gNB-initiated release, and then sends a SERVICE REQUEST whose 5G-S-TMSI
+# is the BITWISE COMPLEMENT of the one it was allocated — in BOTH places a receiver can read
+# it: the NGAP 5G-S-TMSI IE of the INITIAL UE MESSAGE (TS 38.413 §9.2.5.1) and the 5G-S-TMSI
+# in the cleartext part of the SERVICE REQUEST (TS 24.501 §4.4.6). Leaving either one correct
+# would let an AMF resolve the context from the other and the row would be probing nothing —
+# tinycore reads the NGAP IE first and falls back to the NAS copy (lookupServiceRequestUE,
+# tinycore/dmf/amf/registration.go), so both had to move. The deviation lives in the sender
+# (ServiceRequestUnknownTmsi, runner/runner/enrichers_ngap_ifmgmt.go) and is pinned by
+# TestServiceRequestUnknownTmsi_BothIdentitiesDeviate, which decodes the NAS PDU back off the
+# built message and checks both copies.
+#
+# The complement is deliberate rather than random: deterministic (two runs of this row are
+# comparable), guaranteed not to be this UE's own allocation, and — against an AMF handing out
+# 5G-TMSIs from a low counter — at the top of the 32-bit space, so it cannot name a live
+# neighbouring UE on a shared core.
+#
+# THE ASSERTION IS THE CAUSE VALUE. Per the arbitrated criterion, cause #9 is decisive; a
+# UEContextReleaseCommand for the same AP IDs afterwards is expected behaviour but not required,
+# and is not asserted here. A SERVICE ACCEPT is the finding this row exists to catch — the core
+# admitting a UE whose identity it could not derive — and lands on `accepted_unknown_identity`,
+# a FAILURE terminal named so the trace says which failure it was. Silence within the budget
+# fails too: §5.6.1.5 is a "shall return", and a UE that hears nothing retries a dead identity
+# forever.
+#
+# NOT A BARE TIMER ANYWHERE: every terminal but `failed` is reached by a message arriving.
+#
+# WHY SILENCE IS NOT THE CONFORMANT ANSWER HERE — the one thing to read before re-scoring this
+# row, because the reflex "the spec says discard, so silence is the pass" is right often enough
+# to be dangerous:
+#
+#   §4.4.4.3 (Integrity checking of NAS signalling messages in the AMF) does say "no NAS
+#   signalling messages shall be processed by the receiving 5GMM entity in the AMF ... unless
+#   the secure exchange of NAS messages has been established", and SERVICE REQUEST is NOT in
+#   its allow-list (a REGISTRATION REQUEST, IDENTITY RESPONSE, AUTHENTICATION RESPONSE,
+#   AUTHENTICATION FAILURE, SECURITY MODE REJECT, DEREGISTRATION REQUEST/ACCEPT are). So the
+#   AMF must not PROCESS this message. It does not follow that it must say nothing.
+#
+#   §4.4.4.2 (g) settles it from the other side: the UE accepts a "SERVICE REJECT (if the 5GMM
+#   cause is not #76 or #78)" WITHOUT integrity protection, and the NOTE explains why — "these
+#   messages are accepted by the UE without integrity protection, as in certain situations they
+#   are sent by the network BEFORE SECURITY CAN BE ACTIVATED". A rule that admits an unprotected
+#   SERVICE REJECT with a cause like #9 only makes sense if the network is expected to send one
+#   in exactly this situation: it has no security context for the identity presented and so
+#   cannot protect its answer.
+#
+#   Refusing to process and still answering #9 are therefore both required, and they do not
+#   conflict: the reject changes no UE state in the AMF, it tells the device its identity is
+#   dead so it re-registers. Silence leaves the device retrying an identity nobody knows —
+#   which is the whole of this row's why_it_matters.
+#
+# MEASURED against tinycore 2026-08-11: NO ANSWER, terminal `failed` on the 8s wait. The
+# probe worked exactly as intended and the AMF's own log says so:
+#   "service-request lookup: no UE for NGAP 5G-S-TMSI"    tmsi=0D23EA16
+#   "service-request lookup: no UE for reconstructed GUTI" guti=guti:001-01-aa-aa-2a-0d23ea16
+#   "uplink NAS refused before decode: message type 0x4C requires an integrity-verified
+#    security context (TS 24.501 §4.4.4.2)"
+# — both identity lookups missed, as designed, and the message was then dropped by the
+# pre-security gate with nothing sent back. That is the §5.6.1.5 finding: tinycore's nas_gate
+# has no path from "identity cannot be derived" to SERVICE REJECT #9, even though
+# sendServiceReject(ue, 9) exists in tinycore/dmf/amf/registration.go for the case where a UE
+# context IS resolved but carries no security context.
+#
+# ACCEPTANCE TEST (the row must be able to report the other verdict), RUN 2026-08-11: the same
+# flow with the ordinary `ServiceRequest` sender — the allocated 5G-S-TMSI, everything else
+# identical — reached `accepted_unknown_identity` through InitialContextSetupRequest.ServiceAccept.
+# The identity is the only variable between the two runs, so the silence above is the core's
+# answer to the deviation and not a broken flow.
+
+kind: flow
+name: service_request_unknown_tmsi_rejected
+description: SERVICE REQUEST presenting a 5G-S-TMSI the AMF never allocated — expect SERVICE REJECT with 5GMM cause #9 (TS 24.501 §5.6.1.5)
+detail: |
+  Negative connection-management probe. A UE registers, is released to CM-IDLE by a
+  gNB-initiated UE Context Release, and then attempts to resume with a SERVICE REQUEST that
+  presents a 5G-S-TMSI the network never allocated — the bitwise complement of its own, in the
+  NGAP 5G-S-TMSI IE and inside the SERVICE REQUEST alike.
+
+  The AMF cannot derive a UE identity from it. TS 24.501 §5.6.1.5 requires a SERVICE REJECT
+  with an appropriate 5GMM cause, and #9 "UE identity cannot be derived by the network" is that
+  cause: it is what drives the device to a fresh initial registration instead of retrying an
+  identity nobody knows. The flow asserts the cause value on the SERVICE REJECT.
+
+  A SERVICE ACCEPT — the core admitting a UE it could not identify — is the failure this row
+  exists to catch, and so is silence.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - accepted_unknown_identity
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_command
+        actions:
+          # The 5G-GUTI assigned here is what the probe deviates FROM: without a
+          # completed registration there is no allocated 5G-TMSI and the sender
+          # refuses to build the message at all.
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # To CM-IDLE, so the SERVICE REQUEST below is the genuine resume path
+          # of TS 24.501 §5.6.1 rather than a message on a live connection.
+          - type: send
+            message: UEContextReleaseRequest
+
+  wait_release_command:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_answer
+        actions:
+          - type: send
+            message: UEContextReleaseComplete
+          # A new UE-associated logical NG-connection needs a new RAN UE NGAP ID
+          # (TS 38.413 §8.6.1.2).
+          - type: ngap_realloc
+          - type: send
+            message: ServiceRequestUnknownTmsi
+            params:
+              # ENUM SVC_TYPE_SIGNALLING=1 -> wire 0000 "signalling": this UE has
+              # pending uplink signalling and no pending user data
+              # (TS 24.501 §5.6.1.2.1 case f) b)). Same value the
+              # `service_request` flow sends, so the ONLY difference between
+              # that positive row and this one is the identity.
+              service_type: 1
+      # A GUTI reallocation racing the release is unrelated and spec-legal
+      # (TS 24.501 §5.4.4); absorbed rather than answered, since the connection
+      # is already being torn down.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_command
+
+  wait_service_answer:
+    # Row budget is 10s. §5.6.1.5 says the network "shall return a SERVICE
+    # REJECT"; nothing at all is a failure of that duty.
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.ServiceReject
+        target: rejected
+        actions:
+          # THE assertion of this row: 5GMM cause #9, "UE identity cannot be
+          # derived by the network".
+          - type: check
+            field: nas.gmm_cause
+            op: equals
+            expected: 9
+      # The two carriers a SERVICE ACCEPT can arrive in — both are the finding.
+      - event: NASDownlinkTransport.ServiceAccept
+        target: accepted_unknown_identity
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: accepted_unknown_identity
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-215 (negative, expected_terminal: rejected) —
+# SERVICE REJECT received on N1 carrying 5GMM cause #9 — the cause value is the decisive
+# check; a following UEContextReleaseCommand for the same AP IDs is recorded as expected
+# behaviour but is not required for the row to pass
+#
+# REG-215: "SERVICE REJECT received on N1 carrying 5GMM cause #9 — the cause value is
+# the decisive check." `accepted_unknown_identity` is the AMF accepting a service
+# request under a 5G-S-TMSI it cannot resolve.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

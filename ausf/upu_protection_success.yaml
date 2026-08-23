@@ -1,0 +1,59 @@
+# Nausf_UPUProtection — UE Parameters Update information protection (compliance, runtime-risk).
+# 3GPP TS 29.509 §5.4.2.2 / §6.3.3.2 (POST /nausf-upuprotection/v1/{supi}/ue-upu);
+# TS 33.501 §6.15. runner (consumer, acting as the UDM) drives a real Open5GS AUSF
+# via the generic SBI_Request and asserts a 200 UpuSecurityInfo (upuMacIausf).
+#
+# RUNTIME RISK: like SoR, the AUSF derives upuMacIausf from the K_AUSF for {supi}
+# established during a prior primary authentication; without a live K_AUSF a real
+# core answers 403/404. Terminal `protected` = the AUSF answered the UPU request;
+# the live run sorts a genuine core/provisioning gap from a flow bug.
+
+kind: flow
+name: ausf_upu_protection_success
+description: POST ue-upu returns 200 with protected UE-Parameters-Update security info
+category: functional
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - protected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: ausf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nausf-upuprotection/v1/imsi-001010000000001/ue-upu",
+                "body": {
+                  "upuDataList": [
+                    {"secPacket": "ABEiM0RVZneImaq7zN3u/w=="}
+                  ],
+                  "upuAckInd": false
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: protected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          - type: check
+            field: sbi.body.upuMacIausf
+            op: exists

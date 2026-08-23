@@ -1,0 +1,77 @@
+# SBI wire-fuzz driver — W2-F3.
+#
+# bsf/nbsf_binding_register_discover_deregister_ok.yaml reduced to its FIRST
+# send (the binding register) with a `fuzz:` block and relaxed assertions.
+# Fuzzes the JSON request body of POST /nbsf-management/v1/pcfBindings against
+# a live BSF.
+#
+# For SBI the mutate stage does not touch the internal envelope
+# (method/path/headers). It mutates the envelope's BODY and re-marshals around
+# it, so a well-formed HTTP POST carries a corrupt PcfBinding — the real
+# request that crosses the network.
+#
+# ORACLE
+#   survived  the BSF answered with anything at all — parser and handler held
+#   failed    no answer within the timeout: a hang, which is a finding
+#
+# The status is deliberately NOT asserted: a 400 on a corrupt binding is
+# CORRECT. Only that a status EXISTS is checked. What to hunt for out of band
+# is a 201 on a binding whose key fields (supi, dnn, ipv4Addr) were the bytes
+# that got corrupted. This driver does not deregister, so successful creates
+# leak bindings — run it against a lab BSF and expect to flush state after.
+
+kind: flow
+name: fuzz_bsf_binding_create
+description: Wire-level fuzz of the Nbsf_Management pcfBindings create request body against a live BSF
+category: robustness
+type: client
+protocol: sbi
+nf: bsf
+
+initial_state: idle
+final_states:
+  - survived
+  - failed
+
+fuzz:
+  seed: 0x5eed
+  targets: [SBI_Request]
+  strategy: bitflip
+  rate: 1.0
+  budget: 300
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nbsf-management/v1/pcfBindings",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "dnn": "internet",
+                  "snssai": {"sst": 1, "sd": "000001"},
+                  "ipv4Addr": "10.9.9.9",
+                  "pcfFqdn": "dpf.lab"
+                }
+              }
+
+  wait_response:
+    # A hang is the finding. Any answer — 201, 400, 403, 500 — means the NF
+    # parsed, decided and replied, which is what F3 asserts.
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: survived
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

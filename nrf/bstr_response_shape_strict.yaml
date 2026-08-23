@@ -1,0 +1,99 @@
+# BSTR-03 — strict structural validation of the bootstrap response.
+#
+# Tightens BSTR-01's loose existence checks into specific contract
+# assertions. Catches:
+#   - non-UUID nrfInstanceId (consumers use it as JWT iss claim)
+#   - typo'd oauth2Required keys (TS 29.510 names: nnrf-nfm / nnrf-disc)
+#   - _links hrefs missing the /v1 suffix (would break consumer URL
+#     construction since they append the resource path to the href)
+#   - status drifting away from OPERATIVE (the only valid value the
+#     handler emits today)
+#
+# nrfInstanceId regex-validation is approximated with length=36 +
+# contains "-" — runner doesn't ship a `matches` op so a full v4 regex
+# isn't expressible inline yet. Full v4 grammar is left for a future
+# runner regex-check helper.
+#
+# Verification works against any NRF mode (oauth2 on or off); body
+# shape is identical because oauth2Required is just a status map.
+
+kind: flow
+name: nrf_bstr_response_shape_strict
+description: Strict shape — UUID nrfInstanceId, Nnrf_* oauth keys, /v1 hrefs.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: probing
+        actions:
+          - type: send
+            message: BootstrapGet
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-bstr/v1/bootstrapping"
+              }
+
+  probing:
+    transitions:
+      - event: rest.BootstrapGet_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+
+          # status — explicit equality (handler emits the literal)
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: OPERATIVE
+
+          # nrfInstanceId — UUID-shape proxy: 36 chars + contains "-"
+          - type: check
+            field: rest.body.nrfInstanceId
+            op: not_empty
+          - type: check
+            field: rest.body.nrfInstanceId.length
+            op: equals
+            expected: 36
+          - type: check
+            field: rest.body.nrfInstanceId
+            op: contains
+            expected: "-"
+
+          # _links hrefs — each service entry's first href must end in /v1
+          # (asserted via contains "/v1"; no `ends_with` op yet)
+          - type: check
+            field: rest.body._links.nfm.0.href
+            op: contains
+            expected: "/nnrf-nfm/v1"
+          - type: check
+            field: rest.body._links.disc.0.href
+            op: contains
+            expected: "/nnrf-disc/v1"
+          - type: check
+            field: rest.body._links.oauth.0.href
+            op: contains
+            expected: "/nnrf-oauth/v1"
+
+          # oauth2Required keys — TS 29.510 service names must be present
+          # (true/false value depends on -oauth2 mode; existence is the
+          # contract regardless)
+          - type: check
+            field: rest.body.oauth2Required.nnrf-nfm
+            op: exists
+          - type: check
+            field: rest.body.oauth2Required.nnrf-disc
+            op: exists
+
+  done: {}
+  failed: {}

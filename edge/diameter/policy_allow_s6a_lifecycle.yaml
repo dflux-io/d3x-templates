@@ -1,0 +1,83 @@
+# Edge S6a allow-rule sanity — Diameter half.
+#
+# Rewritten for the gRPC-only edge admin cutover. This template
+# concentrates on wire behaviour: it sends a PUR and inspects the
+# resulting PUA. The admin plane is driven from a wrapper script that
+# alternates edgectl rule pokes with `d3x-run run-flow` invocations of
+# this template — see runner/scripts/edge-policy-allow-s6a-lifecycle.sh.
+#
+# The wrapper's phases:
+#   1. edgectl policy-rules delete allow-s6a || true      (pre-clean)
+#   2. d3x-run run-flow -flow edge_diameter_policy_allow_s6a_lifecycle
+#      -e PUA_RESULT_CODE=5003                           (default-deny)
+#   3. edgectl policy-rules add @allow-s6a.json           (install)
+#   4. d3x-run ... -e PUA_RESULT_CODE=2001                (allow path)
+#   5. edgectl policy-rules delete allow-s6a              (cleanup)
+#   6. d3x-run ... -e PUA_RESULT_CODE=5003                (post-clean)
+#
+# The wire logic here is the same on all three phases; only the
+# Result-Code expectation differs.
+#
+# Topology (see config/lab-edge.yaml + edge-proxy/conf/edge-diameter-loopback-deny.yaml):
+#
+#   d3x-run  --SCTP/3868-->  edge filter chain  --realm "sim.local"-->
+#                                                                  back to us
+#
+# Allow path: edge echoes the request; FSM gets a "PUR" event, answers
+# with PUA, then gets its own PUA back. Deny path: edge synthesises a
+# PUA carrying Result-Code 5003 and writes it directly — only the PUA
+# event fires. Both paths land in the same wait-for-PUA state and
+# differ only in the Result-Code we assert (parameterised via
+# PUA_RESULT_CODE).
+
+kind: flow
+name: edge_diameter_policy_allow_s6a_lifecycle
+description: Edge S6a wire probe — send PUR, assert PUA Result-Code matches the phase expectation.
+category: functional
+type: client
+protocol: diameter
+nf: mme
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_pua_or_pur
+        actions:
+          - type: send
+            message: PUR
+
+  # Allow path: our own PUR echoed back through edge's relay — respond
+  # with a PUA. Deny path: edge writes the PUA directly, skipping this
+  # branch entirely.
+  wait_pua_or_pur:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: PUR
+        target: wait_pua
+        actions:
+          - type: send
+            message: PUA
+      - event: PUA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: ${PUA_RESULT_CODE}
+
+  wait_pua:
+    on_timeout: { duration: 5s, target: failed }
+    transitions:
+      - event: PUA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: ${PUA_RESULT_CODE}

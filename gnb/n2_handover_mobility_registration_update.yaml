@@ -1,0 +1,296 @@
+# REG-537 — the UE re-registers from the target cell and is simply accepted.
+#
+# TS 23.502 §4.9.1.3.3 step 14: after an N2 handover the UE initiates a Mobility
+# Registration Update if the target's tracking area is not in its registration
+# area. The 5G NAS security context moved with the UE, so this is a registration
+# the AMF already has everything for — it must be accepted without re-running
+# authentication. A fresh AUTHENTICATION REQUEST here means the AMF lost or
+# distrusted the context it just handed to the target, which is the failure
+# this row watches.
+#
+# THIS FLOW OWNS THE TARGET SIDE. Declaring a `HandoverRequest` transition
+# suppresses the runner's fire-and-forget target auto-reply and hands the
+# decoded HANDOVER REQUEST to this flow, which then answers as the target
+# NG-RAN node — on the TARGET association (`peer:`), because that is who a
+# HANDOVER REQUEST ACKNOWLEDGE / HANDOVER FAILURE is from (TS 38.413 §8.4.2).
+# A reply on the source leg would arrive on the association the AMF already
+# has the UE on, and a conformant AMF ignoring it would score as a defect.
+#
+# NEEDS TWO gNBs (register preconditions.gnbs: 2). With one gNB the HANDOVER
+# REQUIRED names a target the AMF has never seen and the row measures "unknown
+# target" instead of handover.
+
+kind: flow
+name: n2_handover_mobility_registration_update
+description: N2 handover; assert a mobility registration update from the target cell is accepted with no new authentication challenge
+detail: |
+  Registration, one PDU session, a complete N2 handover (this flow acts as the
+  target NG-RAN node, admits the session, swaps to the target leg and sends
+  HANDOVER NOTIFY). The UE then releases its N1 connection on the target cell
+  (UE CONTEXT RELEASE REQUEST / COMMAND / COMPLETE) so the mobility update is
+  the initial NAS message it is defined to be, and sends a mobility
+  REGISTRATION REQUEST (5GS registration type = mobility updating), identified
+  by the 5G-GUTI the AMF assigned, on the TARGET gNB.
+
+  Success is a REGISTRATION ACCEPT on the target association. An
+  AUTHENTICATION REQUEST for the same UE is a separate terminal
+  (`reauthenticated`), because "no new authentication challenge is issued" is
+  half the criterion and a silent tolerate would hide it.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - mobility_update_accepted
+  - reauthenticated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say
+            # so (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+            # connection as soon as registration completes.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_handover_request
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.PduAddress
+            op: not_empty
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: HandoverRequired
+
+  wait_handover_request:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: HandoverRequest
+        target: wait_handover_command
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          - type: send
+            message: HandoverRequestAcknowledge
+            peer: "{{ue.Params.target_gnb_name}}"
+
+  wait_handover_command:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: HandoverCommand
+        target: wait_release_command
+        actions:
+          - type: ngap_handover_swap
+          - type: send
+            message: HandoverNotify
+          # WHY THE CONNECTION IS RELEASED FIRST. A mobility REGISTRATION
+          # REQUEST is an INITIAL NAS message and the runner sends it as an
+          # NGAP INITIAL UE MESSAGE — which establishes a NEW UE-associated
+          # logical connection (TS 38.413 §8.6.1). Emitting one while the UE is
+          # still CM-CONNECTED on the leg it just moved to would ask the AMF to
+          # open a second context for the same UE, and an AMF that then
+          # re-authenticated would be answering OUR malformed sequence, not the
+          # row's question. So the UE goes to CM-IDLE the way a real one does
+          # (TS 24.501 §5.3.1.2) and updates from there — on the TARGET cell,
+          # which is what the row is about.
+          - type: send
+            message: UEContextReleaseRequest
+
+  wait_release_command:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_reaction
+        actions:
+          - type: check
+            field: ue.RxGnb
+            op: equals
+            expected: "{{ue.Params.target_gnb_name}}"
+          - type: send
+            message: UEContextReleaseComplete
+          - type: ngap_realloc
+          - type: send
+            message: RegistrationUpdate
+            params:
+              registration_type: 2
+
+  # Self-transitions for the re-verifications the AMF may legitimately insert
+  # (TS 24.501 §5.5.1.3.4) EXCEPT authentication, which is the one this row
+  # forbids.
+  wait_update_reaction:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: mobility_update_accepted
+        actions:
+          - type: check
+            field: ue.RxGnb
+            op: equals
+            expected: "{{ue.Params.target_gnb_name}}"
+          - type: check
+            field: amf_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          - type: send
+            message: RegistrationComplete
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: mobility_update_accepted
+        actions:
+          - type: check
+            field: ue.RxGnb
+            op: equals
+            expected: "{{ue.Params.target_gnb_name}}"
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+      # THE forbidden reaction — its own terminal, so the verdict says which
+      # of "not accepted" and "re-authenticated" happened.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: reauthenticated
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_update_reaction
+        actions:
+          - type: send
+            message: IdentityResponse
+      - event: NASDownlinkTransport.RegistrationReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-537 (positive, expected_terminal:
+# mobility_update_accepted) — A RegistrationAccept is received on the target association
+# in response to the mobility registration update, and no new authentication challenge
+# is issued for the same UE.
+#
+# REG-537 has two halves and the second is a message identity: "A RegistrationAccept is
+# received on the target association ... AND NO NEW AUTHENTICATION CHALLENGE IS ISSUED
+# for the same UE" (TS 23.502 §4.9.1.3.3 step 12 — the AMF performs only a subset of the
+# registration procedure). `reauthenticated` is the challenge arriving in
+# wait_update_reaction, but a challenge arriving in any of the six states between the
+# handover and the update is refused by the bus and leaves the terminal untouched.
+# rx_events counts what ARRIVED rather than what the FSM handled, so the second half is
+# asserted directly: exactly one AUTHENTICATION REQUEST for the whole run, the one that
+# authenticated the UE before the handover.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `mobility_update_accepted` — the terminal this row claims
+    metric: final_state_counts.mobility_update_accepted
+    op: equals
+    value: 1
+  - name: and no NEW authentication challenge was issued (the one is the pre-handover AKA)
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 10
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

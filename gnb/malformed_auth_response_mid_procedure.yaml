@@ -1,0 +1,84 @@
+# Secured/abnormal NAS probe — Malformed (byte-flipped) AuthenticationResponse mid-procedure (3GPP TS 33.501 / TS 24.501 abnormal cases).
+kind: flow
+name: malformed_auth_response_mid_procedure
+description: Malformed (byte-flipped) AuthenticationResponse mid-procedure (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions: [{ type: send, message: InitialUEMessage }]
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_reaction
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - type: send
+            message: AuthResponse
+            params: { corrupt_nas: true }
+  wait_reaction:
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      - { event: NASDownlinkTransport.AuthenticationReject, target: rejected }
+      - { event: NASDownlinkTransport.SecurityModeReject, target: rejected }
+      - { event: NASDownlinkTransport.RegistrationReject, target: rejected }
+      - { event: NASDownlinkTransport.5GMMStatus, target: rejected }
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: UEContextReleaseCommand, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-420 (robustness, expected_terminal: null) — After
+# an AuthResponse with a truncated or wrong-length RES*, no REGISTRATION ACCEPT is sent
+# for that UE, the SCTP association stays up, and a registration for a second subscriber
+# on the same association afterwards still reaches REGISTRATION ACCEPT.
+#
+# NO TERMINAL IS PINNED HERE, DELIBERATELY. REG-420 declares `expected_terminal: null`
+# and its criterion is "no REGISTRATION ACCEPT is sent for that UE, the SCTP association
+# stays up, and a registration for a SECOND SUBSCRIBER on the same association
+# afterwards still reaches REGISTRATION ACCEPT". A malformed NAS message may lawfully be
+# discarded in silence, so `tolerated` (the bare 10 s timer) and `rejected` (a refusal
+# on the wire) are BOTH conformant, and the observation that would separate this row's
+# pass from an outage — the second subscriber — is a registration this flow never
+# performs. Pinning either terminal would manufacture a verdict the row cannot support.
+# What IS asserted is the half of the criterion this flow does observe: no REGISTRATION
+# ACCEPT, and the preamble did not die (`failed` is reached only by the 10 s wait for
+# the AUTHENTICATION REQUEST, or by a transport Error).
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` (the association or the preamble died)
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: no REGISTRATION ACCEPT was sent for this UE (inside a context setup)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: equals
+    value: 0
+  - name: nor as a NAS downlink
+    metric: rx_events.NASDownlinkTransport.RegistrationAccept
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

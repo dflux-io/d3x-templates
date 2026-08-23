@@ -1,0 +1,225 @@
+# Registration + gNB-initiated UE Context Suspend (3GPP TS 38.413 §8.3.5).
+#
+# YAML mirror of the built-in `ue_context_suspend` flow defined in
+# runner/flows/gnb/flow_ue_context_suspend.go. Composed via the
+# registrationStates helper (registration → bridge with UEContextSuspendRequest
+# send) + a single trailing wait_suspend_response state.
+
+kind: flow
+name: ue_context_suspend
+description: Registration + gNB-initiated UE context suspend to RRC_INACTIVE (YAML)
+detail: |
+  Performs registration to establish a UE context, then sends a gNB-initiated
+  UEContextSuspendRequest to transition the UE to RRC_INACTIVE state
+  (3GPP TS 38.413 §8.3.5).
+
+  After registration completes (security context established, NGAP UE association
+  active), the gNB sends a UEContextSuspendRequest to the AMF. This signals that
+  the RAN has moved the UE to RRC_INACTIVE — a power-saving state where the UE
+  retains its RRC configuration but releases dedicated radio resources.
+
+  The AMF responds with either:
+  - UEContextSuspendResponse: confirms the suspend. The UE remains CM-CONNECTED
+    at the NAS level but the RAN context is suspended.
+  - UEContextSuspendFailure: rejects the suspend, typically with a cause code
+    indicating why (e.g., UE context not found, interaction with other procedure).
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - suspended
+  - suspend_refused
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_suspend_response
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: UEContextSuspendRequest
+
+  wait_suspend_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: UEContextSuspendResponse
+        target: suspended
+      # NOT `failed`, WHICH IS WHAT THIS SAID UNTIL NOW AND WHICH CONTRADICTED THE ROW
+      # IT IMPLEMENTS. REG-263's criterion is "UEContextSuspendResponse OR
+      # UEContextSuspendFailure received on N2 for the UE's AP IDs" — the register names
+      # the failure as a legitimate answer, and routing it to `failed` scored a core the
+      # register calls fine as red. That is the exact defect this whole mechanism exists
+      # to remove, so the fix is a terminal of its own rather than a lenient pin.
+      - event: UEContextSuspendFailure
+        target: suspend_refused
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# THE THIRD VERDICT VALUE. UE CONTEXT SUSPEND is the NGAP half of RRC INACTIVE, and an
+# AMF that does not keep suspended UE contexts has one coherent way to say so: answer the
+# request with UE CONTEXT SUSPEND FAILURE. It is an explicit, addressed refusal of the
+# procedure — the core read the request, recognised it, and declined — which is what
+# `unsupported` means and is not what either of the other two verdicts means.
+#
+# THIS ONE MOVES A VERDICT, AND THAT IS WORTH BEING EXPLICIT ABOUT. Before this change a
+# UE CONTEXT SUSPEND FAILURE landed on `failed` and the run was red; it is now
+# `unsupported`. The licence for moving it is REG-263's own criterion, quoted below,
+# which already said the failure was an acceptable observation — so the red was a
+# template/register disagreement, not a finding about a core. Note which of the two
+# directions the register left open was taken: `unsupported`, not `pass`. A pass would
+# credit the core with a suspend it never performed.
+#
+# NOTHING ELSE ABOUT THE ROW IS RELAXED. Silence still lands on `failed` through the
+# wait_suspend_response timer and is still red — and the loader would refuse this
+# declaration outright if it named a timer-reachable terminal, which is the property that
+# stops "the core said nothing" from ever being read as "the core lacks the feature". All
+# four `check` actions still run on this branch (they are all in the registration
+# preamble, before the suspend request goes out), so `checks_total equals 4` and
+# `checks_failed equals 0` below bite here exactly as they do on the pass branch.
+unsupported_states:
+  - state: suspend_refused
+    reason: >-
+      REG-263, verbatim: "UEContextSuspendResponse or UEContextSuspendFailure received on
+      N2 for the UE's AP IDs" — the register names the FAILURE as an acceptable answer,
+      so a core that sends it has not misbehaved. What it has done is decline the UE
+      CONTEXT SUSPEND procedure (TS 38.413 §8.3.5), the NGAP half of RRC INACTIVE: an
+      explicit, addressed refusal of an optional capability rather than a wrong answer to
+      the question the row asks. The suspend this row claims did not happen, so the run is
+      not a pass either.
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-263).
+#
+# REG-263 — UEContextSuspendResponse or UEContextSuspendFailure received on N2 for the
+# UE's AP IDs
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+#
+# THE TWO NON-`failed` TERMINALS PARTITION BY DECLARATION, NOT BY ASSERTION. What stood
+# here was `final_state_counts.suspended equals 1`, plus `rx_events.UEContextSuspendResponse
+# greater_or_equal 1` restating it from the other side. Both are gone, and what replaces
+# them is `failed equals 0` together with the `unsupported_states:` block above: the only
+# run that satisfies every check below and is not `unsupported` is one that reached
+# `suspended`, so the pin is now expressed structurally. Keeping the old pin as well would
+# be worse than redundant — a failed final_check outranks the declaration, so it would put
+# the refusal branch back to the red REG-263 says it is not.
+#
+# NOTHING IS LOST ON THE PASS PATH. `suspended` is reachable from exactly one event,
+# UEContextSuspendResponse, so "the flow ended in `suspended`" and "a UE CONTEXT SUSPEND
+# RESPONSE arrived" were the same fact stated twice; `failed equals 0` still refuses a
+# timeout, an Error and a preamble that died, and every tx count, rx floor and check
+# assertion below is untouched.
+final_checks:
+  - name: no UE ended in `failed` — a timeout, a transport error, or a preamble that died
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: one UE CONTEXT SUSPEND REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_SUSPEND_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

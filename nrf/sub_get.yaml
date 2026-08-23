@@ -1,0 +1,178 @@
+# SUB-02 — GET subscription by ID round-trips the CREATED resource.
+#
+# POST a subscription, extract subscriptionId from the 201, then
+# GET /nnrf-nfm/v1/subscriptions/{id} and assert the resource comes back
+# unchanged. DELETE for cleanup. The contract this flow is FOR is still
+# "GET returns the exact resource that was created — no fields synthesised,
+# no fields dropped"; what changed is which value counts as the created one.
+#
+# WHY `validityTime` IS NOT CHECKED AGAINST THE VALUE THIS FLOW ASKED FOR.
+#
+# It used to be: `rest.body.validityTime equals 2099-06-01T12:00:00Z`, the
+# literal this flow POSTs. That assertion could never pass. CreateSubscription
+# runs the requested lifetime through boundValidity, which caps it at
+# MaxSubscriptionValidity (24h by default, TS 29.510 §5.2.2.5.2), so the stored
+# and returned value is roughly now+24h and the check failed with
+#
+#     [FAIL] rest.body.validityTime equals 2099-06-01T12:00:00Z
+#            (actual=2026-08-07T16:02:34.691209+03:00)
+#
+# It is the SAME wrong assumption commit d13727e refuted and fixed for the
+# PATCH door in sub_create_patch_delete.yaml — that the response echoes the
+# consumer's requested lifetime — left standing on the POST door because nothing
+# ran it. TS 29.510 puts the lifetime in the NRF's gift on both doors: Table
+# 6.1.6.2.16-1 calls the consumer's `validityTime` "a hint to the server", and
+# §5.2.2.5.6 step 2b returns the value "as determined by the NRF". THE ONLY
+# OBLIGATION THE SPEC PLACES ON THE RESPONSE IS PRESENCE.
+#
+# So the flow asserts what a conformant consumer is entitled to, in three parts:
+#
+#   1. On the 201, `validityTime` is PRESENT and is a well-formed date-time.
+#      That is the spec's actual requirement, and nothing asserted it anywhere
+#      before — SUB-01 checks only the status, the Location and the id.
+#   2. On the 201, it is NOT the year that was suggested. This is the create
+#      door's cap, and it was likewise unasserted by any flow: SUB-01 proves the
+#      PATCH door caps, and until now nothing proved the POST door does. Without
+#      it an NRF that dropped boundValidity from CreateSubscription would go on
+#      passing every subscription flow in the tree.
+#   3. On the GET, it equals the value the 201 returned — carried across by an
+#      extract, not by a literal. THAT is the round-trip property SUB-02 exists
+#      to test: the resource you read back is the resource that was created. It
+#      holds no matter what the NRF decided, which is exactly why it is the
+#      right assertion and the literal never was.
+#
+# The regex accepts a numeric UTC offset and fractional seconds as well as `Z`
+# because the NRF returns Go's `time.Time` zero-formatted in the server's local
+# zone (the `+03:00` above), and a check that silently required `Z` would be
+# asserting the server's timezone rather than the format.
+#
+# THE POST DOOR NEEDS NO 200/204 SPLIT, AND THIS FLOW IS WHY.
+#
+# The PATCH door needs one — §5.2.2.5.6 step 2a answers 204 with an empty body
+# when the NRF takes the suggestion, so the status code is the ONLY channel left
+# to say "I assigned something different", and sub_create_patch_delete.yaml
+# asserts both halves. The POST door has no such gap: §5.2.2.5.2 defines exactly
+# one success code, and its 201 always carries the full SubscriptionData
+# including the lifetime the NRF picked. The consumer is told what it got, on
+# every create, in the response it already has to read to learn the
+# subscriptionId. Adding a second create code would invent a distinction the
+# spec does not make; assertion 1 above pins the channel that does exist.
+
+kind: flow
+name: nrf_sub_get
+description: POST subscription → GET → assert body fields round-trip.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: creating
+        actions:
+          - type: send
+            message: CreateSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/nnrf-nfm/v1/subscriptions",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfStatusNotificationUri": "http://sub-get-test.example.com/cb",
+                  "validityTime": "2099-06-01T12:00:00Z"
+                }
+              }
+
+  creating:
+    transitions:
+      - event: rest.CreateSub_Answer
+        target: fetching
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          # PRESENCE — the only thing TS 29.510 obliges the response to carry.
+          - type: check
+            field: rest.body.validityTime
+            op: not_empty
+          # … and it is a well-formed RFC 3339 date-time.
+          - type: check
+            field: rest.body.validityTime
+            op: regex
+            expected: '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+          # … and the CREATE door capped it, which no flow asserted before this
+          # one. The POST above suggests the year 2099; with the regex pinning
+          # the year to 20xx, "not 2099" proves the returned lifetime is
+          # strictly earlier than the one requested.
+          - type: check
+            field: rest.body.validityTime
+            op: not_contains
+            expected: "2099-"
+          - type: extract
+            field: rest.body.subscriptionId
+            store: subId
+          # The value the NRF DETERMINED. The GET below is asserted against
+          # this, not against the literal this flow asked for.
+          - type: extract
+            field: rest.body.validityTime
+            store: assignedValidity
+          - type: send
+            message: GetSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-nfm/v1/subscriptions/{{ue.Params.subId}}"
+              }
+
+  fetching:
+    transitions:
+      - event: rest.GetSub_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: check
+            field: rest.body.nfStatusNotificationUri
+            op: equals
+            expected: "http://sub-get-test.example.com/cb"
+          # THE ROUND-TRIP. The resource read back carries the lifetime the
+          # CREATE returned — whatever the NRF chose it to be. A GET that
+          # synthesised a fresh value, or dropped the field, or served a
+          # different subscription, fails here; an NRF that legitimately capped
+          # the request does not.
+          - type: check
+            field: rest.body.validityTime
+            op: equals
+            expected: "{{ue.Params.assignedValidity}}"
+          - type: check
+            field: rest.body.subscriptionId
+            op: not_empty
+          - type: send
+            message: DeleteSub
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/subscriptions/{{ue.Params.subId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeleteSub_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

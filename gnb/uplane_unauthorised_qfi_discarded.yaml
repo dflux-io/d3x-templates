@@ -1,0 +1,317 @@
+# REG-950 — a device cannot help itself to QoS treatment by writing a number in
+# a header.
+#
+# CLAUSES, retrieved with matrix/scripts/spec-clause.py, not recalled.
+#
+#   TS 23.501 §5.7.1.7 — the duty, verbatim: "UPF verifies whether QFIs in the
+#   UL PDUs are aligned with the QoS Rules provided to the UE or implicitly
+#   derived by the UE in the case of Reflective QoS."
+#
+#   TS 23.501 §5.8.2.4.2 — uplink packets are matched against the session's
+#   uplink PDRs; a packet that matches none is not forwarded.
+#
+#   TS 38.415 §5.5.2.2 / §5.5.3.3 — where the offending value sits: the QFI
+#   field of the UL PDU SESSION INFORMATION frame in the PDU Session Container.
+#
+#   TS 23.501 §5.7.1.5 — QFI values: 0 is reserved, so a QFI is 1-63 and 63 is a
+#   legal encoding. This probe must be REJECTED for being unauthorised, not for
+#   being malformed.
+#
+#   TS 24.501 §9.11.4.13 — the Authorized QoS rules IE: each rule names the QFI
+#   of the QoS flow it binds to, and exactly one carries the DQR (default) bit.
+#
+# THE ROW IS NEGATIVE, SO THE VIOLATION IS PROVEN ON THE WIRE AND THE ACCEPTANCE
+# HAS A POSITIVE OBSERVABLE. Both halves, because a negative row lies in two
+# independent ways.
+#
+#   1. THE VIOLATION IS REAL AND IS PROVEN TO BE ONE. §5.7.1.7 measures the
+#      uplink QFI against "the QoS Rules PROVIDED TO THE UE", and those rules
+#      are on the wire: the Authorized QoS rules IE of the PDU SESSION
+#      ESTABLISHMENT ACCEPT, decoded and projected as
+#      ue.Params.pdu_accept_qos_rule_count / _default_qos_rule_qfi. This flow
+#      asserts the accept granted EXACTLY ONE rule and that its QFI is not 63 —
+#      which is what makes 63 provably outside the set the clause names, rather
+#      than a number this file asserts about itself.
+#
+#      The other half of the proof — that the octets really carry QFI 63 — is
+#      pinned by runner/runner/uplane_wire_shape_test.go, which marshals the
+#      uplink G-PDU and reads the PDU Session Container back octet by octet.
+#      There is no report field for our OWN uplink marking, so the bytes cannot
+#      be re-read from a trace here; the Go test is the evidence and is named
+#      rather than implied.
+#
+#   2. WHAT A CONFORMANT CORE DOES IS SILENCE, SO SILENCE NEEDS A CONTROL.
+#      Discarding a packet emits nothing, and "no reply came back" is also what
+#      a dead datapath, an unprovisioned subscriber and a broken tunnel look
+#      like. Window one therefore proves the tunnel CARRIES packets, with the
+#      generator's default marking, before window two marks the same tunnel with
+#      a QFI the session was never granted. The acceptance test the register
+#      requires of a negative row — "disable the violation and confirm the row
+#      flips" — is built into the flow: window one IS the same probe without the
+#      violation, and it must report pkt_rx > 0 for the flow to reach window
+#      two at all.
+#
+# THE CONTROL WINDOW IS MARKED WITH THE QFI THE CORE GRANTED, READ OFF THE WIRE
+# (corrected 2026-08-12, xp-277; the defect is xp-266).
+#
+# It used to be pinned to QFI 1, because params on an `uplane_start` action were
+# NOT template-expanded: PreparseFSM compiled ParamsTemplate for `send` and
+# `parallel_send` only, and runUplaneStart read action.Params verbatim. The flow
+# could therefore only use the generator's default — QFI 1, uplane_uspace.go
+# defaultUplaneQfi — and it asserted `granted QFI == 1` to keep that premise
+# honest. Against tinycore, WHICH ASSIGNS QFI 9, that check failed and the row
+# never reached either traffic window: it failed on all three cores for three
+# different reasons and tested its own claim on none of them.
+#
+# Pinning 9 instead would only have moved the accident to the next core. The
+# expansion is fixed instead (runner/runner/uplane_params.go), so the control
+# window now reads the granted QFI out of the Authorized QoS rules IE the core
+# itself sent — the same discipline xp-268 part two established for the
+# register's preconditions: A PREMISE OBSERVABLE IN THE TRACE MUST BE READ FROM
+# THE TRACE. `{{ue.Params.pdu_accept_default_qos_rule_qfi}}` resolves to the
+# native int the accept decoder projected; a path that does not resolve is an
+# ERROR that fails the UE by name, never a silent fall back to the default.
+#
+# WHAT IS STILL ASSERTED, and why it is not the same check by another route: the
+# rule count is still pinned at exactly one, so "the set of QFIs this UE may
+# mark with" has exactly one member and 63 is provably outside it. What is gone
+# is the assertion that that member is the number 1, which was never the row's
+# claim — it was an artefact of the harness.
+#
+# VACUITY, EVERY CLASS, CHECKED.
+#   * `not_contains` — not used.
+#   * `exists` — not used anywhere; `ie_present` is used where presence is the
+#     question, because it fails on a path that does not resolve.
+#   * pkt_tx appears once and only in window two, where it is exactly the right
+#     tool: it counts sends on an unconnected socket, so it proves the probe was
+#     EMITTED without being taken as evidence that anything arrived. It is never
+#     a verdict.
+#   * `pkt_rx equals 0` is the one assertion that can be satisfied by a broken
+#     flow, which is why it is fenced by window one (the tunnel worked), by
+#     pkt_tx (we sent), and by dl_gpdu_rx (nothing came back at the
+#     encapsulation layer either, not merely nothing that matched).
+#   * zero checks evaluated — impossible: `unauthorised_qfi_discarded` is
+#     reachable only through the chain below, more than a dozen checks deep.
+#
+# WHAT THIS ROW DOES *NOT* CLAIM. TS 23.501 §5.7.1.7 mandates the VERIFICATION
+# and never states the action on mismatch; "produce no packets at n6" is the
+# register's own inference, recorded as a reservation on the entry itself.
+# Discarding is the only observable consequence a verification can have from
+# outside, so it is what this flow measures — but a core that verifies and then
+# re-marks rather than discards would score red here and should be read against
+# that reservation, not as a proven defect.
+#
+# NOT A BARE TIMER: every non-`failed` terminal is reached by a message or an
+# UplaneComplete arriving.
+#
+# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; another
+# agent holds Docker (xp-234) and this flow has never been executed.
+
+kind: flow
+name: uplane_unauthorised_qfi_discarded
+description: Registration, one PDU session, a control traffic window, then the same tunnel marked with a QFI the session was never granted; assert those packets produce nothing at n6 (TS 23.501 §5.7.1.7)
+detail: |
+  Registration, one PDU session establishment, then two user-plane windows over
+  the same tunnel.
+
+  The PDU SESSION ESTABLISHMENT ACCEPT is read for the Authorized QoS rules: the
+  session must have been granted exactly one rule, and that rule's QFI is the
+  only QFI this UE is entitled to mark uplink traffic with (TS 23.501 §5.7.1.7,
+  TS 24.501 §9.11.4.13).
+
+  Window one uses that QFI and must succeed — it is what makes window two's
+  silence mean something. Window two marks the identical traffic with QFI 63, a
+  legal encoding the session was never granted, and asserts that nothing comes
+  back: neither a matched reply nor a downlink G-PDU on the tunnel at all.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - unauthorised_qfi_discarded
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_setup_request
+        actions:
+          - { type: check, field: security_key, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_setup_request:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_authorised_qfi
+        actions:
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          # ---- THE WIRE PROOF THAT 63 IS UNAUTHORISED. The clause measures the
+          # uplink QFI against "the QoS Rules provided to the UE"; this is that
+          # set, decoded from the accept. ONE rule, so the set of QFIs this UE
+          # may mark with has exactly one member... ----
+          - { type: check, field: ue.Params.pdu_accept_qos_rule_count, op: equals, expected: 1 }
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_count, op: equals, expected: 1 }
+          # ...and that member is not 63. `not_equals` on a resolved value, so a
+          # missing key would fail the earlier count checks first.
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_qfi, op: not_equals, expected: 63 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # Window one — the control, marked with the QFI THE CORE GRANTED,
+          # taken from the Authorized QoS rules IE of the accept rather than
+          # from a constant. tinycore assigns 9, open5gs 1; either way this
+          # window is authorised by construction and window two's 63 is not.
+          # An unresolvable path fails the UE by name (uplane_params.go).
+          - type: uplane_start
+            params:
+              qfi: "{{ue.Params.pdu_accept_default_qos_rule_qfi}}"
+
+  # WINDOW ONE — the control. Without it, window two's zero has three causes and
+  # the row cannot tell them apart.
+  uplane_authorised_qfi:
+    # 12s against a configured 3s traffic duration (gnb.uplane.duration).
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: uplane_unauthorised_qfi
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          # The tunnel CARRIES packets when they are marked with the QFI this
+          # session was granted. This is the acceptance observable the register
+          # requires of a negative row.
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+          # THE PROBE. Same tunnel, same inner traffic, one field changed: the
+          # QFI in the UL PDU SESSION INFORMATION frame is now 63, which the
+          # checks above proved is outside the QoS rules the UE was given.
+          - type: uplane_start
+            params:
+              qfi: 63
+
+  # WINDOW TWO — the row. A fresh teidStats is stored on every AddTeid and
+  # ReportForTeid prefers the live entry, so these counters are this window's
+  # alone rather than a running total.
+  uplane_unauthorised_qfi:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: unauthorised_qfi_discarded
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # We really sent. pkt_tx is good for exactly this and nothing else.
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          # ---- THE ROW. TS 23.501 §5.7.1.7 / §5.8.2.4.2: a QFI outside the
+          # UE's QoS rules does not match the session's uplink PDR, so nothing
+          # reaches n6 and nothing comes back. ----
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: equals, expected: 0 }
+          # One level below pkt_rx: no downlink G-PDU arrived on this tunnel AT
+          # ALL. pkt_rx counts replies that matched the generator's sequence, so
+          # on its own it could be satisfied by a reply that arrived malformed;
+          # this says nothing came back at the encapsulation layer either.
+          - { type: check, field: ue.UplaneReport.dl_gpdu_rx, op: equals, expected: 0 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-950).
+#
+# REG-950 — G-PDUs on a valid TEID whose UL PDU SESSION INFORMATION frame carries a QFI
+# outside the QoS Flow Setup List signalled on n2 produce no packets at the n6 target,
+# while identical packets with the signalled QFI do arrive
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `unauthorised_qfi_discarded`
+    metric: final_state_counts.unauthorised_qfi_discarded
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The 15 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 15 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 15
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

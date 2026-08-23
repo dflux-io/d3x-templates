@@ -1,0 +1,141 @@
+# SMF/CP ↔ UPF PFCP (N4) compliance suite — one session per flow, one execution.
+#
+# Drives the standard node-level and session-level PFCP procedures (TS 29.244)
+# SMF-side against a real 5G user plane (Open5GS UPF). runner plays the
+# SMF/CP-function peer over N4. Every step runs exactly ONE flow for ONE
+# execution (repetitions: 1, no rate) so each PFCP procedure is exercised
+# deterministically and scored on its own — this is a conformance pass, not a
+# load test.
+#
+# Each step asserts, via success_when.at_least_one_final_state, that the flow
+# reached its SPEC-CORRECT terminal (the "Request accepted" path for each
+# positive procedure). Steps where more than one terminal is spec-valid would
+# omit success_when (engine default = any non-"failed" terminal passes); all
+# compliance flows here have a single spec-correct terminal, so each pins it.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite upf-compliance \
+#       -templates <templates-dir> -c config/open5gs-upf.yaml -trace
+#
+# NOTE on independence: unlike the gNB suite (one persistent SCTP association +
+# shared 5GMM state), each PFCP flow here is SELF-CONTAINED — every flow opens
+# its own node-level PFCPAssociationSetup before doing its session work, and
+# RemoteSEID is auto-learned from each establishment response. So there is no
+# hard cross-step state dependency. Order still matters as a diagnostic gate:
+# if the very first association can't be set up against the UPF there is no
+# point running the rest, so pfcp_association_setup is the ONE hard gate
+# (stop_on_failure: true). Everything after runs to completion (stop_on_failure
+# false) so the suite collects a full per-procedure pass/fail report.
+#
+# pfcp_association_release is the natural node-level teardown, so it runs LAST
+# with always_run: true — it leaves the UPF's association table clean even if
+# an earlier step failed. (Each session flow already deletes/abandons its own
+# session, so there are no dangling sessions to mop up; the release just clears
+# the node-level association.)
+#
+# Known EXPECTED failures / runtime-risk against a real Open5GS UPF (these are
+# legitimate compliance findings this suite exists to surface, NOT flow bugs):
+#   - pfcp_association_update: Open5GS UPF historically returns a response but
+#     may not honour every advertised CP-function feature; the flow only asserts
+#     Cause "Request accepted", which should hold. If the UPF rejects the Update
+#     procedure outright (older builds did not implement it), the FAIL is the
+#     finding.
+#   - pfcp_session_establish: the rule-bearing Create PDR/FAR set is not fully
+#     spec-complete vs TS 29.244, so a real Open5GS UPF rejects with Cause
+#     "Mandatory IE incorrect" (UPF log: "One of the IPv4 and IPv6 flags should
+#     be 1 in the local F-TEID"). This is a genuine runner PFCP-enricher FIDELITY
+#     finding — the establishment enricher needs richer PDR/FAR/QER IE authoring.
+#   - pfcp_session_modify / pfcp_session_delete: each self-establishes first, so
+#     they inherit the same Create PDR/FAR fidelity gap and draw the same
+#     "Mandatory IE incorrect" — read them together with the establish result.
+#   - pfcp_association_update / cleanup (association_release): the Update/Release
+#     request enrichers as built draw no response from the real UPF (likely
+#     missing/!accepted mandatory IEs) and time out — another enricher-content
+#     fidelity gap, not a transport problem.
+#
+# NOT included here (situational / negative — see upf_security.yaml):
+#   the stray-heartbeat, missing-IE, no-association and unknown-rule probes.
+#
+# N4 addressing note (REQUIREMENT, now resolved): Open5GS routes PFCP responses
+# to the requester's advertised NodeID address on UDP 8805, NOT back to the UDP
+# source port. Driving a real UPF therefore requires advertising NodeID == our
+# own IP and binding it on :8805 — config/open5gs-upf.yaml sets pfcp.local
+# "172.22.0.250:8805" + node_id.value "172.22.0.250", and the harness runs the
+# runner container on --ip 172.22.0.250 so it owns that NodeID. The binding role
+# must be `upf` (the flows declare nf: upf). With that in place runner's PFCP RX
+# path receives and dispatches the AssociationSetupResponse normally — there is
+# NO runner PFCP client-RX correlation bug (an earlier run misdiagnosed the
+# addressing issue as one).
+#
+# Results (2026-06-05, Open5GS v2.7.x, runner as SMF/CP function over N4): 2/7.
+# PASS: pfcp_association_setup (Cause=Request accepted, node_id=172.22.0.8) and
+# pfcp_heartbeat (recovery_timestamp). FAIL: pfcp_session_establish / modify /
+# delete (UPF → "Mandatory IE incorrect": Create PDR/FAR not spec-complete) and
+# pfcp_association_update / cleanup-release (no UPF response — enricher-fidelity
+# gaps above). The UPF itself stayed up throughout.
+
+kind: suite
+name: upf-compliance
+description: One-session-per-flow PFCP (N4) conformance pass for an SMF/CP against a real UPF.
+steps:
+  # --- gate: node-level association must come up first ---------------------
+  - name: pfcp_association_setup
+    flow: upf_pfcp_association_setup
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: associated
+
+  # --- node-level procedures ---------------------------------------------
+  - name: pfcp_heartbeat
+    flow: upf_pfcp_heartbeat
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: pfcp_association_update
+    flow: upf_pfcp_association_update
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: updated
+
+  # --- session-level procedures (each self-associates first) -------------
+  - name: pfcp_session_establish
+    flow: upf_pfcp_session_establish
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
+
+  - name: pfcp_session_modify
+    flow: upf_pfcp_session_modify
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: modified
+
+  - name: pfcp_session_delete
+    flow: upf_pfcp_session_delete
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: deleted
+
+  # --- cleanup (always runs, even if earlier steps failed) ---------------
+  # Node-level Association Release: clears the association table on the UPF so
+  # the lab is left clean. Runs last and always.
+  - name: cleanup
+    flow: upf_pfcp_association_release
+    repetitions: 1
+    timeout: 25s
+    always_run: true
+    success_when:
+      at_least_one_final_state: released

@@ -1,0 +1,113 @@
+# 201-vs-200 distinction on register, plus Location header check.
+#
+# First PUT to a fresh UUID must return:
+#   - status: 201 Created
+#   - Location: …/nnrf-nfm/v1/nf-instances/<nfInstanceId>
+#
+# Second PUT to the SAME UUID (re-registration) must return:
+#   - status: 200 OK (no Location)
+#
+# Cleanup deregisters the profile.
+
+kind: flow
+name: nrf_nfm_register_201_location
+description: Verify 201+Location on first PUT, 200 on second PUT same UUID.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: first_put
+        actions:
+          - type: send
+            message: RegisterFirst
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-201-test.local",
+                  "ipv4Addresses": ["10.0.0.30"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  first_put:
+    transitions:
+      - event: rest.RegisterFirst_Answer
+        target: second_put
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 201
+          - type: check
+            field: rest.headers.Location
+            op: contains
+            expected: "/nnrf-nfm/v1/nf-instances/"
+          - type: extract
+            field: rest.body.nfInstanceId
+            store: nfInstanceId
+          - type: check
+            field: ue.Params.nfInstanceId
+            op: not_empty
+          - type: send
+            message: RegisterSecond
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 30,
+                  "fqdn": "smf-201-test.local",
+                  "ipv4Addresses": ["10.0.0.30"],
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  second_put:
+    transitions:
+      - event: rest.RegisterSecond_Answer
+        target: cleaning_up
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 200
+          - type: send
+            message: DeregisterNF
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "DELETE",
+                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
+              }
+
+  cleaning_up:
+    transitions:
+      - event: rest.DeregisterNF_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 204
+
+  done: {}
+  failed: {}

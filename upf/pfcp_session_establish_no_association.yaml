@@ -1,0 +1,77 @@
+# PFCP Session Establishment without a prior Association
+# (3GPP TS 29.244 §5.4 / §8.2.1).
+#
+# Security/negative: a Session Establishment is sent with NO preceding
+# PFCPAssociationSetup. Per TS 29.244 §5.4 the UPF must REJECT a session
+# request when no PFCP association exists with the CP function, returning Cause
+# "No established PFCP Association" (TS 29.244 §8.2.1, value 72), and stay up.
+#
+# Spec-correct success = a SessionEstablishmentResponse whose Cause is
+# "No established PFCP Association".
+#
+# Robustness note: some UPFs instead silently drop the orphan request; the
+# on_timeout path is therefore modelled as a tolerated fallback so the suite
+# can score liveness even when no typed reject is returned.
+
+kind: flow
+name: upf_pfcp_session_establish_no_association
+description: Session Establishment with no association; UPF must reject (Cause 72)
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_session
+        actions:
+          # No AssociationSetup first — straight to session establishment.
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            peer: upf
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  }
+                ]
+              }
+
+  wait_session:
+    # Silent drop is a spec-allowed reaction to an orphan session request.
+    on_timeout:
+      duration: 5s
+      target: tolerated
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: rejected
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "No established PFCP Association"

@@ -1,0 +1,244 @@
+# REG-432 — the selected NAS ciphering and integrity algorithms lie inside the
+# UE's advertised capability set.
+#
+# TS 33.501 §6.7.1.1 (retrieved, operative sentences verbatim):
+#
+#   "To establish the NAS security context, the AMF shall choose one NAS
+#    ciphering algorithm and one NAS integrity protection algorithm. The AMF
+#    shall then initiate a NAS security mode command procedure, and include the
+#    chosen algorithm and UE security capabilities (to detect modification of
+#    the UE security capabilities by an attacker) in the message to the UE."
+#   "The AMF shall select the NAS algorithm which have the highest priority
+#    according to the ordered lists."
+#
+# TS 33.501 §5.11.2 b): "The serving network shall select the algorithms to use
+# dependent on — the UE security capabilities of the UE, — the configured
+# allowed list of security capabilities of the currently serving network
+# entity."
+#
+# TS 24.501 §9.11.3.34 table 9.11.3.34.1 enumerates the DEFINED values of both
+# half-octets: 0000..0111 = 5G-IA0..5G-IA7 and 5G-EA0..5G-EA7. "All other values
+# are reserved."
+#
+# WHAT "INSIDE THE ADVERTISED SET" MEANS FOR THIS UE
+# -------------------------------------------------
+# This flow does NOT pass `null_security_caps`, so the runner's UE advertises the
+# complete bitmap — measured TX, both cores, 2026-08-10:
+#     … 2e 04 ff ff ff ff      (IEI 0x2E, len 4, EA0-EA7 / IA0-IA7 / EEA / EIA)
+# Every one of the eight defined 5G-EA values and eight defined 5G-IA values is
+# therefore advertised. "Selected ∈ advertised" is consequently EXACTLY
+# "selected names a defined algorithm", i.e. wire nibble 0..7. The NAS decoder
+# stores these as an enum offset by +1 from the wire (EA_NONE=0, EA_NEA0=1, …),
+# so the admissible decoded set is {1..8} and the `in` lists below are that set
+# written out. This is neither weaker nor stronger than the row's criterion for
+# this UE.
+#
+# HONEST LIMITATION, stated rather than hidden: because the UE advertises the
+# whole bitmap, the only thing this row can catch is an AMF that names a
+# RESERVED value — it cannot catch a bidding-down selection, because nothing is
+# bid down from "everything". A row that exercises a restricted capability set
+# is a different test (see smc_null_integrity_rejected_nonemergency, which drives
+# `null_security_caps`).
+#
+# KNOWN CODEC DEFECT AFFECTING THE FIELD *LABELS* (not this row's verdict)
+# -----------------------------------------------------------------------
+# proto/nas5g encodes/decodes the NAS security algorithms octet with the nibbles
+# TRANSPOSED relative to figure 9.11.3.34.1, which puts "Type of ciphering
+# algorithm" in bits 8-5 and "Type of integrity protection algorithm" in bits
+# 4-1. decodeSecurityModeCommand reads integrity from the HIGH nibble. So
+# `nas.selected_nas_security_algorithms_ciphering` currently reports the
+# INTEGRITY algorithm and vice versa. Proven on the wire: Open5GS sends octet
+# 0x02 (= EA0 + IA2 per the figure), its REGISTRATION ACCEPT payload is
+# observably NOT enciphered while its MAC verifies under an NIA2 key — which is
+# only possible if the selection was EA0 + IA2, the opposite of what the decoder
+# reports. This is a Go-side defect and is reported, not worked around.
+# It does not change THIS row's verdict: both half-octets range over the same
+# admissible set {1..8}, so the assertions below are invariant under the
+# transposition. It DOES invalidate any row that asserts on one specific field —
+# gnb/registration_ciphering_non_null.yaml is currently green on
+# Open5GS for exactly the wrong reason.
+#
+# MEASURED (2026-08-10, this lab):
+#   open5gs  — SMC octet 0x02  → decoded ciphering=3, integrity=1  → PASS
+#              (true selection per the figure: 5G-EA0 + 128-5G-IA2)
+#   tinycore — SMC octet 0x22  → decoded ciphering=3, integrity=3  → PASS
+#              (true selection: 128-5G-EA2 + 128-5G-IA2; symmetric octet, which
+#               is why the transposition above is invisible against tinycore)
+
+kind: flow
+name: security_mode_selected_algorithms_advertised
+description: Initial registration; assert the SECURITY MODE COMMAND names one ciphering and one integrity algorithm and both are defined values the UE advertised
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # "shall choose ONE NAS ciphering algorithm and ONE NAS integrity
+          # protection algorithm" — both half-octets must be there.
+          #
+          # PRESENCE IS `>= 1`, NOT `ie_present` (xp-255). These two are
+          # non-pointer scalar enums on NAS_SecurityModeCommand, and the
+          # decoder's "IE absent" sentinel is the enum ZERO (EA_NONE / IA_NONE);
+          # a real selection decodes to wire-nibble+1, i.e. 1..8. They used to
+          # carry `,omitempty`, so absence dropped the key and `ie_present`
+          # failed — by accident of the JSON projection, not by design. xp-255
+          # removed `,omitempty` from non-pointer fields (a Go value field
+          # cannot be absent, so omitting it on zero conflated "IE absent" with
+          # "IE present carrying 0"). The key is now always emitted, `value !=
+          # nil` always holds, and `ie_present` here could no longer fail —
+          # a check that cannot fail is worse than no check.
+          #
+          # `greater_or_equal 1` asserts the same thing the IE-present claim
+          # always meant: the half-octet decoded to a real algorithm, not to
+          # the absent-IE sentinel.
+          - type: check
+            field: nas.selected_nas_security_algorithms_ciphering
+            op: greater_or_equal
+            expected: 1
+          - type: check
+            field: nas.selected_nas_security_algorithms_integrity
+            op: greater_or_equal
+            expected: 1
+          # ...and each must name a value the UE advertised. Decoded enum =
+          # wire nibble + 1; the UE advertised all eight defined values of each
+          # family (FF FF FF FF), so the admissible decoded set is 1..8.
+          # Anything outside is a reserved value (§9.11.3.34: "All other values
+          # are reserved") or the decoder's EA_NONE/IA_NONE for an absent IE.
+          - type: check
+            field: nas.selected_nas_security_algorithms_ciphering
+            op: in
+            expected: [1, 2, 3, 4, 5, 6, 7, 8]
+          - type: check
+            field: nas.selected_nas_security_algorithms_integrity
+            op: in
+            expected: [1, 2, 3, 4, 5, 6, 7, 8]
+          # §6.7.1.1 obliges the AMF to include the UE security capabilities in
+          # the same message as the chosen algorithms; a selection with no
+          # accompanying capability replay is not the message the clause
+          # describes. (Its byte-identity is REG-431's business, not this row's.)
+          - type: check
+            field: nas.replayed_ue_security_capabilities
+            op: ie_present
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-432).
+#
+# REG-432 — The NAS security algorithms IE in the SECURITY MODE COMMAND names one
+# ciphering and one integrity algorithm, both of which are set in the UE security
+# capability bitmap the UE advertised.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The seven `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all seven declared checks ran
+    metric: checks_total
+    op: equals
+    value: 7
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

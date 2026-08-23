@@ -1,0 +1,51 @@
+# REST smoke — client side.
+# Generic REST client that POSTs a JSON config to a vendor-style admin
+# endpoint. The template is data-driven — the FSM author writes the
+# method/url/body in message_body without any Go-side per-endpoint code.
+#
+# NOTE: this template used to point at edge's HTTP admin API. Edge's admin
+# plane is now gRPC-only (see edgeguard/CLAUDE.md); drive it with edgectl.
+# The example endpoint below (`/generic/config-rules`) targets a mock so
+# the REST transport shape can still be demonstrated end-to-end via the
+# paired edge_admin_server.yaml server template.
+
+kind: flow
+name: rest_generic_admin_add_config_client
+description: Client POST to a generic REST admin endpoint to install a config
+category: functional
+type: client
+protocol: rest
+nf: external
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: AddConfig
+            message_body: |
+              {
+                "method": "POST",
+                "url": "/generic/config-rules",
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "ruleId": "rule-001",
+                  "qci": 5,
+                  "matcher": { "destIp": "10.0.0.0/24" }
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: rest.AddConfig_Answer
+        target: completed

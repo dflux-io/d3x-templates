@@ -1,0 +1,83 @@
+# Multi-application S6a + Rx flow on a single SCTP association.
+#
+# Mirrors dsr-sim's s6a_rx_combined.json: the peer config advertises both
+# 16777251 (S6a) and 16777236 (Rx) in CER, and the FSM alternates message
+# types — an S6a ULR/ULA exchange followed by an Rx AAR/AAA exchange, all
+# on the same connection. The bus's diameter pipeline is application-id
+# agnostic: each enricher sets the right AppID on the message header, the
+# RX demux routes by Session-Id (which our UE keeps stable across the
+# whole flow), and edge echoes both directions.
+#
+# Run with config/lab-diameter-multiapp.yaml which declares
+# application_ids: [16777251, 16777236] on the edge peer.
+
+kind: flow
+name: diameter_s6a_rx_combined
+description: Multi-app S6a+Rx 4-step echo on one SCTP association
+category: lifecycle
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ulr_echo
+        actions:
+          - type: send
+            message: ULR
+
+  wait_ulr_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULR
+        target: wait_ula_echo
+        actions:
+          - type: send
+            message: ULA
+
+  wait_ula_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULA
+        target: wait_aar_echo
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+          - type: send
+            message: AAR
+
+  wait_aar_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: AAR
+        target: wait_aaa_echo
+        actions:
+          - type: send
+            message: AAA
+
+  wait_aaa_echo:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: AAA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001

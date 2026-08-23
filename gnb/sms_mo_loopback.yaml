@@ -1,0 +1,327 @@
+# Closed-loop SMS over NAS: MO submit + MT loopback delivery (TS 23.502
+# §4.13.3.3 / §4.13.3.6, TS 24.011).
+#
+# Same MO procedure as gnb/sms_mo.yaml, but the UE addresses the SMS to its
+# OWN MSISDN (lab subscriber 1, 14155550001) and stays CM-CONNECTED: the SMSF
+# resolves the destination GPSI to the sender's own active SMS context and
+# re-queues the message as a mobile-terminated delivery (local MO→MT routing),
+# which comes back as CP-DATA(RP-DATA(SMS-DELIVER)) on the SC worker's next
+# sweep — the lab runs smsf -sweep 2s, so the 30s wait is generous.
+#
+# The text is Hebrew (שלום) so the TS 23.038 UCS2 alphabet is exercised end to
+# end: UE encode → SMSF decode → store → SMSF re-encode → UE decode; the flow
+# asserts the delivered text is byte-identical to what was sent and that the
+# DCS on the wire was UCS2 (0x08). The UE confirms delivery with CP-ACK +
+# CP-DATA(RP-ACK(SMS-DELIVER-REPORT)) and terminates in sms_delivered.
+
+kind: flow
+name: sms_mo_loopback
+description: MO SMS to own MSISDN looped back by the SMSF as MT delivery, Hebrew UCS2 end to end (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - sms_delivered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: sms_activation_settle
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+  # Settle for the AMF's async Nsmsf activation (see sms_mo.yaml), then submit
+  # the Hebrew SMS to our own MSISDN so the SMSF loops it back as MT.
+  sms_activation_settle:
+    on_timeout:
+      duration: 2s
+      target: wait_sms_cp_ack
+      actions:
+        - type: send
+          message: SMSSubmit
+          params:
+            destination: "14155550001"
+            text: "שלום"
+
+  # ORDER-TOLERANT OVER ALL THREE DOWNLINKS — see the block comment below.
+  # Nothing has arrived yet: accept whichever of CP-ACK / SUBMIT-REPORT /
+  # SMS-DELIVER the bus hands us first.
+  wait_sms_cp_ack:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSCpAck
+        target: wait_submit_report
+      - event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+        target: wait_cp_ack_after_submit_report
+        actions:
+          - { type: check, field: ue.Params.sms_rp_ref, op: equals, expected: "{{ue.Params.sms_mo_rp_ref}}" }
+          - { type: send, message: SMSCPAck }
+      - event: NASDownlinkTransport.DLNASTransport.SMSDeliver
+        target: wait_cp_ack_after_deliver
+        actions:
+          - { type: check, field: ue.Params.sms_text, op: equals, expected: "{{ue.Params.sms_mo_text}}" }
+          - { type: check, field: ue.Params.sms_dcs, op: equals, expected: 8 }
+          - { type: send, message: SMSCPAck }
+          - { type: send, message: SMSDeliverReport }
+
+  # WHY THIS SEGMENT IS A COMPLETE ORDER-TOLERANT MESH (W5-A, xp-205).
+  #
+  # After the MO submit the SMSF pushes THREE downlinks and pushes them in one
+  # tick — measured ~300us end to end: the CP-ACK for our CP-DATA, the
+  # RP-ACK(SUBMIT-REPORT) closing the MO transaction, and the looped-back
+  # MT SMS-DELIVER. It issues them as THREE CONCURRENT N1N2MessageTransfer
+  # POSTs — the lab AMF logs all three in the same millisecond with service
+  # durations 0.028 / 0.048 / 0.075 — so nothing GUARANTEES the order they
+  # reach the wire. An FSM state that does not name an event DROPS it silently
+  # and unrecoverably, so every subset gets a state. (Read the W6-B note below
+  # before concluding that the order actually varies: it has not been seen to.)
+  #
+  # W2-10 made ONE state (wait_submit_report) tolerant and deliberately stopped
+  # there, reasoning that CP-ACK and CP-DATA(RP-ACK) belong to the SAME
+  # TS 24.011 transaction, that the network really does order them, and that
+  # tolerating their reordering would encode harness pathology as protocol.
+  # The reasoning is sound and the conclusion did not follow: this flow cannot
+  # be an ordering oracle while the harness itself reorders, because the red it
+  # produces in that permutation ("timed out in wait_submit_report_after_deliver")
+  # is BYTE-IDENTICAL to the red a genuinely mis-ordering network would produce.
+  # An oracle that cannot separate its own defect from the SUT's is a coin
+  # flip, and it measured as one: ~2 failures in 7 (W4-H), 1 in 46 (W2-10).
+  # So the ordering assertion is not being given up here — it was never being
+  # made. What IS asserted is unchanged and is asserted in every permutation:
+  # all three downlinks arrive, the SUBMIT-REPORT's RP-MR echoes the submit's,
+  # and the delivered text and DCS are byte-exact.
+  #
+  # DO NOT COLLAPSE THIS MESH BACK TO A LINE (W6-B, xp-207). There WAS a second,
+  # separate defect underneath — the EventBus dispatched one UE's messages out
+  # of arrival order, which broke the NAS security context's downlink COUNT and
+  # left the overtaken message with no decodable identity at all. That one is
+  # FIXED (runner/runner/bus_ordering.go: per-key FIFO delivery), and this file
+  # was the reason it was found.
+  #
+  # Fixing it does NOT license removing this mesh — but be precise about why,
+  # because W6-B first got this wrong too. With the runner faithful, the observed
+  # downlink order was CONSTANT across 120 lab samples (CP-ACK, SUBMIT-REPORT,
+  # DELIVER). So SUT-side reordering has never actually been observed. What is
+  # true is that there is no GUARANTEE: the SUBMIT-REPORT comes back from the
+  # SMSF's Nsmsf HTTP handler and the SMS-DELIVER from its SC sweep worker — two
+  # independent goroutines — so a flow naming one and not the other is betting on
+  # a race it does not control. The mesh is therefore deliberate containment of
+  # an unmeasured risk, not a cure for a measured one.
+  #
+  # To collapse it back to a line, MEASURE the SMSF's emission order first (pcap
+  # over many samples, or an ordering guarantee on the SMSF side). Do not infer
+  # it from a green run — that is exactly how xp-205 got closed prematurely.
+  # Until then the mesh is the honest shape: seven states, one per SUBSET of
+  # {CP-ACK, SUBMIT-REPORT, DELIVER} seen so far, every permutation ending in
+  # sms_delivered having run the same checks.
+  #
+  #     {}      wait_sms_cp_ack
+  #     {A}     wait_submit_report                    A = CP-ACK
+  #     {B}     wait_cp_ack_after_submit_report       B = RP-ACK(SUBMIT-REPORT)
+  #     {C}     wait_cp_ack_after_deliver             C = SMS-DELIVER
+  #     {A,B}   wait_deliver
+  #     {A,C}   wait_submit_report_after_deliver
+  #     {B,C}   wait_cp_ack_after_both
+  #     {A,B,C} sms_delivered
+  #
+  # runner/runner/flows_reorder_test.go drives the real file through all six
+  # permutations and fails if any of them stalls.
+  wait_submit_report:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+        target: wait_deliver
+        actions:
+          - { type: check, field: ue.Params.sms_rp_ref, op: equals, expected: "{{ue.Params.sms_mo_rp_ref}}" }
+          - { type: send, message: SMSCPAck }
+      # MT delivery overtook the MO acknowledgement: assert it here (same
+      # assertions as wait_deliver), then still require the SUBMIT-REPORT.
+      - event: NASDownlinkTransport.DLNASTransport.SMSDeliver
+        target: wait_submit_report_after_deliver
+        actions:
+          - { type: check, field: ue.Params.sms_text, op: equals, expected: "{{ue.Params.sms_mo_text}}" }
+          - { type: check, field: ue.Params.sms_dcs, op: equals, expected: 8 }
+          - { type: send, message: SMSCPAck }
+          - { type: send, message: SMSDeliverReport }
+
+  # The MT half is already asserted and confirmed; the MO transaction still
+  # has to close. sms_rp_ref is the SUBMIT-REPORT's own reference (the
+  # SMS-DELIVER stashes sms_deliver_rp_ref instead), so the echo check below
+  # stays exact regardless of which arrived first.
+  wait_submit_report_after_deliver:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+        target: sms_delivered
+        actions:
+          - { type: check, field: ue.Params.sms_rp_ref, op: equals, expected: "{{ue.Params.sms_mo_rp_ref}}" }
+          - { type: send, message: SMSCPAck }
+
+  # {B} — the SUBMIT-REPORT overtook the CP-ACK. Its assertions and its CP-ACK
+  # are already done (they ran on the transition into here); the MO transaction
+  # still needs its CP-ACK, and the MT delivery still has to arrive.
+  wait_cp_ack_after_submit_report:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSCpAck
+        target: wait_deliver
+      - event: NASDownlinkTransport.DLNASTransport.SMSDeliver
+        target: wait_cp_ack_after_both
+        actions:
+          - { type: check, field: ue.Params.sms_text, op: equals, expected: "{{ue.Params.sms_mo_text}}" }
+          - { type: check, field: ue.Params.sms_dcs, op: equals, expected: 8 }
+          - { type: send, message: SMSCPAck }
+          - { type: send, message: SMSDeliverReport }
+
+  # {C} — the MT delivery overtook BOTH MO downlinks. Already asserted and
+  # confirmed; the whole MO transaction is still outstanding.
+  wait_cp_ack_after_deliver:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSCpAck
+        target: wait_submit_report_after_deliver
+      - event: NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+        target: wait_cp_ack_after_both
+        actions:
+          - { type: check, field: ue.Params.sms_rp_ref, op: equals, expected: "{{ue.Params.sms_mo_rp_ref}}" }
+          - { type: send, message: SMSCPAck }
+
+  # {B,C} — both payload-bearing downlinks are in and asserted; only the bare
+  # CP-ACK for our own CP-DATA is outstanding. sms_rp_ref is NOT reused by the
+  # SMS-DELIVER (it stashes sms_deliver_rp_ref), so the echo check above stays
+  # exact no matter which of B / C landed first.
+  wait_cp_ack_after_both:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSCpAck
+        target: sms_delivered
+
+  # CM-CONNECTED: hold until the SMSF's SC worker sweeps the queue, routes the
+  # MO to our own GPSI, and delivers it back as CP-DATA(RP-DATA(SMS-DELIVER)).
+  # The delivered text must equal what we sent (Hebrew UCS2 round trip) and
+  # the wire DCS must be UCS2 (0x08). Confirm with CP-ACK + DELIVER-REPORT.
+  wait_deliver:
+    on_timeout: { duration: 30s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.SMSDeliver
+        target: sms_delivered
+        actions:
+          - { type: check, field: ue.Params.sms_text, op: equals, expected: "{{ue.Params.sms_mo_text}}" }
+          - { type: check, field: ue.Params.sms_dcs, op: equals, expected: 8 }
+          - { type: send, message: SMSCPAck }
+          - { type: send, message: SMSDeliverReport }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-617).
+#
+# REG-617 — An SMS-DELIVER is received on N1 whose text equals the submitted text and
+# whose DCS is the submitted DCS; the UE's CP-ACK and DELIVER-REPORT are accepted;
+# terminal state 'sms_delivered'
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `sms_delivered`
+    metric: final_state_counts.sms_delivered
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: seven NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SMSCPAck, SMSDeliverReport, SMSSubmit, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 7
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: an SMS CP ACK arrived
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.SMSCpAck
+    op: greater_or_equal
+    value: 1
+  - name: an SMS DELIVER arrived
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.SMSDeliver
+    op: greater_or_equal
+    value: 1
+  - name: an SMS SUBMIT REPORT arrived
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.SMSSubmitReport
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

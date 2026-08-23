@@ -1,0 +1,181 @@
+# NEGATIVE — PDU session establishment for a PDU session type the DNN does not
+# support ("Ethernet") must be REJECTED with 5GSM cause #28, not granted.
+#
+# REG-324 — Unsupported PDU session type rejected with 5GSM cause.
+#
+# Clause (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §6.4.1.4.1 (UE-requested PDU session establishment not accepted,
+#   General) — THE operative sentence for this row:
+#     "If the PDU SESSION ESTABLISHMENT REQUEST message includes a PDU session
+#      type IE set to 'Unstructured' or 'Ethernet', and the subscription, the
+#      SMF configuration, or both, do not support the PDU session type for the
+#      requested DNN, the SMF shall include the 5GSM cause value #28 'unknown
+#      PDU session type' in the 5GSM cause IE of the PDU SESSION
+#      ESTABLISHMENT REJECT message."
+#   …under: "If the connectivity with the requested DN is rejected by the
+#      network, the SMF shall create a PDU SESSION ESTABLISHMENT REJECT
+#      message. The SMF shall set the 5GSM cause IE […] to indicate the reason
+#      for rejecting the PDU session establishment."
+#
+# WHAT MAKES THIS A REAL PROBE, not a vacuous one. The request carries PDU
+# session type IE = "Ethernet" (5, TS 24.501 §9.11.4.11) on the ordinary
+# "internet" DNN — a type no IP-only DNN can serve. Everything else about the
+# flow is a normal, accepted establishment, so the ONLY thing that can change
+# the verdict is the type. Two independent observables keep the row honest:
+#
+#   * A CONFORMANT core rejects, and the clause names the cause: the row does
+#     not accept "some reject" — `gsm_cause equals 28` is asserted. A reject
+#     with a different cause (e.g. #31 unspecified, #38 network failure) fails
+#     the row on the value, which is exactly the finding it should report.
+#   * A core that GRANTS the session is scored FAILED, not passed: the
+#     PDUSessionResourceSetupRequest edge below targets `granted_unsupported`,
+#     a non-success terminal. Silence is NOT a pass here — §6.4.1.4.1 obliges a
+#     reject message, so the on_timeout edge is `failed` too.
+#
+# ACCEPTANCE TEST (the row must be able to report the other terminal):
+# re-running this flow with `pdu_session_type: 1` (IPv4 — i.e. the violation
+# disabled, everything else identical) MEASURED terminal `granted_unsupported`
+# on tinycore: the core sent PDUSessionResourceSetupRequest and the flow did
+# NOT reach `rejected`. With `pdu_session_type: 5` the same core MEASURED
+# terminal `rejected` with gsm_cause 28. The row therefore discriminates.
+#
+# WHERE THE CAUSE LIVES in the assertion namespace: the reject is a 5GSM
+# message inside the 5GMM DL NAS TRANSPORT payload container (TS 24.501
+# §8.2.11), which NAS_PayloadContainer.MarshalJSON exposes as `n1_sm_message` —
+# the same path shape pdu_session_release.yaml uses for the release command.
+
+kind: flow
+name: pdu_session_reject_unsupported_type
+description: PDU session establishment requesting the Ethernet PDU session type — expect 5GSM cause #28 (YAML)
+detail: |
+  Negative test for PDU session type admission (3GPP TS 24.501 §6.4.1.4.1).
+
+  Phase 1 — a normal initial registration (authentication, security activation,
+  context setup).
+
+  Phase 2 — the UE requests a PDU session on the ordinary "internet" DNN with
+  the PDU session type IE set to "Ethernet", a type an IP-only DNN cannot
+  serve.
+
+  A spec-correct core answers with a PDU SESSION ESTABLISHMENT REJECT whose
+  5GSM cause IE is #28 "unknown PDU session type". Terminal `rejected` is the
+  only success; `granted_unsupported` records a core that established the
+  session instead, and `failed` covers a core that answered nothing or
+  answered with a different cause.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - granted_unsupported
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+          # connection as soon as registration completes.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_reject
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # THE violation: PDU session type "Ethernet" (§9.11.4.11 value 5)
+              # on an IP-only DNN. Flip to 1 (IPv4) to run the acceptance test
+              # described in the header.
+              pdu_session_type: 5
+
+  wait_pdu_reject:
+    # §6.4.1.4.1 obliges a REJECT message — a core that says nothing has not
+    # "tolerated" anything it was allowed to tolerate, so the timer is a
+    # failure, never a pass.
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      # The reject arrives either bare or (spec-correct, §8.2.11) wrapped in
+      # the 5GMM DL NAS TRANSPORT container.
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: rejected
+        actions:
+          # --- THE row: the cause the clause names (§6.4.1.4.1) ------------
+          - { type: check, field: nas.payload_container.n1_sm_message.header.message_type, op: equals, expected: 195 }  # 0xC3 PDU SESSION ESTABLISHMENT REJECT
+          - { type: check, field: nas.payload_container.n1_sm_message.gsm_cause, op: equals, expected: 28 }
+          # …for the session the UE asked about, not some other one.
+          - { type: check, field: nas.payload_container.n1_sm_message.header.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
+
+      # A core that ESTABLISHES an Ethernet session on an IP-only DNN has done
+      # the thing the clause forbids. Recorded as its own terminal so the
+      # verdict cannot be confused with "no answer".
+      - event: PDUSessionResourceSetupRequest
+        target: granted_unsupported
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-324 (negative, expected_terminal: rejected) —
+# PDUSessionEstablishmentReject received with 5GSM cause #28 after requesting a PDU
+# session type (Ethernet or Unstructured) not supported for the DNN
+#
+# REG-324: "PDUSessionEstablishmentReject received with 5GSM cause #28 after requesting
+# a PDU session type not supported for the DNN." `granted_unsupported` is the core
+# setting up N2 resources for a PDU session type it does not support, which is the
+# finding.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 6
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

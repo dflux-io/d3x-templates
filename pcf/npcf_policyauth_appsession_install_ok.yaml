@@ -1,0 +1,182 @@
+# Npcf_PolicyAuthorization — AF app-session install → PCC effect (compliance).
+# 3GPP TS 29.514 §4.2.2 (POST /npcf-policyauthorization/v1/app-sessions → 201)
+# bound to a prior SM policy association (TS 23.503 §6.1.3.6).
+#
+# The N5 chain (seam S2):
+#   (a) SMF role: POST sm-policies for imsi-001010000000001 (the binding's SM
+#       policy must exist first), extract Location.
+#   (b) AF role: POST app-sessions with ascReqData{supi, dnn, sliceInfo,
+#       notifUri, suppFeat, medComponents}. Every media component carries at
+#       least one fDescs entry (E5 — flow-less components get 400 from A2).
+#       supi is the DASH-LESS dpf seed form (E15) — the binding key.
+#   (c) GET the sm-policy and assert the AF-derived PCC rule + QoS landed.
+#
+# A2 ids the AF entries app-{appSessionId}-{medCompN} / appqos-{...} (R4);
+# appSessionId is a runtime UUID so the exact key is not template-expandable in
+# a check Field. Per E4 the PCC effect is asserted with `contains` over the
+# stringified GET decision subtree (the verbatim marBw* bitrate strings appear
+# in the derived qosDecs). Exact-shape rigor lives in the Go tier. GET shape is
+# SmPolicyControl{context, policy} (E6) → `sbi.body.policy.` prefix.
+
+kind: flow
+name: npcf_policyauth_appsession_install_ok
+description: Create sm-policy → AF app-session install → GET sm-policy asserts PCC effect
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_sm_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-smpolicycontrol/v1/sm-policies",
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 1,
+                  "dnn": "internet",
+                  "pduSessionType": "IPV4",
+                  "sliceInfo": {"sst": 1, "sd": "000001"},
+                  "notificationUri": "http://127.0.0.1:1/unused",
+                  "ratType": "NR",
+                  "accessType": "3GPP_ACCESS"
+                }
+              }
+
+  wait_sm_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_appsession
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: sm_policy_loc
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-policyauthorization/v1/app-sessions",
+                "body": {
+                  "ascReqData": {
+                    "supi": "imsi-001010000000001",
+                    "dnn": "internet",
+                    "sliceInfo": {"sst": 1, "sd": "000001"},
+                    "notifUri": "http://127.0.0.1:1/af-unused",
+                    "suppFeat": "0",
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "20 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_appsession:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_sm_get
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: check
+            field: sbi.headers.Location
+            op: not_empty
+          - type: check
+            field: sbi.body.ascRespData
+            op: exists
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "{{ue.Params.sm_policy_loc}}"
+              }
+
+  wait_sm_get:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_cleanup
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 200
+          # PCC-effect pins (seam S2). The AF-derived pccRule uses the reserved
+          # "app-" prefix; the derived QoS carries the verbatim marBw* strings.
+          - type: check
+            field: sbi.body.policy.pccRules
+            op: contains
+            expected: "app-"
+          - type: check
+            field: sbi.body.policy.qosDecs
+            op: contains
+            expected: "10 Mbps"
+          - type: check
+            field: sbi.body.policy.qosDecs
+            op: contains
+            expected: "20 Mbps"
+          # Suite-isolation cleanup (R6): release this (supi,dnn) association so
+          # the NEXT policyauth flow binds unambiguously. dpf's onSMPolicyDeleted
+          # also removes the bound app session server-side (OQ4).
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.sm_policy_loc}}/delete",
+                "body": {}
+              }
+
+  wait_cleanup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

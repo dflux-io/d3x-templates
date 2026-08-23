@@ -1,0 +1,48 @@
+# Nudm_UEAU GenerateAuthData with an unauthorized servingNetworkName — security/negative.
+# 3GPP TS 29.503 §6.3.7.3 (SERVING_NETWORK_NOT_AUTHORIZED; 403).
+# UDM must reject a serving network not authorized for the subscriber PLMN and stay live.
+
+kind: flow
+name: udm_ueau_generate_auth_data_serving_network_not_authorized
+description: POST generate-auth-data with an unauthorized servingNetworkName is rejected with 403
+category: negative
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: Nudm_UEAuthentication_GetAuthData
+            peer: udm
+            message_body: |
+              {
+                "path": "/nudm-ueau/v1/imsi-001010000000001/security-information/generate-auth-data",
+                "body": {
+                  "servingNetworkName": "5G:mnc999.mcc999.3gppnetwork.org",
+                  "ausfInstanceId": "11111111-2222-3333-4444-555555555555"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.Nudm_UEAuthentication_GetAuthData_Answer
+        target: rejected
+        actions:
+          # 403 SERVING_NETWORK_NOT_AUTHORIZED — any 4xx rejection.
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399

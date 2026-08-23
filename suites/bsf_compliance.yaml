@@ -1,0 +1,42 @@
+# runner -> dpf Nbsf_Management SBI compliance suite (TS 29.521). runner as the
+# AF/NEF consumer against dpf's co-located BSF. Run as 07-bsf-compliance in
+# scripts/dpf-sanity-run.sh. Empty expected-fail list — every step must pass.
+kind: suite
+name: bsf-compliance
+description: Nbsf_Management register/discover/deregister conformance for runner as SBI consumer against dpf's BSF.
+steps:
+  - name: binding_register_discover_deregister_ok
+    flow: nbsf_binding_register_discover_deregister_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+  - name: binding_discover_unknown_204
+    flow: nbsf_binding_discover_unknown_204
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+  - name: binding_create_missing_snssai_400
+    flow: nbsf_binding_create_missing_snssai_400
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+  - name: binding_multi_match_400
+    flow: nbsf_binding_multi_match_400
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+  - name: binding_patch_update_ok
+    flow: nbsf_binding_patch_update_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed

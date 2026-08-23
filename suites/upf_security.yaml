@@ -1,0 +1,172 @@
+# SMF/CP ↔ UPF PFCP (N4) security / robustness suite — one flow per probe.
+#
+# Drives abnormal, malformed, and security-edge PFCP procedures (TS 29.244)
+# SMF-side against a real 5G user plane (Open5GS UPF). runner plays the SMF/CP
+# peer over N4. The cross-cutting assertion is that the UPF reacts in a
+# spec-correct way and STAYS UP — these probes deliberately send things the
+# UPF should reject with the right Cause, silently drop, or idempotently
+# tolerate, never crash.
+#
+# Every step is one flow / one execution (repetitions: 1). Each PFCP flow is
+# SELF-CONTAINED (it opens its own node-level association before its session
+# work, where one is needed), so — unlike the gNB security suite, which shares
+# one SCTP association and carries 5GMM state across steps — there is NO shared
+# dirty state to poison a following step here. UPF liveness across the whole
+# run is the real signal.
+#
+# stop_on_failure is false on EVERY step (including the first): a misbehaviour
+# on one probe must not block discovering the others, and there is no gate to
+# protect — each probe stands alone. The cleanup step runs always.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite upf-security \
+#       -templates <templates-dir> -c config/open5gs-upf.yaml -trace
+#
+# ORDER rationale: the node-level / tolerant probes (stray heartbeat, heartbeat
+# recovery stability, unknown-feature negotiation) run FIRST — they are the
+# gentlest and confirm the UPF is alive and answering. The session-level
+# reject probes (missing F-SEID, no-association establish, dangling PDR/FAR
+# refs, bogus SEID modify/delete) run AFTER. None of these leaves a persistent
+# half-state on the UPF (a rejected establish creates no session; a bogus-SEID
+# modify/delete touches a session that does not exist), so ordering among them
+# is about reading the report top-to-bottom, not about state hygiene.
+#
+# success_when per step:
+#   - The tolerant probes pin "tolerated" (response-or-silent-drop, UPF stays up).
+#   - The strict reject probes pin "rejected" (the spec-correct Cause path).
+#     NOTE: several of these flows also have an internal "tolerated" terminal as
+#     a fallback (silent drop, or idempotent accept). We deliberately pin the
+#     STRICT "rejected" terminal in success_when so the suite reports whether
+#     Open5GS returns the *correct Cause code*, not merely that it survived. A
+#     step landing on "tolerated" instead of "rejected" will therefore score as
+#     a FAIL here — that asymmetry is the finding (UPF stayed up but did not
+#     emit the spec-mandated reject Cause). Read those alongside the trace.
+#
+# Known EXPECTED failures / runtime-risk against a real Open5GS UPF (legitimate
+# findings, not flow bugs):
+#   - pfcp_session_establish_missing_fseid: expects Cause "Mandatory IE missing"
+#     (66). Some UPF builds answer "Mandatory IE incorrect" (69) or silently
+#     drop; if so the step lands on tolerated/failed instead of rejected — a
+#     Cause-fidelity gap in the UPF.
+#   - pfcp_session_establish_no_association: expects Cause "No established PFCP
+#     Association" (72). Open5GS may instead silently drop a session request on
+#     an unknown association (the flow falls back to tolerated) — pinning
+#     "rejected" surfaces whether the explicit reject Cause is implemented.
+#   - pfcp_session_establish_invalid_pdr / modify_remove_nonexistent_rule:
+#     expect a rule-failure Cause (73). A UPF that idempotently accepts the
+#     no-op (Cause "Request accepted" → tolerated) is spec-tolerated but will
+#     score FAIL against the strict "rejected" pin — that is the intended signal.
+#   - pfcp_session_modify_unknown_fseid / delete_unknown_fseid: expect
+#     "Session context not found" (65). Replay/double-delete handling varies by
+#     build; a silent drop lands on tolerated → FAIL against the strict pin.
+#
+# N4 addressing note (REQUIREMENT, now resolved): Open5GS routes PFCP responses
+# to the requester's advertised NodeID address on UDP 8805, NOT back to the UDP
+# source port. Driving a real UPF therefore requires advertising NodeID == our
+# own IP and binding it on :8805 — config/open5gs-upf.yaml sets pfcp.local
+# "172.22.0.250:8805" + node_id.value "172.22.0.250", and the harness runs the
+# runner container on --ip 172.22.0.250 so it owns that NodeID. With that in place
+# runner's PFCP RX path receives and dispatches responses normally — there is NO
+# runner PFCP client-RX correlation bug (an earlier run misdiagnosed the addressing
+# issue as one).
+#
+# Results (2026-06-05, Open5GS v2.7.x, runner as SMF/CP function over N4): 5/10.
+# PASS: pfcp_heartbeat_no_association + pfcp_heartbeat_recovery_stable (recovery
+# ts stable), pfcp_session_establish_missing_fseid (Cause "Mandatory IE missing"
+# via suppressed CP F-SEID), pfcp_session_modify_unknown_fseid +
+# pfcp_session_delete_unknown_fseid (Cause "Session context not found"). FAIL:
+# pfcp_association_setup_unknown_feature (expected terminal "tolerated" not
+# reached), pfcp_session_establish_no_association / _invalid_pdr /
+# pfcp_session_modify_remove_nonexistent_rule (UPF did not return the strict
+# reject Cause / silently handled — refine terminals + see the establish-enricher
+# PDR/FAR fidelity gap in upf_compliance.yaml). The UPF itself stayed up
+# throughout (no crash).
+
+kind: suite
+name: upf-security
+description: One-flow-per-probe abnormal/malformed PFCP probes; assert correct Cause and UPF liveness.
+steps:
+  # --- node-level / tolerant probes: confirm UPF is alive and answers -----
+  - name: pfcp_heartbeat_no_association
+    flow: upf_pfcp_heartbeat_no_association
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  - name: pfcp_heartbeat_recovery_stable
+    flow: upf_pfcp_heartbeat_recovery_stable
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  - name: pfcp_association_setup_unknown_feature
+    flow: upf_pfcp_association_setup_unknown_feature
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  # --- session-level reject probes: assert the spec-correct Cause --------
+  - name: pfcp_session_establish_missing_fseid
+    flow: upf_pfcp_session_establish_missing_fseid
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pfcp_session_establish_no_association
+    flow: upf_pfcp_session_establish_no_association
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pfcp_session_establish_invalid_pdr
+    flow: upf_pfcp_session_establish_invalid_pdr
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pfcp_session_modify_unknown_fseid
+    flow: upf_pfcp_session_modify_unknown_fseid
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pfcp_session_modify_remove_nonexistent_rule
+    flow: upf_pfcp_session_modify_remove_nonexistent_rule
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: pfcp_session_delete_unknown_fseid
+    flow: upf_pfcp_session_delete_unknown_fseid
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- cleanup (always runs, even if earlier steps failed) ---------------
+  # Node-level Association Release: clears any association the probes opened so
+  # the UPF is left clean. Runs last and always.
+  - name: cleanup
+    flow: upf_pfcp_association_release
+    repetitions: 1
+    timeout: 25s
+    always_run: true
+    success_when:
+      at_least_one_final_state: released

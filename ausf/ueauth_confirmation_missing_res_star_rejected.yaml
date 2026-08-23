@@ -1,0 +1,72 @@
+# Nausf_UEAuthentication — confirmation missing mandatory resStar (security / negative).
+# 3GPP TS 29.509 §6.1.6.2.x; §6.1.7.3 (400 MANDATORY_IE_MISSING).
+# Chained: initiate (POST) -> extract context Location -> PUT a ConfirmationData
+# that OMITS the mandatory resStar (raw_body so it is genuinely absent). The AUSF
+# must REJECT with 400 + ProblemDetails and STAY UP.
+
+kind: flow
+name: ausf_ueauth_confirmation_missing_res_star_rejected
+description: 5g-aka-confirmation PUT omitting resStar is rejected 400
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_initiate
+        actions:
+          - type: send
+            message: Nausf_UEAuthentication_Authenticate
+            peer: ausf
+            message_body: |
+              {
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
+                }
+              }
+
+  wait_initiate:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.Nausf_UEAuthentication_Authenticate_Answer
+        target: wait_confirmation
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: authCtxLocation
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "{{ue.Params.authCtxLocation}}/5g-aka-confirmation",
+                "raw_body": "{}"
+              }
+
+  wait_confirmation:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 400

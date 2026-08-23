@@ -1,0 +1,62 @@
+# PFCP Association Update (3GPP TS 29.244 §6.2.6.3 / §7.4.5).
+#
+# After establishing the node-level association, runner (CP function) issues a
+# PFCPAssociationUpdateRequest to the real UPF. The Association Update enricher
+# stamps our NodeID and a fresh sequence number; the request may carry updated
+# CP Function Features (here we advertise a feature flag via message_body to
+# exercise feature renegotiation). The UPF replies with
+# PFCPAssociationUpdateResponse carrying Cause "Request accepted".
+#
+# Spec-correct success = an AssociationUpdateResponse with Cause
+# "Request accepted" (TS 29.244 §8.2.1).
+
+kind: flow
+name: upf_pfcp_association_update
+description: SMF updates an established PFCP association against a real UPF (N4)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - updated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_update
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPAssociationUpdateRequest
+
+  wait_update:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationUpdateResponse
+        target: updated
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

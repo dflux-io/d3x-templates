@@ -1,0 +1,270 @@
+# PDU session establishment requesting PDU session type "IPv4v6" — the Accept
+# must select IPv4v6 and carry BOTH an IPv4 address and an IPv6 interface
+# identifier in one PDU address IE.
+#
+# REG-302 — IPv4v6 PDU session establishment returning both an IPv4 address and
+# an IPv6 prefix.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §6.4.1.3 (UE-requested PDU session establishment accepted) —
+#   THE operative sentences for this row:
+#     "If the selected PDU session type is 'IPv4v6', the SMF shall include the
+#      PDU address IE in the PDU SESSION ESTABLISHMENT ACCEPT message and shall
+#      set the PDU address IE to an IPv4 address and an interface identifier
+#      for the IPv6 link local address, allocated to the UE in the PDU session."
+#     "The SMF shall set the Selected PDU session type IE of the PDU SESSION
+#      ESTABLISHMENT ACCEPT message to the selected PDU session type, i.e. the
+#      PDU session type of the PDU session."
+#
+#   TS 24.501 §6.2.4.2 is the UE-side counterpart (address handling for an
+#   IPv4v6 PDU session).
+#
+# THE SPEC-LEGAL ALTERNATIVE, AND WHY IT IS NOT A PASS HERE. The same clause
+# allows a network that cannot serve dual-stack to downgrade:
+#     "If the PDU SESSION ESTABLISHMENT REQUEST message includes a PDU session
+#      type IE set to 'IPv4v6', the SMF shall select 'IPv4', 'IPv6' or 'IPv4v6'
+#      as the Selected PDU session type. If the subscription, the SMF
+#      configuration, or both, are limited to IPv4 only or IPv6 only for the
+#      DNN selected by the network, the SMF shall include the 5GSM cause value
+#      #50 'PDU session type IPv4 only allowed', or #51 'PDU session type IPv6
+#      only allowed', respectively, in the 5GSM cause IE of the PDU SESSION
+#      ESTABLISHMENT ACCEPT message."
+# A downgrade is therefore permitted but is NOT SILENT: the cause IE is how the
+# UE learns not to wait for a v6 prefix.
+#
+# THE CAUSE IS NOT ASSERTED AS AN OBLIGATION, DELIBERATELY. `5gsm_cause equals 50`
+# would be an INVERTED reading: a fully conformant core that GRANTS IPv4v6 must
+# NOT include #50/#51, so such a check fails the very core the row is looking
+# for. IT WAS WRITTEN THAT WAY UNTIL 2026-08-13 AND MADE THE ROW UNPASSABLE —
+# see the check itself for the measurement. It is now `in [-1, 50, 51]`: the
+# three shapes §6.4.1.3 permits, which records the value without gating on which
+# of them arrived. exposePduSessionAcceptParams always writes
+# ue.Params.pdu_accept_5gsm_cause (-1 == IE absent), so a downgrade shows up in
+# the evidence next to the failing address check and a reader can tell
+# "downgraded and said so (#50)" from "downgraded silently".
+#
+# AND THE CAUSE IS THIS ROW'S PREMISE (xp-261). `preconditions.config:
+# dual-stack-dnn` is a declaration nothing in the harness applies, so the row has
+# never run against a DNN known to be dual-stack. #50 is the SMF stating that its
+# DNN is IPv4-only — the premise denied, in the core's own bytes — and
+# lib/outcome.py DEFENCE 12 turns that into `disabled-by-config` rather than into
+# a red cell against a core that was never given a dual-stack DNN to serve. A
+# precondition observable in the trace is verified FROM the trace.
+#
+# MEASURED ON tinycore (2026-08-11): selected PDU session type 1 (IPv4),
+# PDU address IE carrying only the 4-octet IPv4 half, and NO 5GSM cause IE
+# (pdu_accept_5gsm_cause == -1). Its SMF documents the downgrade deliberately
+# (grantPduSessionType, tinycore/dmf/smf/establishment.go: "IPV4V6 → IPV4
+# (spec-legal downgrade)") but never sets the cause the clause pairs with it.
+# So this row FAILS on tinycore — on the criterion (no dual stack) and, in the
+# recorded evidence, on the silence that §6.4.1.3 does not permit alongside a
+# downgrade. The failure is the result; nothing here is relaxed to hide it.
+#
+# HARNESS NOTE — the accept's IEs are read from ue.Params, not `nas.*`: the
+# accept rides on the per-item NAS-PDU IE that extractNasPdu() never sees (see
+# pdu_session_setup.yaml). exposePduSessionAcceptParams
+# (runner/runner/enrichers_pdu_session_accept.go) projects the decoded accept
+# there. The IPv6 half of the PDU address IE is 8 octets — an interface
+# identifier, not a prefix — hence the length assertion below rather than a
+# non-empty one, which a 1-octet stub would satisfy.
+
+kind: flow
+name: pdu_session_setup_ipv4v6
+description: PDU session establishment requesting IPv4v6 — Accept must select IPv4v6 with both an IPv4 address and an IPv6 interface identifier (YAML)
+detail: |
+  Registration followed by a UE-requested PDU session establishment whose 5GSM
+  request carries PDU session type "IPv4v6" (TS 24.501 §9.11.4.11 value 3).
+
+  Per TS 24.501 §6.4.1.3 an accept for an IPv4v6 session carries a PDU address
+  IE holding BOTH an IPv4 address and an 8-octet IPv6 interface identifier, and
+  a Selected PDU session type IE of "IPv4v6". A network limited to a single IP
+  version may downgrade instead, but must then include 5GSM cause #50 or #51 in
+  the accept so the UE knows.
+
+  Terminal `established` is reached on any accept; the checks decide the
+  verdict, so a downgraded or single-stack accept is reported as a failed
+  assertion on the value rather than as an unmatched event.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - rejected_ipv4v6
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # PDU session type IE = "IPv4v6" (TS 24.501 §9.11.4.11 value 3).
+              pdu_session_type: 3
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+
+          # RECORDED FIRST, ON PURPOSE. A failing check ends the action list,
+          # so anything meant as EVIDENCE has to be read before the assertion
+          # it explains. The 5GSM cause a downgrading core owes the UE
+          # (#50/#51) is recorded here — see the header for why it is not
+          # asserted as an obligation (-1 == IE absent).
+          #
+          # ============================================================================
+          # THIS CHECK READ `equals 50` UNTIL 2026-08-13 AND THE ROW COULD NOT PASS.
+          # ============================================================================
+          #
+          # `exists` had been the spelling before that, and it PASSES on the -1 absent sentinel,
+          # so it asserted nothing — the fix was right about the defect and wrong about the
+          # remedy. `equals 50` demands that the core DOWNGRADED AND SAID SO, while the four
+          # checks below demand that it GRANTED DUAL STACK. Those are contradictory readings of
+          # the same accept, so no core could satisfy both: a conformant dual-stack core carries
+          # no cause IE (-1) and dies HERE, at check 5 of 12, before the row's actual criterion
+          # is ever evaluated. Measured on 50effc0 — three cores, three failures, and not one of
+          # them on the dual-stack question the row exists to ask:
+          #   tinycore  ue.Params.pdu_accept_5gsm_cause equals 50 (actual=-1)   <- this check
+          #   open5gs   ue.Params.pdu_accept_5gsm_cause equals 50 (actual=-1)   <- this check
+          #   free5gc   pdu_accept_pdu_address_ipv6_iid_len equals 8 (actual=0)
+          #
+          # `in [-1, 50, 51]` is the honest spelling and it is NOT vacuous: §6.4.1.3 permits the
+          # accept exactly three shapes — dual stack granted (no cause IE, -1), or a downgrade
+          # WITH #50 'IPv4 only allowed' or #51 'IPv6 only allowed'. An accept carrying any OTHER
+          # 5GSM cause fails it. What the check is for is putting the value in facts.observed.
+          #
+          # BECAUSE THAT VALUE IS THIS ROW'S PREMISE, READ OFF THE WIRE (xp-261). The register
+          # declares `preconditions.config: dual-stack-dnn` and NOTHING IN THE HARNESS APPLIES
+          # IT, so the row has never been run against a DNN known to be dual-stack. Cause #50 is
+          # the SMF stating the opposite in its own bytes — §6.4.1.3 conditions it on exactly
+          # "the subscription, the SMF configuration, or both, are limited to IPv4 only for the
+          # DNN selected by the network". lib/outcome.py DEFENCE 12 reads it and classifies the
+          # row `disabled-by-config`: ours, out of the denominator, never a core failure.
+          #
+          # A SILENT DOWNGRADE IS STILL A RED, and that is the reason the premise is keyed on the
+          # CAUSE and not on the selected type. tinycore selects IPv4 and sends no cause at all
+          # (grantPduSessionType, tinycore/dmf/smf/establishment.go), so it never told us its DNN
+          # is IPv4-only — and §6.4.1.3 does not permit the downgrade silently. Keying the
+          # premise on "selected type != 3" would have excused that as a configuration choice,
+          # which is precisely the abuse `disabled-by-config` is guarded against: a premise the
+          # core did not state is not a premise the core is entitled to be excused by.
+          - { type: check, field: ue.Params.pdu_accept_5gsm_cause, op: in, expected: [-1, 50, 51] }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv6_iid_len, op: greater_or_equal, expected: 0 }
+
+          # --- THE row: dual-stack was actually granted (§6.4.1.3) ---------
+          # NOT `equals 3`: TS 24.501 §6.4.1.3 EXPLICITLY PERMITS the SMF to select IPv4 when
+          # 'the subscription, the SMF configuration, or both, are limited to IPv4 only', so
+          # demanding IPv4v6 HERE would assert an obligation the clause does not create. What
+          # separates a permitted downgrade from a defect is the cause IE above and the address
+          # halves below, not this line.
+          #
+          # AND `in [1, 2, 3]` IS KEPT RATHER THAN LOOSENED TO `greater_or_equal 1`, which was
+          # checked before it was assumed: the set is not the whole enum. TS 24.501 §9.11.4.11
+          # also defines 4 'Unstructured' and 5 'Ethernet', and an accept answering an IPv4v6
+          # request with either of those is not one of the three outcomes §6.4.1.3 permits. 0
+          # fails too — exposePduSessionAcceptParams projects a non-pointer enum, so 0 is "the
+          # mandatory IE was absent" (TS 24.501 Table 8.3.2.1.1). Both ends are real.
+          - { type: check, field: ue.Params.pdu_accept_selected_pdu_session_type, op: in, expected: [1, 2, 3] }
+          # …and the PDU address IE carries BOTH halves. The IPv4 half must be
+          # a real dotted quad, not the unspecified address; the IPv6 half must
+          # be a full 8-octet interface identifier.
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: not_contains, expected: '0.0.0.0' }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv6_iid_len, op: equals, expected: 8 }
+          # The PDU address IE's own type field must agree with the selected
+          # type — an IE that says IPv4 inside an IPv4v6 session is not the
+          # address the UE was told it got.
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_type, op: equals, expected: 3 }
+
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+      # A core that supports neither IPv4v6 nor a downgrade rejects instead
+      # (§6.4.1.4.1 gives it cause #28 for a type it cannot serve at all).
+      # Recorded as its own terminal: it is a different core behaviour from
+      # "granted something", and conflating the two would hide which happened.
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: rejected_ipv4v6
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-302 (positive, expected_terminal: established) —
+# PDUSessionEstablishmentAccept received with Selected PDU session type = IPv4v6 and a
+# PDU address IE that decodes to both an IPv4 address and an IPv6 interface identifier
+#
+# REG-302: "PDUSessionEstablishmentAccept received with Selected PDU session type =
+# IPv4v6 and a PDU address IE that decodes to both an IPv4 address and an IPv6 interface
+# identifier" — thirteen per-step checks carry the IE content, and `established` is the
+# terminal they run on. `rejected_ipv4v6` is the core refusing a dual-stack session.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `established` — the terminal this row claims
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 13
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

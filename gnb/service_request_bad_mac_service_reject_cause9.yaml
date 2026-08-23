@@ -1,0 +1,352 @@
+# REG-455 — a SERVICE REQUEST failing the integrity check is answered with
+# SERVICE REJECT, 5GMM cause #9, and the stored context is left untouched.
+#
+# TS 24.501 §4.4.4.3 (retrieved with matrix/scripts/spec-clause.py against the
+# pinned Rel-18 corpus, verbatim):
+#
+#   "If a SERVICE REQUEST or CONTROL PLANE SERVICE REQUEST message fails the
+#    integrity check and the UE has only non-emergency PDU sessions established,
+#    the AMF shall send the SERVICE REJECT message with 5GMM cause #9 'UE
+#    identity cannot be derived by the network' and keep the 5GMM-context and 5G
+#    NAS security context unchanged."
+#
+# TS 24.501 §9.11.3.2 table 9.11.3.2.1: 5GMM cause value #9 = 0x09 = "UE
+# identity cannot be derived by the network".
+#
+# SERVICE REQUEST is one of the messages the same clause obliges the AMF to
+# process "even if the MAC included in the message fails the integrity check",
+# because it is an INITIAL NAS message on a connection where secure exchange has
+# not yet been established. That is why this row expects an ANSWER and not the
+# silent discard the post-activation rows expect: the AMF is required to look at
+# the message, fail its MAC, and say so with a specific cause.
+#
+# THE CLAUSE'S CONDITION, AND THE READING TAKEN
+# ---------------------------------------------
+# "…and the UE has only non-emergency PDU sessions established". This UE has NO
+# PDU sessions, which satisfies "only non-emergency" vacuously and definitively
+# excludes the emergency branch that follows it (that branch is gated on "the UE
+# has an emergency PDU session"). Establishing a session first would add an SMF
+# and a UPF to the dependency set of a NAS-integrity row for no change in which
+# branch applies.
+#
+# WHAT IS ACTUALLY ON THE WIRE
+# ----------------------------
+# EnrichMalformedServiceRequest builds a real, EncodeSecureInitial-protected
+# SERVICE REQUEST carrying this UE's 5G-S-TMSI and then inverts the four MAC
+# octets at offset [2..5]; nothing else about the message is wrong, and the
+# 5G-S-TMSI is present so the AMF can find the stored context and the MAC check
+# is what refuses it. MEASURED (2026-08-11, this lab, `-trace`), the forged
+# InitialUEMessage NAS PDU:
+#
+#     7e 01 <MAC×4 inverted> <SN> 4c …
+#     ^^ EPD 5GMM
+#        ^^ security header type 1 = integrity protected (initial NAS message)
+#                                 ^^ message type 0x4C = SERVICE REQUEST
+#
+# THE SECOND HALF OF THE CRITERION
+# --------------------------------
+# "…a correctly protected SERVICE REQUEST sent afterwards with the same context
+# still succeeds." The clause's own words for this are "keep the 5GMM-context
+# and 5G NAS security context unchanged", and it is measurable: after the reject
+# the flow allocates a third RAN-UE-NGAP-ID and sends a genuine SERVICE REQUEST.
+# An AMF that re-pointed the NGAP binding, minted a new AMF-UE-NGAP-ID or
+# advanced the uplink NAS COUNT before discovering the MAC was bad has nothing
+# left to resume, and that is invisible in the reject alone.
+#
+# TERMINALS
+#   SERVICE REJECT #9, then the genuine resume succeeds   -> rejected  (PASS)
+#   the forged SERVICE REQUEST is ACTED ON (an INITIAL
+#     CONTEXT SETUP REQUEST / SERVICE ACCEPT comes back)  -> tolerated (the core
+#     re-activated a UE context off a forged MAC — the finding this row exists
+#     for)
+#   SERVICE REJECT #9, but the genuine resume is REFUSED  -> tolerated (the
+#     context did NOT survive: "keep … unchanged" is violated)
+#   no SERVICE REJECT, but the genuine resume still
+#     succeeds                                            -> discarded_no_service_reject
+#     A silent discard is SAFE — it accepts nothing — but it is not what the
+#     sentence above requires, so it is neither the pass nor the security
+#     finding and gets its own terminal rather than being folded into either.
+#     Folding it into `tolerated` would report a core that refused a forgery as
+#     having accepted one, which terminals.yaml names as the most expensive
+#     wrong answer this harness can produce.
+#   nothing answers ANYTHING, including a correctly
+#     protected SERVICE REQUEST                           -> unproven
+#
+# ============================================================================================
+# EVERY TERMINAL IS NOW CARRIED BY A MESSAGE, AND UNTIL 2026-08-12 TWO OF THEM WERE NOT.
+# ============================================================================================
+#
+# Measured on the 50effc0 baseline, and both defects are the same defect in two directions:
+#
+#   tinycore  reached `discarded_no_service_reject` BY TIMER — "timed out in
+#             state=wait_service_reject after 10.0s". The silent discard is real (its own log,
+#             quoted below, shows the MAC mismatch), but the terminal rested on nothing: a
+#             crashed AMF, a dead association, a lost message and a correct-but-silent discard
+#             are the same observation. lib/outcome.py DEFENCE 11 refused the verdict.
+#             `inconclusive`.
+#
+#   free5gc   reached `tolerated` BY TIMER in probe_context_intact — and THE CORE HAD ANSWERED.
+#             bus_audit.refused for that run lists, in order, a UEContextReleaseCommand in
+#             wait_service_reject (arrival 6), then a NASDownlinkTransport.ServiceReject in
+#             probe_context_intact (arrival 9) and another UEContextReleaseCommand (arrival 10).
+#             So free5gc DID refuse the genuine resume, with a SERVICE REJECT — the row's own
+#             "the context did NOT survive" finding, stated by the core, on the wire — and this
+#             flow named no transition for it, so the bus dropped it and the state timed out.
+#             The right verdict for a reason that could not tell it from silence. `inconclusive`.
+#
+# A CORRECT DISCARD IS SILENCE, AND SILENCE IS INADMISSIBLE. The cure is not to invert a timer
+# (that makes silence always mean pass) nor to exempt negative rows from DEFENCE 11 (that
+# restores the reading in which the most conformant core looks like the one tolerating an
+# attack). It is to make the core SPEAK, and this row's own criterion already said how: "a
+# correctly protected SERVICE REQUEST sent afterwards with the same context still succeeds."
+# That probe existed only on the SERVICE-REJECT path. It now runs on the silent path too, which
+# is the only path where silence was the whole of the evidence.
+#
+#   discarded_no_service_reject  the forged request drew nothing, AND a genuine SERVICE REQUEST
+#                                for the same UE afterwards IS answered. The AMF is alive, our
+#                                messages arrive, and the stored 5GMM/NAS security context
+#                                survived the forgery — so the missing SERVICE REJECT #9 is a
+#                                §4.4.4.3 deviation and not an outage. Positive evidence for a
+#                                terminal that used to be pure absence.
+#   unproven                     silence to the forgery AND silence to a correctly protected
+#                                SERVICE REQUEST the AMF must act on. Nothing was learned; that
+#                                must never read as either the pass or the finding.
+#
+# THE CONFOUND IN THE `tolerated`-BY-SERVICE-REJECT BRANCH, STATED RATHER THAN HIDDEN. A core
+# that never preserves the 5GMM context across CM-IDLE at all would also refuse the genuine
+# resume, and nothing on this wire separates that from eviction caused by the forgery. The
+# register's criterion binds the two halves together ("keep the 5GMM-context and 5G NAS security
+# context unchanged"), so the finding is recorded as what is observable — the stored context did
+# not survive — rather than as a causal claim the trace cannot support.
+#
+# ACCEPTANCE TEST (mandatory for a negative row) — MEASURED 2026-08-11:
+#   MalformedServiceRequest (as authored) -> discarded_no_service_reject
+#   ServiceRequest instead (violation off, the same message with a VALID MAC)
+#                                         -> tolerated, on the
+#     InitialContextSetupRequest.ServiceAccept arm: the AMF re-activates the
+#     context, which is correct for a valid SERVICE REQUEST and is precisely the
+#     reaction that would be the finding if the MAC were bad. The detector is
+#     live, and the difference between the two runs is the four MAC octets.
+#
+# TINYCORE FINDING (2026-08-11) — the mandated SERVICE REJECT never arrives.
+# The forged InitialUEMessage NAS PDU, off the wire:
+#
+#     7e 01 37 a6 eb ad 02 | 7e 00 4c …
+#     ^EPD ^hdr=1 ^MAC     ^SN=2   ^inner plaintext SERVICE REQUEST (0x4C)
+#
+# and tinycore's own log for that frame:
+#
+#   "uplink NAS integrity check failed — message discarded"
+#   error: "nas: MAC mismatch: received 37a6ebad, expected c8591452"
+#   supi:  imsi-001010000000455
+#
+# 0x37 = ~0xC8, 0xA6 = ~0x59, 0xEB = ~0x14, 0xAD = ~0x52 — the received MAC is
+# the exact XOR-0xFF complement of the one the AMF computed, so the corruption
+# is on the wire and the AMF detected it. What it then did is DISCARD the
+# message and send nothing: no SERVICE REJECT, no cause #9. §4.4.4.3 says "the
+# AMF SHALL send the SERVICE REJECT message with 5GMM cause #9". The behaviour
+# is SAFE — the forgery was accepted by nothing — but it is not conformant, and
+# it leaves a legitimate UE whose context the network lost with no way to learn
+# that it must re-register. Hence the dedicated terminal rather than a pass or a
+# security finding.
+
+kind: flow
+name: service_request_bad_mac_service_reject_cause9
+description: A SERVICE REQUEST with a corrupted MAC must draw SERVICE REJECT with 5GMM cause #9, and the stored context must survive it (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, discarded_no_service_reject, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        actions: [{ type: send, message: InitialUEMessage }]
+        target: wait_auth_request
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_release_cmd
+        actions:
+          # The forged SERVICE REQUEST identifies its target by the 5G-S-TMSI
+          # out of this GUTI; without it the AMF could not find the context at
+          # all and would refuse the message for the wrong reason.
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: UEContextReleaseRequest }
+  wait_release_cmd:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_reject
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          # A fresh RAN-UE-NGAP-ID: the forged message arrives as an INITIAL UE
+          # MESSAGE on a new UE-associated logical NG-connection, exactly as a
+          # real CM-IDLE resume would.
+          - { type: ngap_realloc }
+          - { type: send, message: MalformedServiceRequest }
+  wait_service_reject:
+    # THE ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. §4.4.4.3 obliges the
+    # AMF to ANSWER here, so 8 s is not a courtesy: on open5gs the SERVICE
+    # REJECT arrives inside a second. Falling out of the window is the cue to go
+    # and ask whether the AMF was discarding or was simply not there.
+    on_timeout:
+      duration: 8s
+      target: probe_context_survived_discard
+      actions:
+        # THE PROBE, on the silent path. A fresh RAN-UE-NGAP-ID and a GENUINE,
+        # correctly protected SERVICE REQUEST for the same UE — the second half
+        # of this row's own criterion, which until now ran only after a reject.
+        # An AMF that discarded the forgery and kept the context must answer it;
+        # a dead one, or one whose context we never reached, cannot.
+        - { type: ngap_realloc }
+        - { type: send, message: ServiceRequest }
+    transitions:
+      - event: NASDownlinkTransport.ServiceReject
+        target: probe_context_intact
+        actions:
+          # THE ROW'S CRITERION: cause #9, "UE identity cannot be derived by the
+          # network". A reject with any other cause fails this check, which ends
+          # the flow with a recorded failed assertion — the core answered, just
+          # not with what the clause requires.
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 9 }
+          - { type: ngap_realloc }
+          - { type: send, message: ServiceRequest }
+      # The AMF re-activated the UE context off a message whose MAC does not
+      # verify. That is the security finding this row exists to catch.
+      - event:
+          or:
+            - InitialContextSetupRequest.ServiceAccept
+            - InitialContextSetupRequest
+        target: tolerated
+      - { event: NASDownlinkTransport.ServiceAccept, target: tolerated }
+  probe_context_intact:
+    # "keep the 5GMM-context and 5G NAS security context unchanged" — a genuine,
+    # correctly protected SERVICE REQUEST for the same UE must still be answered.
+    #
+    # SILENCE HERE IS NOT THE FINDING, AND UNTIL 2026-08-12 IT WAS SCORED AS ONE.
+    # `tolerated` was this state's TIMEOUT target, so a core that had answered in
+    # a shape we did not name scored the finding on a timer — which is what
+    # free5gc did (SERVICE REJECT, arrival 9, refused by the bus). The refusal is
+    # now named and the timer target is `unproven`: no answer to a message the
+    # AMF is required to act on tells us nothing about whether the context
+    # survived, and an acceptance terminal reached on a timer is exactly as
+    # inadmissible as a pass reached on one.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      - event:
+          or:
+            - InitialContextSetupRequest.ServiceAccept
+            - InitialContextSetupRequest
+        target: rejected
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+      - { event: NASDownlinkTransport.ServiceAccept, target: rejected }
+      # THE OTHER HALF OF THE CRITERION FAILING, ON A MESSAGE. A SERVICE REJECT
+      # to a CORRECTLY protected SERVICE REQUEST says the stored 5GMM/NAS
+      # security context did not survive the forgery — "keep … unchanged"
+      # violated. free5gc sent exactly this and the bus had to drop it.
+      #
+      # NO CHECK ON THIS BRANCH, DELIBERATELY: a check is a GATE, and a failing
+      # gate on the branch whose target is the finding makes the finding vanish
+      # into `wrong-response`. The arrival of the reject IS the assertion.
+      - { event: NASDownlinkTransport.ServiceReject, target: tolerated }
+      # A release in answer to the genuine resume proves the AMF is alive and
+      # reached us, and nothing more: it does not separate "the context is gone"
+      # from an overdue teardown of the connection we abandoned two states ago.
+      # Named so the bus never has to refuse it; `unproven` because that is what
+      # it is worth.
+      - { event: UEContextReleaseCommand, target: unproven }
+      - { event: ErrorIndication, target: unproven }
+  probe_context_survived_discard:
+    # The silent-discard path's discriminator. Silence here is silence to a
+    # message §4.4.4.3 obliges the AMF to act on, from a UE whose context it is
+    # required to still hold, so it separates nothing and scores `unproven`.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      # THE DISCRIMINATOR FIRING. The forged request drew no SERVICE REJECT — a
+      # §4.4.4.3 deviation — but the genuine one re-activates the context, so the
+      # AMF is alive, our messages arrive, and the stored 5GMM and NAS security
+      # contexts survived the forgery. That is a discard, evidenced, rather than
+      # an absence that could have been anything.
+      - event:
+          or:
+            - InitialContextSetupRequest.ServiceAccept
+            - InitialContextSetupRequest
+        target: discarded_no_service_reject
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+      - { event: NASDownlinkTransport.ServiceAccept, target: discarded_no_service_reject }
+      # Silence to the FORGERY and a refusal of the GENUINE request is the worst
+      # of both: the mandated reject never came AND the context did not survive.
+      # The second half is the security finding, so it wins.
+      - { event: NASDownlinkTransport.ServiceReject, target: tolerated }
+      - { event: UEContextReleaseCommand, target: unproven }
+      - { event: ErrorIndication, target: unproven }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-455 (negative, expected_terminal: rejected) — A
+# SERVICE REQUEST carrying a bad MAC draws a SERVICE REJECT with 5GMM cause #9 on N1; a
+# correctly protected SERVICE REQUEST sent afterwards with the same context still
+# succeeds. THAT SECOND HALF IS ALSO WHAT MAKES THE SILENT CASE SCOREABLE — where no
+# SERVICE REJECT arrives at all, the correctly protected SERVICE REQUEST is sent anyway,
+# and the missing reject is recorded as a §4.4.4.3 deviation only when that request IS
+# answered, which proves the AMF was discarding rather than dead, unreached or gone. A
+# silence to which nothing else answers either is reported as neither the pass nor the
+# finding, and a genuine SERVICE REQUEST that is REFUSED is the finding on the other
+# half of the clause ('keep the 5GMM-context and 5G NAS security context unchanged').
+#
+# REG-455 has two halves: the bad-MAC SERVICE REQUEST draws a SERVICE REJECT with cause
+# #9, AND a correctly protected SERVICE REQUEST sent afterwards still succeeds.
+# `rejected` is the only terminal that carries both (probe_context_intact -> the second
+# request answered). `discarded_no_service_reject` is the missing reject with the
+# context still alive — a §4.4.4.3 deviation the criterion records separately;
+# `tolerated` is the AMF ACCEPTING the bad-MAC request, or refusing the good one;
+# `unproven` is neither channel answering.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

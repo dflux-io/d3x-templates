@@ -1,0 +1,54 @@
+# Nausf_UEAuthentication — oversized request body (security / negative).
+# 3GPP TS 29.509 §6.1.7.3 (413); TS 29.500 §5.2.7 (payload size limits).
+# runner sends an initiate POST whose body carries a very large junk field generated
+# with the $padding template function. The AUSF must REJECT (413 Payload Too
+# Large, or 400) and STAY UP — never accept it as a valid authentication.
+# Cross-cutting goal mirrors the gNB security suite: spec-correct reaction +
+# liveness, so the terminal is `tolerated` and we assert the AUSF answered at all.
+
+kind: flow
+name: ausf_ueauth_oversized_body_rejected
+description: POST ue-authentications with a multi-MB padded body is rejected / tolerated, AUSF stays up
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: ausf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nausf-auth/v1/ue-authentications",
+                "body": {
+                  "supiOrSuci": "imsi-001010000000001",
+                  "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org",
+                  "junk": "{{$padding 2000000}}"
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # Any answer (413 / 400 / even a tolerated 201) proves the AUSF did not
+      # crash on the oversized payload; status presence is the liveness signal.
+      - event: sbi.SBI_Request_Answer
+        target: tolerated
+        actions:
+          - type: check
+            field: sbi.status
+            op: exists

@@ -1,0 +1,58 @@
+# Signature demo Act 4 — oversized CreateSMContext trips edge body limit.
+#
+# Topology edge-demo-allow.yaml sets server.max_request_body_size: 4096.
+# This flow posts ~8 KiB of padding so MaxBytesReader yields 413 before
+# policy/rate-limit filters run.
+#
+# Reuses generic SBI_Request + {{$padding N}} (see runner/template.go).
+kind: flow
+name: smf_nsmf_smcontext_oversized_payload_edge413
+description: CreateSMContext with oversized body — expect edge 413 Payload Too Large
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 13,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "requestType": "INITIAL_REQUEST",
+                  "extSsmContextPad": "{{$padding 8192}}"
+                }
+              }
+
+  wait_reject:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 413

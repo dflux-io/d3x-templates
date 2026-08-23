@@ -1,0 +1,85 @@
+# AF (Npcf_PolicyAuthorization) trigger for the lab QoS-change exit gate.
+# 3GPP TS 29.514 §4.2.2. Posts an app-session to the LAB dpf (via the
+# lab-af.yaml `pcf` binding → http://dpf:8082) for the registered lab UE,
+# inducing PCF→SMF UpdateNotify → SMF QoS modify → AMF
+# PDUSessionResourceModifyRequest over N2 — which the gNB leg
+# (gnb/pdu_session_af_qos_modify.yaml) observes and answers.
+#
+# Binding keys (TS 23.503 §6.1.3.6) must match the SM policy the lab SMF
+# created at PDU-session establishment:
+#   - supi: the DASH-LESS dpf seed form imsi-001010000000001 (E15) — NOT the
+#     dashed lab-subscribers.yaml `supi` field; the dpf store key is dash-less.
+#   - dnn: internet
+#   - sliceInfo: {sst:1, sd:"010203"} — the docker lab slice (seed S6 entry
+#     "01010203"; dmf sends sd at establishment per A3's S3c fix).
+# The media component carries an fDescs entry (E5).
+#
+# Orchestrated by scripts/e2e-gnb-run.sh step 03-af-qos-modify (integrator,
+# OQ9): the gNB flow runs first (registers + establishes), then this AF flow
+# fires the trigger inside the gNB flow's 45s modify-wait window.
+
+kind: flow
+name: npcf_af_lab_trigger
+description: AF posts a PolicyAuthorization app-session to the lab dpf to trigger a QoS modify
+category: functional
+type: client
+protocol: sbi
+nf: pcf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_appsession
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: pcf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/npcf-policyauthorization/v1/app-sessions",
+                "body": {
+                  "ascReqData": {
+                    "supi": "imsi-001010000000001",
+                    "dnn": "internet",
+                    "sliceInfo": {"sst": 1, "sd": "010203"},
+                    "notifUri": "http://127.0.0.1:1/af-unused",
+                    "suppFeat": "0",
+                    "medComponents": {
+                      "1": {
+                        "medCompN": 1,
+                        "marBwUl": "10 Mbps",
+                        "marBwDl": "20 Mbps",
+                        "medSubComps": {
+                          "1": {
+                            "fNum": 1,
+                            "fDescs": ["permit out udp from 198.51.100.10 to assigned 5004"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+  wait_appsession:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: check
+            field: sbi.headers.Location
+            op: not_empty

@@ -1,0 +1,177 @@
+# NEGATIVE — NG Setup expected to be REJECTED with NGSetupFailure.
+#
+# 3GPP ref:     TS 38.413 §8.7.1 (NG Setup procedure), §9.3.1.2 (Cause).
+# Abnormal in:  An NGSetupRequest that is structurally well-formed but declares a
+#               PLMN the AMF does not serve — 999/99, the PLMN TS 23.003 §12.1
+#               reserves for test networks, in both the Global RAN Node ID and
+#               every broadcast PLMN of the Supported TA List.
+# Expected OK:  Per §8.7.1.4, when the AMF "cannot accept the setup" it MUST
+#               respond with NG SETUP FAILURE carrying a Cause IE (Unknown PLMN
+#               or Unknown PLMN or SNPN, §9.3.1.2) and MUST NOT set the
+#               association up.
+#
+# THE PROBE CARRIES ITS OWN MISMATCH — THAT IS THE POINT.
+#
+# This flow used to send an ordinary NGSetupRequest built entirely from the
+# runtime gNB config, with a header note saying it "only asserts the spec-correct
+# rejection if the runtime config mismatches amf.yaml". No such config was ever
+# built (the register asks for `config: plmn-mismatched-gnb`; the tinycore
+# vendoring lists REG-804 among the rows whose config does not exist). So the
+# negative row sent exactly the request every positive row sends. Measured
+# against tinycore on 2026-08-11:
+#
+#   [TX] NGAP_NG_SETUP_REQUEST (53 bytes)
+#   [RX] NGSetupResponse (49 bytes)
+#   RX event DISPATCHED AND REFUSED ... state=wait_ng_setup_failure — no transition
+#
+# The core accepted it, because there was nothing to reject. A negative probe
+# that cannot fail is the worst outcome available: it looks like coverage. The
+# PLMN mismatch now lives in the send action below, so the request is bad by
+# construction on any core and under any config.
+#
+# NOTE ON ORDERING: the runner's transport completes a normal NG Setup when it
+# opens the SCTP association, so this request arrives as a re-setup on an
+# established association. §8.7.1 treats a repeated NG SETUP REQUEST as a
+# configuration re-setup and the acceptance test is the same one; an AMF that
+# cannot serve 999/99 must fail it here exactly as it would on a fresh
+# association.
+#
+# ASSERTION: cause-code fidelity — the success terminal is reached on
+# NGSetupFailure and the flow checks a non-empty Cause IE is present.
+# SUCCESS terminal = `rejected`.
+#
+# AND THE OTHER OUTCOME IS ASSERTED TOO, since 2026-08-13 (xp-261). An accepted
+# foreign PLMN lands on `accepted_foreign_plmn` rather than on the shared `failed`
+# terminal, with two checks on the mandatory IEs of the response that proves it.
+# It reached `failed` with ZERO checks evaluated on two of three cores in the
+# 50effc0 run — the finding recorded with nothing behind it but a terminal name
+# shared with silence. `preconditions.config: plmn-mismatched-gnb` was corrected
+# to `default` in the same change: the mismatch is in the send action below, so
+# there is no profile left to declare.
+
+kind: flow
+name: ng_setup_failure
+description: NG Setup declaring a PLMN the AMF does not serve — expect NGSetupFailure with a cause (YAML)
+detail: |
+  Negative test for the NG Setup procedure (3GPP TS 38.413 §8.7.1).
+
+  The gNB sends a structurally well-formed NGSetupRequest that declares PLMN
+  999/99 — reserved for test networks, and not a PLMN any core under test
+  serves — in the Global RAN Node ID and in every broadcast PLMN of the
+  Supported TA List. The AMF therefore cannot serve the requested configuration.
+
+  The spec-correct reaction (§8.7.1.4) is an NG SETUP FAILURE carrying a Cause IE
+  ("Unknown PLMN or SNPN", §9.3.1.2), not an NG SETUP RESPONSE. The assertion of
+  this test is cause-code fidelity: on NGSetupFailure the flow verifies a
+  non-empty cause is present and lands on the SUCCESS terminal `rejected`.
+
+  An NGSetupResponse to this request is the finding, not a harness fault: it
+  means the core accepted a gNB from an operator it does not serve, and the flow
+  says so on the `accepted_foreign_plmn` terminal — with assertions on the
+  response's own mandatory IEs — rather than timing out silently or filing the
+  finding under a terminal it shares with our own errors.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - accepted_foreign_plmn
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ng_setup_failure
+        actions:
+          - type: send
+            message: NGSetupRequest
+            params:
+              # TS 23.003 §12.1 reserves MCC 999 for test networks, so this can
+              # never collide with a PLMN a core legitimately serves.
+              plmn_mcc: '999'
+              plmn_mnc: '99'
+
+  wait_ng_setup_failure:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      # Spec-correct rejection: NGSetupFailure carrying a Cause IE.
+      - event: NGSetupFailure
+        target: rejected
+        actions:
+          - type: check
+            field: cause
+            op: not_empty
+      # ==========================================================================
+      # THE CORE ACCEPTED A PLMN IT DOES NOT SERVE — AND THE ROW NOW SAYS SO WITH
+      # ASSERTIONS BEHIND IT.
+      # ==========================================================================
+      #
+      # This branch used to target the shared `failed` terminal WITH NO ACTIONS AT
+      # ALL, and that is the vacuity class the whole register is built against.
+      # Measured on 50effc0: tinycore and free5gc both reached `failed` here having
+      # evaluated ZERO checks (checks_evaluated 0, observed {}), against a corpus
+      # median of 6-12. The FINDING — a core admitting a gNB from PLMN 999/99 —
+      # rested on nothing whatever in the fact record except the name of a terminal
+      # shared with "silence" and "our own error", and a cell like that is
+      # unpublishable however true it happens to be.
+      #
+      # SO IT GETS ITS OWN TERMINAL AND TWO REAL CHECKS. `amf_name` and the PLMN
+      # Support List are both MANDATORY in an NG SETUP RESPONSE (TS 38.413
+      # §9.2.6.2), so this asserts that what arrived is a genuine, decodable
+      # acceptance of the association rather than something merely shaped like one
+      # — which is exactly the claim the cell makes. The row's expected terminal is
+      # still `rejected`, so the verdict is unchanged: `accepted_foreign_plmn` is
+      # not a pass, it is the failure STATED.
+      #
+      # AND IT IS NOW EVIDENCE FOR xp-257 IN ITS OWN RIGHT, which it was not when
+      # that finding was filed. At the time this flow sent the ordinary well-formed
+      # request every positive row sends, so its red cell said nothing about
+      # foreign PLMNs. The mismatch is in the send action above and CONFIRMED ON THE
+      # WIRE (50effc0/tinycore, the 53-byte request carries mcc 999 / mnc 99 in the
+      # Global RAN Node ID and in every broadcast PLMN), so tinycore's acceptance is
+      # a second, independent line of evidence beside xp-257's code-level one — that
+      # `NGSetupFailure` is not constructed anywhere in tinycore/, so that core has
+      # no path to refuse a gNB for any reason. The two agree; they are not the same
+      # observation, and neither is a substitute for the other.
+      - event: NGSetupResponse
+        target: accepted_foreign_plmn
+        actions:
+          - { type: check, field: amf_name, op: not_empty }
+          - { type: check, field: plmn_support_list.length, op: greater_or_equal, expected: 1 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-804 (negative, expected_terminal: rejected) —
+# NGSetupFailure received with a non-empty Cause IE; no NGSetupResponse is ever sent
+#
+# REG-804: "NGSetupFailure received with a non-empty Cause IE; no NGSetupResponse is
+# ever sent." `accepted_foreign_plmn` is the AMF admitting an association for a PLMN it
+# does not serve, which is the finding.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

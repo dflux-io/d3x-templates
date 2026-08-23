@@ -1,0 +1,144 @@
+# AMF-initiated Generic UE Configuration Update (3GPP TS 24.501 §5.4.4).
+#
+# After a normal registration the AMF MAY send a NAS ConfigurationUpdateCommand
+# (carried in an NGAP NASDownlinkTransport) to reallocate the 5G-GUTI, update the
+# allowed/configured NSSAI, TAI list, or other UE configuration. When the command
+# requests an acknowledgement, the UE replies with ConfigurationUpdateComplete.
+#
+# Open5GS commonly issues a ConfigurationUpdateCommand for GUTI reallocation right
+# after sending RegistrationAccept. Because the procedure is OPTIONAL, the flow
+# treats a timeout (no command arrives) as a valid, successful outcome.
+
+kind: flow
+name: configuration_update
+description: Registration + AMF-initiated Generic UE Configuration Update (YAML)
+detail: |
+  Performs UE registration, then handles an AMF-initiated Generic UE
+  Configuration Update procedure (3GPP TS 24.501 §5.4.4). The AMF uses this
+  procedure to reallocate the 5G-GUTI or update NSSAI / TAI list configuration on
+  the UE.
+
+  After registration completes, the flow waits for a NAS
+  ConfigurationUpdateCommand inside an NGAP NASDownlinkTransport. On receipt it
+  replies with ConfigurationUpdateComplete and reaches the `complete` terminal.
+
+  This procedure is OPTIONAL. Open5GS frequently sends the command for GUTI
+  reallocation immediately after RegistrationAccept, but an AMF is not required
+  to. The wait state therefore routes its on_timeout to the `no_update` terminal,
+  which is also a success state: an AMF that performs no reconfiguration is fully
+  spec-compliant.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - complete
+  - no_update
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_config_update
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+  wait_config_update:
+    # Optional procedure: no command within the window is a valid outcome.
+    on_timeout:
+      duration: 10s
+      target: no_update
+    transitions:
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: complete
+        actions:
+          - type: send
+            message: ConfigurationUpdateComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-190 (positive, expected_terminal: complete) — A
+# ConfigurationUpdateCommand is received; after ConfigurationUpdateComplete is sent no
+# retransmission arrives, and a subsequent registration update using the NEW 5G-GUTI is
+# accepted
+#
+# REG-190's first clause — "A ConfigurationUpdateCommand is received" — is the only half
+# this FSM observes, and it is the only route into `complete`; `no_update` is the bare
+# 10 s timer, i.e. the AMF never reallocated. NOT ASSERTED, AND WHY: the criterion's
+# other two clauses ("after ConfigurationUpdateComplete is sent no retransmission
+# arrives, and a subsequent registration update using the NEW 5G-GUTI is accepted") are
+# unobservable here — the flow terminates on the first command, so nothing after it is
+# counted.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `complete` — the terminal this row claims
+    metric: final_state_counts.complete
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

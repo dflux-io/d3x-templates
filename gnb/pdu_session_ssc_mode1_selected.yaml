@@ -1,0 +1,209 @@
+# Registration + PDU session establishment with the SSC mode IE set to
+# "SSC mode 1" — the network must select the mode the UE asked for.
+#
+# REG-308 — SSC mode 1 explicitly requested and selected.
+#
+# Clauses (retrieved with matrix/scripts/spec-clause.py):
+#
+#   TS 24.501 §6.4.1.3 (UE-requested PDU session establishment accepted) —
+#   THE operative sentence for this row:
+#     "The SMF shall set the selected SSC mode IE of the PDU SESSION
+#      ESTABLISHMENT ACCEPT message to:
+#        a) the received SSC mode in the SSC mode IE included in the PDU
+#           SESSION ESTABLISHMENT REQUEST message based on one or more of the
+#           PDU session type, the subscription and the SMF configuration;"
+#     …and, for the IP session types this row establishes:
+#     "If the PDU session is a non-emergency PDU session of 'IPv4', 'IPv6' or
+#      'IPv4v6' PDU session type, the SMF shall set the selected SSC mode IE
+#      to 'SSC mode 1', 'SSC mode 2', or 'SSC mode 3'."
+#
+#   TS 23.501 §5.6.9.2.1 (SSC Mode 1):
+#     "For a PDU Session of SSC mode 1, the UPF acting as PDU Session Anchor at
+#      the establishment of the PDU Session is maintained regardless of the
+#      access technology […]. SSC mode 1 may apply to any PDU Session type and
+#      to any access type. A UE supporting PDU Connectivity shall support SSC
+#      mode 1."
+#   i.e. mode 1 is the one mode every network can honour, so "requested 1,
+#   selected 1" is the row that must hold on every core.
+#
+# WHAT THE UE PUTS ON THE WIRE. `ssc_mode: 1` is passed explicitly rather than
+# left to the enricher default so this flow's request is self-describing: the
+# criterion is about a request that CARRIES the IE, and an authored default
+# could move without this row noticing. MEASURED on tinycore, the 5GSM request
+# octet after the message type reads 0x11 — SSC mode 1 in bits 7-5, PDU session
+# type IPv4 in bits 3-1 (TS 24.501 §9.11.4.16 / §9.11.4.11, both half-octet
+# type-1 IEs sharing one octet).
+#
+# HARNESS NOTE — why the SSC mode is asserted through ue.Params.
+# The accept rides on the PER-ITEM NAS-PDU IE of the PDU SESSION RESOURCE SETUP
+# REQUEST, which extractNasPdu() does not see, so `nas.*` here would read the
+# PREVIOUS message (see the HARNESS NOTE in pdu_session_setup.yaml). The
+# decoded accept is instead projected onto ue.Params by
+# exposePduSessionAcceptParams (runner/runner/enrichers_pdu_session_accept.go),
+# where an ABSENT optional IE reads -1 and a present one reads its real value —
+# so "the core sent SSC mode 0" and "the core sent no SSC mode" stay different
+# observations. The selected SSC mode is a MANDATORY IE of the accept
+# (§8.3.2.1): a value outside 1..3 fails this row on the value.
+
+kind: flow
+name: pdu_session_ssc_mode1_selected
+description: PDU session establishment requesting SSC mode 1 — the Accept must select SSC mode 1 (YAML)
+detail: |
+  Registration, then a UE-requested PDU session establishment whose 5GSM
+  request carries the SSC mode IE set to "SSC mode 1" (TS 24.501 §9.11.4.16).
+
+  TS 24.501 §6.4.1.3 bullet a) requires the SMF to set the Selected SSC mode IE
+  of the PDU SESSION ESTABLISHMENT ACCEPT to the SSC mode the UE requested, and
+  TS 23.501 §5.6.9.2.1 makes SSC mode 1 the mode every UE and every network
+  supports. This flow asserts the returned Selected SSC mode IE equals 1 — not
+  merely that the session came up.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1
+          # connection as soon as registration completes.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              ssc_mode: 1
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          # The accept actually arrived and decoded (the NAS-PDU IE is carried
+          # on the item, and the projection below only exists if it decoded).
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+
+          # --- THE row: selected SSC mode == requested SSC mode (§6.4.1.3 a) --
+          - { type: check, field: ue.Params.pdu_accept_selected_ssc_mode, op: equals, expected: 1 }
+          # …and the mode is one the clause allows for an IP PDU session at all,
+          # which also fails a core that omits the mandatory IE (projected -1).
+          - { type: check, field: ue.Params.pdu_accept_selected_ssc_mode, op: in, expected: [1, 2, 3] }
+
+          # Context: the session this SSC mode belongs to is a real one — an
+          # accept for nothing would make the mode meaningless.
+          - { type: check, field: ue.Params.pdu_accept_selected_pdu_session_type, op: equals, expected: 1 }  # IPv4
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-308).
+#
+# REG-308 — PDUSessionEstablishmentAccept received with Selected SSC mode IE = 'SSC mode
+# 1' after an establishment request carrying SSC mode IE = 'SSC mode 1'
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `established`
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  # The nine `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all nine declared checks ran
+    metric: checks_total
+    op: equals
+    value: 9
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

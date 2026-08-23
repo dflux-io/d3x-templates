@@ -1,0 +1,92 @@
+# PDU Session Release Request for an UNKNOWN PDU session id
+# (3GPP TS 24.501 §6.4.3 / abnormal — releasing a non-existent session).
+#
+# Registers (no PDU session established), then sends a NAS PDUSessionReleaseRequest
+# targeting a PDU session id that does not exist (release_pdu_session_id=99). A
+# correct SMF/AMF rejects or ignores the request for the unknown session rather
+# than acting on it.
+#
+# Lenient terminals: `handled` (AMF flags it: PDUSessionReleaseCommand /
+# 5GMMStatus / DLNASTransport reject), `tolerated` (silently ignored — a
+# documentable result), `failed` on transport error.
+kind: flow
+name: pdu_session_release_for_unknown_session
+description: Release a non-existent PDU session id; assert AMF rejects/ignores (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - handled
+  - tolerated
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+          # as soon as registration completes, and free5GC does.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reaction
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionReleaseRequest
+            params:
+              release_pdu_session_id: 99
+  wait_reaction:
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      - event: PDUSessionReleaseCommand
+        target: handled
+      - event: NASDownlinkTransport.5GMMStatus
+        target: handled
+      - event: ErrorIndication
+        target: handled
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# NO `final_checks` BLOCK: THE CRITERION AND THE FSM CONTRADICT EACH OTHER.
+#
+# REG-363 (abnormal, expected_terminal: null) — "PDUSessionReleaseReject received with
+# 5GSM cause #43, AND NO PDUSessionResourceReleaseCommand ARRIVES ON N2."
+#
+# This flow's `handled` terminal is entered on `PDUSessionReleaseCommand` — the exact
+# message the criterion's second clause forbids — alongside a 5GMM STATUS and an ERROR
+# INDICATION. So `handled` cannot mean "the criterion held": one of the three ways into it
+# is the criterion being violated. The other terminal, `tolerated`, is the bare 10 s
+# timer, and the message the criterion actually requires (a 5GSM PDU SESSION RELEASE
+# REJECT) has no transition anywhere in this FSM and no name in the RX event vocabulary
+# either — `d3x-run vocab` → rx_event_names.nas has PDUSessionReleaseCommand and
+# PDUSessionReleaseRequest, and no Reject.
+#
+# Pinning either terminal would manufacture a verdict, so neither is pinned. Closing this
+# needs, in order: a `PDUSessionReleaseReject` NAS event in the resolver, a transition for
+# it, and `PDUSessionReleaseCommand` moved off `handled` and onto the finding it is.

@@ -1,0 +1,125 @@
+# Register advertising ONLY null security algorithms (NEA0/NIA0); a non-emergency
+# UE must not be allowed to run with NIA0 (3GPP TS 33.501 §5.5.2, TS 24.501
+# §4.4.4.1 — which enumerates the only four cases where 5G-IA0 is permitted, none
+# of them an ordinary subscriber).
+#
+# REG-435. The pass_criterion is a DISJUNCTION with a carve-out: either the
+# registration is rejected or released, OR a SECURITY MODE COMMAND arrives
+# selecting a NON-NULL integrity algorithm — and an SMC selecting 5G-IA0 is
+# explicitly a failure. This flow was purely event-level until 2026-08-12: every
+# transition was a bare `{event, target}` with no actions, so the row reached its
+# expected terminal `rejected` on ANY downlink and asserted NOTHING on the way.
+# The carve-out — the entire security content of the row — was unexpressed, and
+# the defect scored green. See the per-branch comments below for which legs are
+# now asserted and which are deliberately still bare.
+kind: flow
+name: smc_null_integrity_rejected_nonemergency
+description: Register with null-only UE security capabilities; assert AMF reaction (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reaction
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params: { null_security_caps: true }
+  wait_reaction:
+    on_timeout: { duration: 12s, target: tolerated }
+    transitions:
+      # THE BRANCH THE ROW EXISTS FOR. Until 2026-08-12 this transition carried
+      # NO actions, so a SECURITY MODE COMMAND selecting 5G-IA0 — the precise
+      # P0 defect named in the pass_criterion ("A SECURITY MODE COMMAND
+      # selecting 5G-IA0 for this non-emergency UE is a failure") — landed on
+      # `rejected`, which IS this row's expected_terminal. The row scored a
+      # clean PASS on the security hole it was written to catch.
+      #
+      # nas5g's NAS_IntegrityAlgorithm is the wire nibble PLUS ONE
+      # (enrichers_amf.go: `NAS_IntegrityAlgorithm(SecCtx.IntegrityAlg + 1)`):
+      # 0 = IA_NONE, the decoder's "IE absent" sentinel; 1 = 5G-IA0, the null
+      # algorithm; 2/3/4 = 128-NIA1/2/3. `greater_or_equal 2` is therefore
+      # exactly "a NON-NULL integrity algorithm was selected", and it fails on
+      # both 5G-IA0 and an absent IE. Same operator, same constant, same
+      # reasoning as no_null_integrity_downgrade_on_existing_context.yaml.
+      #
+      # `ie_present` is NOT usable here: the field is a non-pointer scalar with
+      # no `,omitempty`, so the JSON key is always emitted and the op can never
+      # fail. That is the same vacuity trap this file's other half just fixed.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+      # The criterion's other satisfying leg: "the registration is rejected or
+      # released". A REGISTRATION REJECT carries a mandatory 5GMM cause
+      # (TS 24.501 §8.2.16) and cause 0 is not a defined value, so
+      # `greater_than 0` asserts a real refusal rather than merely a message
+      # arriving. `ie_present` would be vacuous here for the same no-omitempty
+      # reason as above.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: greater_than, expected: 0 }
+      # DELIBERATELY LEFT WITHOUT ASSERTIONS, and not an oversight.
+      #
+      # Neither an AUTHENTICATION REQUEST nor an ERROR INDICATION satisfies
+      # either leg of the pass_criterion: the first means the AMF has not yet
+      # made the security decision this row is about, and the flow never
+      # answers the challenge, so it can never go on to observe the algorithm
+      # selection. Routing them to `rejected` therefore scores "the AMF said
+      # something" as "the AMF refused null integrity", which is not the same
+      # claim.
+      #
+      # Rerouting them is NOT done here because it cannot be got right without
+      # a live core to confirm the flow can actually progress past
+      # authentication, and a wrong assertion on a P0 security row is worse
+      # than an absent one. Instead these branches are left evaluating ZERO
+      # checks on purpose: the zero-check guard in matrix/scripts/lib/outcome.py
+      # now classifies a row that terminates having asserted nothing as
+      # `not-tested` rather than `pass`. Adding a token check to either branch
+      # would defeat that guard and restore the false green.
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
+      - { event: ErrorIndication, target: rejected }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-435 (negative, expected_terminal: rejected) —
+# After a REGISTRATION REQUEST advertising only NEA0/NIA0, either the registration is
+# rejected or released, or a SECURITY MODE COMMAND arrives selecting a non-null
+# integrity algorithm. A SECURITY MODE COMMAND selecting 5G-IA0 for this non-emergency
+# UE is a failure.
+#
+# REG-435's pass is "either the registration is rejected or released, or a SECURITY MODE
+# COMMAND arrives selecting a NON-NULL integrity algorithm", and `tolerated` is the bare
+# 12 s timer. THE `checks_total` FLOOR IS NOT BOILERPLATE ON THIS ROW. Two of the four
+# branches into `rejected` (AUTHENTICATION REQUEST, ERROR INDICATION) carry no checks at
+# all, and the file's own comment says they are left that way on purpose so that a run
+# which terminates having asserted NOTHING is not read as a pass. That guard lived in
+# matrix/scripts/lib/outcome.py, outside the runner. `checks_total greater_or_equal 1`
+# is the same guard, in the template, where CLAUDE.md says the verdict belongs.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,153 @@
+# runner -> dpf Npcf SBI compliance suite — one execution per flow.
+#
+# Drives dpf's PCF service (Npcf_SMPolicyControl + Npcf_PolicyAuthorization)
+# with runner acting as the SBI consumer (SMF role for SM-policy CRUD, AF role for
+# the app-session N5 chain). Every step is a single deterministic execution
+# (repetitions: 1, no rate) scored on its own spec-correct terminal — a
+# conformance pass, not a load test. See d3x-core docs/dpf/sanity-tests.md.
+#
+# Run (script step 05-pcf-compliance in scripts/dpf-sanity-run.sh):
+#   d3x-run run-suite -suite pcf-compliance \
+#       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
+#
+# The notify round-trip (npcf_smpolicy_update_notify_receiver +
+# npcf_smpolicy_notify_trigger) is NOT a suite step — it is cross-protocol
+# (REST listener + SBI client) and script-orchestrated as 06-pcf-notify on the
+# nrf-notify.sh skeleton. The lab AF-QoS-modify leg (pdu_session_af_qos_modify
+# + npcf_af_lab_trigger) lands in scripts/e2e-gnb-run.sh (integrator, OQ9).
+#
+# DEPENDENCY: this suite asserts the DYNAMIC PCF surface (lanes A1+A2). Against
+# a contracts-only/main dpf the dynamic-decision and N5 assertions FAIL by
+# design — the expected-fail list is EMPTY on purpose; the suite merges in the
+# same train AFTER A1/A2, where every step must pass.
+#
+# GATE: smpolicy_create_dynamic_ok (stop_on_failure: true) — if the simplest
+# dynamic CreateSMPolicy can't reach `completed` (dpf down, route wrong,
+# subscriber unprovisioned), nothing downstream can pass, so abort early.
+# Everything after runs to completion (stop_on_failure: false) for a full
+# per-procedure pass/fail report.
+#
+# ORDERING: SM-policy CRUD first (the gate, then GET/update/delete/negatives),
+# then the N5 PolicyAuthorization chain (each chain creates its own SM policy
+# first — runner executions are independent, no cross-flow state — but ordering
+# them after the CRUD block fails fast if CreateSMPolicy is broken).
+
+kind: suite
+name: pcf-compliance
+description: One-execution-per-flow Npcf SBI conformance pass for runner as SBI consumer against dpf's PCF.
+steps:
+  # --- SM-policy CRUD (dynamic-decision gate, then round-trips) -----------
+  - name: smpolicy_create_dynamic_ok
+    flow: npcf_smpolicy_create_dynamic_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: smpolicy_get_roundtrip_ok
+    flow: npcf_smpolicy_get_roundtrip_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: smpolicy_update_trigger_ok
+    flow: npcf_smpolicy_update_trigger_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: smpolicy_delete_ok
+    flow: npcf_smpolicy_delete_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  # Provisions a fresh subscriber over the Nudr write surface (UDR-1), then
+  # drives the same dynamic CreateSMPolicy as the gate — the API-provisioned
+  # (not seeded) variant. Was deferred until the provisioned-data writes
+  # landed; they shipped, so it gates here now.
+  - name: smpolicy_create_provisioned_ok
+    flow: npcf_smpolicy_create_provisioned_ok
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  # Usage monitoring (TS 29.512 §5.6.2.12): metered DNN emits a umDec + a
+  # monitored PCC rule; accuUsageReports accumulate past the seeded quota and
+  # the monitored rule is revoked. SMF role is stubbed (runner POSTs the
+  # reports directly).
+  - name: smpolicy_usage_report_revoke
+    flow: npcf_smpolicy_usage_report_revoke
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  # --- SM-policy negatives -----------------------------------------------
+  - name: smpolicy_create_unknown_supi_404
+    flow: npcf_smpolicy_create_unknown_supi_404
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: smpolicy_create_unprovisioned_slice_403
+    flow: npcf_smpolicy_create_unprovisioned_slice_403
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  # --- AM-policy association (TS 29.507 completeness: ueAmbr/triggers/suppFeat) ---
+  - name: ampolicy_create_ok
+    flow: npcf_ampolicy_create_ok
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  # --- N5 PolicyAuthorization app-session lifecycle (PCC effects) --------
+  - name: policyauth_appsession_install_ok
+    flow: npcf_policyauth_appsession_install_ok
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: policyauth_appsession_patch_modifies_qos
+    flow: npcf_policyauth_appsession_patch_modifies_qos
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: policyauth_appsession_delete_removes_rule
+    flow: npcf_policyauth_appsession_delete_removes_rule
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed
+
+  - name: policyauth_appsession_no_binding
+    flow: npcf_policyauth_appsession_no_binding
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: completed

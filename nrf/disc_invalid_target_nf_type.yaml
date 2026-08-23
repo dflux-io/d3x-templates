@@ -1,0 +1,55 @@
+# DISC-05 — target-nf-type not in NFType enum → 400 + ProblemDetails.
+#
+# Same family as NFM-10 (invalid nfType on registration), but for the
+# discovery query. The handler today falls back to NFType1 (free-form
+# vendor string) when NFType0 enum parse fails, so "BOGUS" is silently
+# accepted as a vendor type and the response is 200 + empty list. That
+# masks a typo from the consumer: they'd think their filter applied.
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.3 DISC-05.
+
+kind: flow
+name: nrf_disc_invalid_target_nf_type
+description: target-nf-type=BOGUS → 400 + ProblemDetails.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: probing
+        actions:
+          - type: send
+            message: DiscoverBogusType
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "GET",
+                "url": "/nnrf-disc/v1/nf-instances",
+                "query": {"target-nf-type": "BOGUS", "requester-nf-type": "AMF"}
+              }
+
+  probing:
+    transitions:
+      - event: rest.DiscoverBogusType_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+
+  done: {}
+  failed: {}

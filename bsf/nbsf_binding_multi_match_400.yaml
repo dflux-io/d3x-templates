@@ -1,0 +1,155 @@
+# Nbsf_Management — register two bindings for the same SUPI, then discover by
+# supi → 400 ProblemDetails with cause MULTIPLE_BINDING_INFO_FOUND. TS 29.521
+# §5.3.3.3.3 (GET /pcfBindings matching more than one binding). Cleanup DELETEs
+# both bindings so reruns against a persistent DPF don't accumulate state.
+# Uses test-range values (RFC 5737 203.0.113.91/.92, supi …091) disjoint from
+# every other flow.
+kind: flow
+name: nbsf_binding_multi_match_400
+description: 2x POST /pcfBindings (201) -> GET ?supi (400 MULTIPLE_BINDING_INFO_FOUND) -> 2x DELETE (204)
+category: functional
+type: client
+protocol: sbi
+nf: bsf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_register_a
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nbsf-management/v1/pcfBindings",
+                "body": {
+                  "supi": "imsi-001010000000091",
+                  "dnn": "internet",
+                  "snssai": {"sst": 1, "sd": "000001"},
+                  "ipv4Addr": "203.0.113.91",
+                  "pcfFqdn": "dpf.lab"
+                }
+              }
+
+  wait_register_a:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_register_b
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: binding_loc_a
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nbsf-management/v1/pcfBindings",
+                "body": {
+                  "supi": "imsi-001010000000091",
+                  "dnn": "internet",
+                  "snssai": {"sst": 1, "sd": "000001"},
+                  "ipv4Addr": "203.0.113.92",
+                  "pcfFqdn": "dpf.lab"
+                }
+              }
+
+  wait_register_b:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_discover
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: binding_loc_b
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "GET",
+                "path": "/nbsf-management/v1/pcfBindings",
+                "query": {"supi": "imsi-001010000000091"}
+              }
+
+  wait_discover:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_deregister_a
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 400
+          - type: check
+            field: sbi.body
+            op: contains
+            expected: "MULTIPLE_BINDING_INFO_FOUND"
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "{{ue.Params.binding_loc_a}}"
+              }
+
+  wait_deregister_a:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_deregister_b
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204
+          - type: send
+            message: SBI_Request
+            peer: bsf
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "{{ue.Params.binding_loc_b}}"
+              }
+
+  wait_deregister_b:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: completed
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 204

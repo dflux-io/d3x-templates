@@ -1,0 +1,98 @@
+# Nsmf_PDUSession_CreateSMContext — duplicate pduSessionId (negative/security).
+# 3GPP TS 29.502 §5.2.2.2 / §6.1.6.3.4.
+#
+# runner (AMF) issues TWO CreateSMContext POSTs with the SAME supi + pduSessionId.
+# The first may be accepted (201) or rejected for unrelated runtime reasons; the
+# SECOND, naming an already-existing PDU session id for the same SUPI, MUST be
+# rejected by a spec-correct SMF (4xx, ProblemDetails) rather than silently
+# overwriting state — and the SMF must stay up.
+#
+# RUNTIME RISK: the first create also lacks an embedded N1 SM NAS PDU (single
+# JSON, no multipart) so the SMF may already 4xx the first call; either way the
+# security assertion is on the second response being a clean rejection and the
+# core staying live. Terminal set conservatively to 'tolerated'.
+kind: flow
+name: smf_nsmf_create_smcontext_duplicate_pdu_session_id
+description: AMF CreateSMContext twice with same pduSessionId — second rejected
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_first
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 9,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1"
+                }
+              }
+
+  wait_first:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_second
+        actions:
+          # Replay identical create with the same supi+pduSessionId.
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 9,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1"
+                }
+              }
+
+  wait_second:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: tolerated
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399

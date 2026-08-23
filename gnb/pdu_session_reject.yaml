@@ -1,0 +1,186 @@
+# Registration + PDU session request with invalid DNN — expect rejection.
+#
+# YAML mirror of the built-in `pdu_session_reject` flow defined in
+# runner/flows/gnb/flow_pdu_session_reject.go.
+
+kind: flow
+name: pdu_session_reject
+description: Registration + PDU session request with invalid DNN — expect rejection (YAML)
+detail: |
+  Performs registration, then sends a PDUSessionEstablishmentRequest with an
+  intentionally invalid DNN (Access Point Name) to verify that the AMF/SMF
+  correctly rejects the request (3GPP TS 24.501 §6.4.1).
+
+  After successful registration (establishing security context), the UE sends an
+  UplinkNASTransport carrying a PDUSessionEstablishmentRequest with a DNN that
+  does not exist in the network configuration (e.g., "nonexistent_dnn_reject_test").
+  The SMF should reject the request and the AMF sends a NASDownlinkTransport
+  carrying a PDUSessionEstablishmentReject with a 5GSM cause code indicating
+  the reason for rejection (typically cause #27 "missing or unknown DNN").
+
+  This is a negative test — it validates that the core network properly rejects
+  invalid session parameters rather than silently accepting them or crashing.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_reject
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              dnn: nonexistent_dnn_reject_test
+
+  wait_pdu_reject:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      # SMF path: the 5GSM reject arrives either bare or (spec-correct,
+      # TS 24.501 §8.2.11 — what open5gs and d3x-core send) wrapped
+      # in the 5GMM DL NAS TRANSPORT container.
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: rejected
+      # AMF path: AMF rejects at GMM level (DNN not in configured slice)
+      - event: NASDownlinkTransport.5GMMStatus
+        target: rejected
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-320).
+#
+# REG-320 — PDUSessionEstablishmentReject received on N1 with 5GSM cause #27, and no
+# PDUSessionResourceSetupRequest is sent for that PDU session ID
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `rejected`
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # "…and no PDUSessionResourceSetupRequest is sent for that PDU session
+  # ID" (REG-320). This flow establishes no other session, so the count
+  # is the whole claim: a core that rejected on N1 and set the session up
+  # on N2 anyway fails here and nowhere else.
+  - name: and no PDU SESSION RESOURCE SETUP REQUEST was sent for it
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: equals
+    value: 0
+  # The four `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

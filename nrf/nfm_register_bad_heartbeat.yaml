@@ -1,0 +1,102 @@
+# NFM-08 — heartBeatTimer out-of-bounds → 400 + ProblemDetails.
+#
+# NRF accepts heartBeatTimer values in [10, 86400] seconds. Two probes:
+# below-min (5) and above-max (100000) must both be rejected with 400
+# + ProblemDetails. Catches a missing bounds check (an NF could ship
+# heartBeatTimer=100000 and never time out).
+#
+# Per d3x-core docs/nrf/sanity-tests.md §4.7.2 NFM-08. Verified
+# against the bounds at nrf/handler_nfm.go:42-47.
+#
+# Note: this flow issues two PUTs to two different UUIDs (one for each
+# bad value), so each probe is independent. No cleanup needed because
+# neither PUT actually creates a profile.
+
+kind: flow
+name: nrf_nfm_register_bad_heartbeat
+description: heartBeatTimer 5 (below min) and 100000 (above max) → 400 each.
+type: client
+protocol: rest
+nf: external
+initial_state: start
+final_states: [done, failed]
+
+states:
+  start:
+    transitions:
+      - event: Start
+        target: below_min
+        actions:
+          - type: send
+            message: RegisterBelowMin
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 5,
+                  "fqdn": "smf-bad-hb-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  below_min:
+    transitions:
+      - event: rest.RegisterBelowMin_Answer
+        target: above_max
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+          - type: send
+            message: RegisterAboveMax
+            peer: nrf-peer
+            message_body: |
+              {
+                "method": "PUT",
+                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "nfType": "SMF",
+                  "nfStatus": "REGISTERED",
+                  "heartBeatTimer": 100000,
+                  "fqdn": "smf-bad-hb-test.local",
+                  "plmnList": [{"mcc": "001", "mnc": "01"}],
+                  "sNssais": [{"sst": 1, "sd": "010203"}]
+                }
+              }
+
+  above_max:
+    transitions:
+      - event: rest.RegisterAboveMax_Answer
+        target: done
+        actions:
+          - type: check
+            field: rest.status
+            op: equals
+            expected: 400
+          - type: check
+            field: rest.headers.Content-Type
+            op: contains
+            expected: "application/problem+json"
+          - type: check
+            field: rest.body.status
+            op: equals
+            expected: 400
+
+  done: {}
+  failed: {}

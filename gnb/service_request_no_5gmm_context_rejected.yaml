@@ -1,0 +1,290 @@
+# REG-216 — a SERVICE REQUEST from a UE whose 5GMM context the AMF no longer
+# holds must be answered, not dropped.
+#
+# CLAUSES, printed from the pinned corpus under matrix/specs/ before being
+# cited, not recalled.
+#
+#   TS 24.501 §4.4.4.3 (Integrity checking of NAS signalling messages in the
+#   AMF) — THE NORMATIVE NETWORK-SIDE SENTENCE, and it is a `shall`: "If a
+#   SERVICE REQUEST or CONTROL PLANE SERVICE REQUEST message fails the integrity
+#   check and the UE has only non-emergency PDU sessions established, the AMF
+#   shall send the SERVICE REJECT message with 5GMM cause #9 'UE identity cannot
+#   be derived by the network' and keep the 5GMM-context and 5G NAS security
+#   context unchanged."
+#
+#   Its NOTE 3 covers THIS EXACT STATE, and is why the clause applies to a UE
+#   whose context is gone rather than only to a forged MAC: SERVICE REQUEST is
+#   one of the messages "processed by the AMF even when the MAC ... fails the
+#   integrity check or cannot be verified, as in certain situations they can be
+#   sent by the UE protected with a 5G NAS security context that is NO LONGER
+#   AVAILABLE IN THE NETWORK."
+#
+#   TS 24.501 §5.6.1.5 (Service request procedure not accepted by the network).
+#   Its ONE network-side sentence names no cause: "If the service request cannot
+#   be accepted, the network shall return a SERVICE REJECT message to the UE
+#   including an appropriate 5GMM cause value." Everything else in the clause,
+#   including all of its per-cause text, is UE-side — "The UE shall ...".
+#
+# THE CAUSE IS #9, AND THE ADJUDICATION IS RECORDED HERE SO IT IS NOT
+# RE-LITIGATED. This row's criterion demanded #10 and this check was `oneof
+# [9, 10]` — looser than the row's own claim, so neither said what the clause
+# says. Settled 2026-08-17 against the printed text:
+#
+#   1. §4.4.4.3 is the only normative NETWORK-SIDE sentence naming a cause for
+#      this state, and it says #9 with a `shall`. §5.6.1.5 gives the network
+#      only "an appropriate 5GMM cause value", and Annex A.1 is INFORMATIVE —
+#      neither can outrank a `shall`. This project has already been burned once
+#      citing §5.6.1.5 as if it were network-side normative.
+#   2. THE UE-SIDE CONSEQUENCES ARE OPPOSITE, and only one of them is this row's
+#      why_it_matters. §5.6.1.5 under #9: the UE "shall set the 5GS update status
+#      to 5U2 NOT UPDATED ... and shall DELETE ANY 5G-GUTI, last visited
+#      registered TAI, TAI list and ngKSI". Under #10: the UE "shall enter the
+#      state 5GMM-DEREGISTERED.NORMAL-SERVICE. The UE shall delete any mapped 5G
+#      NAS security context or partial native 5G NAS security context" — no
+#      5G-GUTI deletion at all. Only #9 stops the UE re-presenting the retired
+#      identity, which is the whole point of the row.
+#   3. REG-455 (service_request_bad_mac_service_reject_cause9) already asserts
+#      `equals 9` off the same clause. This row is that clause's sibling limb —
+#      there the MAC fails, here it cannot be verified because the context is
+#      gone — and §4.4.4.3 gives both the same answer. Two rows off one `shall`
+#      must not disagree about the cause it names.
+#
+# HOW THIS ROW DIFFERS FROM REG-215 (service_request_unknown_tmsi_rejected),
+# which also asserts #9. The cause is now the same; the STATE OF THE AMF is not,
+# and that is what the row measures:
+#
+#   REG-215 presents a 5G-S-TMSI THE AMF NEVER ALLOCATED (the bitwise
+#           complement of its own). There is no context and never was one.
+#   REG-216 presents the 5G-S-TMSI THE AMF ITSELF ALLOCATED, after a completed
+#           de-registration has removed the 5GMM context behind it. The identity
+#           was legitimately issued and the context has been retired — §4.4.4.3
+#           NOTE 3's "no longer available in the network", verbatim.
+#
+# Two different states of the AMF, two different wire probes, and a core can
+# fail one while passing the other. They are not the same row wearing two names.
+#
+# FLAGGED, NOT FIXED: the row's NAME says "implicitly de-registered UE" — the
+# #10 event — while its flow performs an EXPLICIT de-registration, and the cause
+# it now asserts is #9. The name is the stale half. Renaming it or re-flowing it
+# to an actual implicit de-registration would be new coverage, so neither was
+# done here.
+#
+# WHY DE-REGISTRATION AND NOT AN ACTUAL IMPLICIT DE-REGISTRATION. Implicit
+# de-registration is a TIMER EXPIRY inside the AMF (§5.3.7), measured in hours,
+# with no external trigger a black-box prober can pull. What it LEAVES BEHIND is
+# an AMF holding no 5GMM context for a 5G-GUTI it issued — and a completed
+# de-registration produces exactly that state, which is why Annex A.1 gives both
+# it and an AMF restart the same cause. The row measures the state, which is
+# what is observable; it cannot measure how the state was reached, and no
+# black-box row could.
+#
+# WHY SILENCE IS NOT CONFORMANT HERE — the reflex "the spec says discard, so
+# silence is the pass" is wrong for this message and the reasoning is REG-215's,
+# reproduced because it is the thing most likely to be re-litigated:
+# §4.4.4.3 forbids the AMF to PROCESS an unprotected SERVICE REQUEST, but
+# §4.4.4.2 g) has the UE accept a SERVICE REJECT (cause other than #76/#78)
+# WITHOUT integrity protection precisely because "in certain situations they are
+# sent by the network before security can be activated". A rule admitting an
+# unprotected SERVICE REJECT only makes sense if the network is expected to send
+# one exactly here. Refusing to process and still answering are both required.
+# A UE that hears nothing retries a dead identity forever, which is this row's
+# why_it_matters.
+#
+# WHAT IS ASSERTED
+#   1. the identity being presented was really issued BY THIS AMF — the flow
+#      registers first and the 5G-S-TMSI it later presents is the one the
+#      REGISTRATION ACCEPT allocated (EnrichServiceRequest reads
+#      ue.NGAP.Guti5gTmsi, which only a completed registration sets);
+#   2. the context was really removed — DEREGISTRATION ACCEPT observed;
+#   3. THE ROW: a SERVICE REJECT arrives, carrying the 5GMM cause §4.4.4.3
+#      obliges the AMF to send for this state — #9.
+#
+# A SERVICE ACCEPT is the finding this row exists to catch — the core resuming a
+# subscriber it has de-registered — and it lands on `accepted_after_dereg`, a
+# named failure terminal so the trace says WHICH failure it was. Silence lands
+# on `failed`.
+#
+# NOT A BARE TIMER for any passing terminal.
+#
+# MEASURED AGAINST tinycore 2026-08-17: terminal `rejected`, SERVICE REJECT with
+# 5GMM cause 9 on the wire (`nas.gmm_cause` actual=9), 6/6 checks. That is the
+# answer §4.4.4.3 obliges, and it is what fixed the cause question: the core and
+# the clause agree, and it was the register's #10 and this template's `oneof
+# [9, 10]` that were out of step with both.
+#
+# HISTORY, kept because it is what the row was authored against and it explains
+# the paragraph above. Measured 2026-08-11 (git-8523d93) the terminal was
+# `failed` — NO ANSWER at all to the SERVICE REQUEST within the budget, while
+# registration, DEREGISTRATION ACCEPT and the UE CONTEXT RELEASE COMMAND all
+# arrived as expected. tinycore then had no path from "no 5GMM context behind
+# this identity" to a SERVICE REJECT, the same gap REG-215 recorded from the
+# other direction. #281 closed it; #288 reopened it briefly (this row is what
+# caught that, and #343 closed it again).
+#
+# ACCEPTANCE TEST — THE ROW CAN REPORT THE OTHER TERMINAL. Run 2026-08-11 with
+# the de-registration replaced by a plain UE CONTEXT RELEASE REQUEST, so the UE
+# reaches CM-IDLE with its 5GMM context INTACT and everything else identical:
+# the same SERVICE REQUEST, under the same 5G-S-TMSI, was ACCEPTED
+# (`InitialContextSetupRequest.ServiceAccept`, terminal `accepted_after_dereg`,
+# 5/5 checks). The de-registration is therefore the only variable, and the
+# silence above is the core's answer to it rather than a broken flow.
+
+kind: flow
+name: service_request_no_5gmm_context_rejected
+description: SERVICE REQUEST under the AMF's own 5G-S-TMSI after de-registration has removed the 5GMM context — expect SERVICE REJECT with 5GMM cause #9 (YAML)
+detail: |
+  A UE registers, de-registers normally, and then attempts to resume with a
+  SERVICE REQUEST presenting the 5G-S-TMSI the AMF itself allocated during that
+  registration. The AMF can derive the identity — it issued it — but holds no
+  5GMM context behind it any more, so the message cannot be integrity checked
+  against a context that is still in the network.
+
+  TS 24.501 §4.4.4.3 is the network-side clause for exactly that, and it is a
+  "shall": the AMF "shall send the SERVICE REJECT message with 5GMM cause #9 'UE
+  identity cannot be derived by the network'". Its NOTE 3 names this state — a
+  SERVICE REQUEST "sent by the UE protected with a 5G NAS security context that
+  is no longer available in the network". §5.6.1.5 adds only that the network
+  "shall return a SERVICE REJECT ... including an appropriate 5GMM cause value";
+  it names none, and the rest of that clause is UE-side.
+
+  The flow fails on any other cause, on a SERVICE ACCEPT, or on silence.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - rejected
+  - accepted_after_dereg
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # The FOR bit: this UE has more uplink NAS to send after registration
+          # (the de-registration request), so the AMF must keep N1 up
+          # (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_dereg_accept
+        actions:
+          # The 5G-GUTI allocated here is the identity the probe later presents.
+          # Without a completed registration there is no allocated 5G-TMSI at
+          # all and the row would be REG-215 by accident.
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: check, field: nas.guti.tmsi_5g, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # Normal de-registration, NOT switch-off: the UE asks and waits for
+          # the network's answer, so step 2 of the assertion set is observable.
+          - { type: send, message: DeregistrationRequest }
+
+  wait_dereg_accept:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release_command
+      # Some cores release the context without a separate accept; the release
+      # command is then the observation that the context is gone.
+      - event: UEContextReleaseCommand
+        target: wait_service_answer
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - { type: send, message: ServiceRequest, params: { service_type: 1 } }
+
+  wait_release_command:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_answer
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          # A new UE-associated logical NG-connection needs a new RAN UE NGAP ID
+          # (TS 38.413 §8.6.1.2). The 5G-S-TMSI is deliberately NOT reallocated:
+          # presenting the AMF's own allocation is the probe.
+          - { type: ngap_realloc }
+          - type: send
+            message: ServiceRequest
+            params:
+              # ENUM SVC_TYPE_SIGNALLING=1 — pending uplink signalling, no
+              # pending user data. The same value the positive `service_request`
+              # row sends, so the only variable is whether a 5GMM context exists.
+              service_type: 1
+
+  wait_service_answer:
+    # §5.6.1.5 is a "shall return"; nothing at all is a failure of that duty,
+    # so the timeout terminal is `failed` and not a pass.
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.ServiceReject
+        target: rejected
+        actions:
+          # THE ROW. §4.4.4.3's `shall`: cause #9, "UE identity cannot be derived
+          # by the network". `equals`, not a set — §4.4.4.3 names one cause for
+          # this state and #10 carries the wrong UE-side consequence (it does not
+          # make the UE delete the retired 5G-GUTI). See the header.
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 9 }
+      # The core resumed a subscriber it had de-registered.
+      - event: NASDownlinkTransport.ServiceAccept
+        target: accepted_after_dereg
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: accepted_after_dereg
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-216 (negative, expected_terminal: rejected) —
+# SERVICE REJECT received on N1 carrying 5GMM cause #9
+#
+# REG-216: "SERVICE REJECT received on N1 carrying 5GMM cause #9."
+# `accepted_after_dereg` is the AMF accepting a service request for a UE it holds no
+# 5GMM context for, which is the finding.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 6
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

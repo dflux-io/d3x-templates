@@ -1,0 +1,223 @@
+# runner ↔ AUSF Nausf SBI security / robustness suite — one UE, one execution per flow.
+#
+# Drives abnormal, malformed, unauthorized, and security-edge Nausf requests
+# consumer-side against a real 5G core (Open5GS AUSF). runner is the SBI
+# consumer/peer. The cross-cutting assertion is that the AUSF reacts in a
+# spec-correct way and STAYS UP — these flows deliberately send things the
+# AUSF should REJECT (403/404/400/415/413) or tolerate, never crash. Most
+# steps assert their spec-correct REJECT terminal (`rejected`); a couple assert
+# only graceful tolerance (`tolerated`).
+#
+# Every step is one UE / one execution (repetitions: 1). Each Nausf request is
+# its own HTTP/2 exchange over the shared AUSF connection, so — unlike the
+# gNB/SCTP suites — there is no persistent association or shared 5GMM context to
+# poison between steps; AUSF liveness across the whole run is the real signal.
+# stop_on_failure is false on every step so one misbehaving probe never blocks
+# discovering the others. The cleanup step runs always.
+#
+# Run:
+#   ./bin/d3x-run run-suite -suite ausf-security \
+#       -templates <templates-dir> -c config/open5gs-ausf.yaml -trace
+#
+# ORDER rationale: the simple stateless initiate-reject probes (single POST,
+# expect a 4xx) run FIRST — they leave no server-side state. The CHAINED probes
+# (initiate -> confirmation/eap/delete sequences) that create then abuse an
+# authentication context run LAST, since they leave a half-done or stale auth
+# context on the AUSF; running them after the stateless probes keeps that
+# half-state from confusing the earlier checks. The cleanup step (DELETE the
+# confirmation sub-resource) runs always_run at the very end to remove any auth
+# context the chained probes left behind, leaving the AUSF per-SUPI state clean.
+#
+# Known EXPECTED failures / runtime-risk against a real Open5GS (genuine core
+# gaps, not flow bugs — the FAIL is itself the finding):
+#   - ausf_ueauth_oversized_body_rejected: terminal is `tolerated` (not
+#     `rejected`) on purpose — a 413 is the ideal answer, but a real core may
+#     instead accept/stream the ~2MB body or drop the connection; the flow
+#     passes as long as the AUSF reacts gracefully and stays up. A hard crash
+#     or hang is the finding.
+#   - ausf_ueauth_unsupported_media_type_rejected: expects 415 for a
+#     text/plain Content-Type; some cores are lax about Content-Type and answer
+#     400 (or even 201) instead — note as a robustness gap.
+#   - ausf_ueauth_stale_ctx_liveness_rejected (chained): initiate -> DELETE
+#     confirmation -> PUT confirmation on the now-stale ctx. If Open5GS does
+#     not implement DELETE on the confirmation sub-resource (frequently
+#     unimplemented, OM-facing), the liveness arm cannot set up its stale ctx;
+#     terminal `tolerated` keeps the flow passing on any graceful AUSF reaction,
+#     but a 404/405 on the DELETE is a core gap to record.
+#   - ausf_ueauth_5g_aka_confirmation_delete (cleanup): same DELETE caveat — it
+#     may answer 404/405 instead of 204 if the core lacks the resource;
+#     terminal `released` only needs an answer, but a hard reject is a core gap.
+# All other steps are expected to PASS against a healthy, matched Open5GS AUSF:
+# each asserts the spec-mandated 4xx reject (403 SERVING_NETWORK_NOT_AUTHORIZED,
+# 404 USER_NOT_FOUND / unknown ctx / unknown SUPI, 400 malformed/missing
+# mandatory field, RFC7807 problem+json fidelity with no SUPI leak). A failure
+# there points at the core, not at our flows.
+#
+# First-run results (2026-06-05, Open5GS v2.7.x, runner as SBI consumer):
+# 9/17 pass; the AUSF never crashed (the core robustness assertion held).
+# Pass: oversized_body, sor_missing_ackind, upu_missing_mandatory_field,
+# confirmation_unknown_ctx, confirmation_missing_res_star, wrong_res_star,
+# eap_malformed_payload, stale_ctx_liveness, cleanup. The 8 fails are NOT flow
+# bugs — they are core-behaviour/terminal-pinning findings: most UEAU-negative
+# steps (bad/missing serving-network, malformed SUCI, unknown user, unsupported
+# media type, problem-details fidelity) depend on the AUSF<->UDM exchange and
+# Open5GS answers 400 where the flow pinned a different 4xx terminal, or the
+# SoR/UPU-unknown-SUPI 4xx differs from the pinned reject. PRECONDITION: the
+# UDM must be alive — these were re-run after restarting the UDM that the
+# udm-security suite had crashed (against a dead UDM the AUSF returns 504 and
+# every step fails for the wrong reason).
+
+kind: suite
+name: ausf-security
+description: One-UE-per-flow abnormal/malformed/unauthorized Nausf probes; assert correct rejection and AUSF liveness.
+steps:
+  # --- stateless single-POST reject probes (leave no server state) --------
+  - name: ueauth_bad_serving_network_name_rejected
+    flow: ausf_ueauth_bad_serving_network_name_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueauth_missing_serving_network_name_rejected
+    flow: ausf_ueauth_missing_serving_network_name_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueauth_malformed_suci_rejected
+    flow: ausf_ueauth_malformed_suci_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueauth_unknown_user_rejected
+    flow: ausf_ueauth_unknown_user_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueauth_unsupported_media_type_rejected
+    flow: ausf_ueauth_unsupported_media_type_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # ~2MB padded body: terminal is `tolerated` (graceful reaction + stays up),
+  # not strictly `rejected` — a 413 is ideal but a real core may stream/accept
+  # or drop the conn (see header runtime-risk).
+  - name: ueauth_oversized_body_rejected
+    flow: ausf_ueauth_oversized_body_rejected
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  - name: ueauth_problem_details_fidelity_check
+    flow: ausf_ueauth_problem_details_fidelity_check
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- SoR / UPU protection reject probes (independent, stateless) --------
+  - name: sor_protection_unknown_supi_rejected
+    flow: ausf_sor_protection_unknown_supi_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: sor_protection_missing_ackind_rejected
+    flow: ausf_sor_protection_missing_ackind_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: upu_protection_unknown_supi_rejected
+    flow: ausf_upu_protection_unknown_supi_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: upu_protection_missing_mandatory_field_rejected
+    flow: ausf_upu_protection_missing_mandatory_field_rejected
+    repetitions: 1
+    timeout: 20s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # --- chained probes: create then abuse an auth context (run LAST) -------
+  # These initiate a real authentication context and then send a bad/missing
+  # /fabricated confirmation against it, leaving a half-done or stale context.
+  - name: ueauth_confirmation_unknown_ctx_rejected
+    flow: ausf_ueauth_confirmation_unknown_ctx_rejected
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueauth_confirmation_missing_res_star_rejected
+    flow: ausf_ueauth_confirmation_missing_res_star_rejected
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueauth_wrong_res_star_failure
+    flow: ausf_ueauth_wrong_res_star_failure
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  - name: ueauth_eap_malformed_payload_rejected
+    flow: ausf_ueauth_eap_malformed_payload_rejected
+    repetitions: 1
+    timeout: 25s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
+  # initiate -> DELETE confirmation -> PUT on the stale ctx. terminal
+  # `tolerated` = any graceful AUSF reaction (the DELETE may be unimplemented;
+  # see header runtime-risk).
+  - name: ueauth_stale_ctx_liveness_rejected
+    flow: ausf_ueauth_stale_ctx_liveness_rejected
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: tolerated
+
+  # --- cleanup (always runs, even if earlier steps failed) ---------------
+  # DELETE the 5g-aka-confirmation sub-resource to remove any auth context the
+  # chained probes left behind. terminal `released` = the AUSF answered the
+  # DELETE (204 expected; 404/405 is a core gap, see header).
+  - name: cleanup
+    flow: ausf_ueauth_5g_aka_confirmation_delete
+    repetitions: 1
+    timeout: 25s
+    always_run: true
+    success_when:
+      at_least_one_final_state: released

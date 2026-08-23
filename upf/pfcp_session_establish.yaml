@@ -1,0 +1,90 @@
+# PFCP Session Establishment (3GPP TS 29.244 §7.5.2 / §5.2.1).
+#
+# runner (SMF) establishes the node-level association, then sends a
+# PFCPSessionEstablishmentRequest carrying a hand-authored uplink Create PDR
+# (source interface ACCESS, request the UPF to CHOOSE the N3 F-TEID via CH=true,
+# outer-header removal of GTP-U/UDP/IPv4) and a Create FAR (Apply Action FORW,
+# destination interface CORE). The establishment enricher mints our CP F-SEID,
+# allocates a LocalSEID and stamps NodeID; the UPF allocates its UP F-SEID and
+# replies PFCPSessionEstablishmentResponse with Cause "Request accepted".
+#
+# Apply Action FORW = bit0 (flags=2 per TS 29.244 §8.2.26; FORW is the 2nd bit).
+# OuterHeaderRemoval description 0 = GTP-U/UDP/IPv4.
+#
+# Spec-correct success = a SessionEstablishmentResponse with Cause
+# "Request accepted" (TS 29.244 §8.2.1).
+
+kind: flow
+name: upf_pfcp_session_establish
+description: SMF establishes a PFCP session (uplink PDR+FAR) against a real UPF (N4)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  }
+                ]
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: established
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"

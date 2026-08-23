@@ -1,0 +1,200 @@
+# PDU Session Resource Release Response referencing the WRONG session id
+# (3GPP TS 38.413 §8.2.3 / §10 abnormal: unknown PDU Session ID in response).
+#
+# Negative under test: after the AMF sends a PDUSessionResourceReleaseCommand for
+# session id = 1, the gNB replies PDUSessionResourceResponse listing a different,
+# non-existent PDU session id (injected via message_body so the enricher's
+# default list is not used). A correct AMF detects the inconsistency between the
+# command and the response — flagging it (ErrorIndication / 5GMMStatus) rather
+# than silently accepting a release for a session it never asked to release.
+#
+# Lenient assertion: ErrorIndication or 5GMMStatus is the clear detection ->
+# `handled`. Open5GS may also simply ignore the mismatched id (itself a
+# documentable result), so a timeout is treated leniently as `tolerated`. Only a
+# transport error routes to `failed`.
+
+kind: flow
+name: pdu_session_release_response_wrong_session_id
+description: Reply to a release command with a mismatched PDU session id; assert AMF detects/tolerates (YAML)
+detail: |
+  Registers a UE, establishes a PDU session, requests its release, then on the
+  PDUSessionResourceReleaseCommand replies with a PDUSessionResourceReleaseResponse
+  whose release list references a bogus PDU session id (3GPP TS 38.413 §8.2.3 /
+  §10). A robust AMF detects the command/response inconsistency
+  (ErrorIndication / 5GMMStatus -> `handled`) or ignores it without crashing
+  (timeout -> `tolerated`).
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - handled
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration, so the FOR bit must say so
+            # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+            # as soon as registration completes, and free5GC does.
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          - type: send
+            message: PDUSessionEstablishmentRequest
+
+  wait_pdu_session_accept:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          # `greater_than 0`, NOT `not_empty`. ue.UpfTeid / ue.PduSessionId /
+          # ue.Params.ps_ul_teid resolve to a RAW uint32 (resolveUEField returns the Go
+          # value; only the NGAP/NAS/REST/SBI namespaces go through the JSON projection).
+          # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
+          # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
+          # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
+          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          - type: check
+            field: ue.PduSessionId
+            op: greater_than
+            expected: 0
+          - type: check
+            field: ue.UpfTeid
+            op: greater_than
+            expected: 0
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              {
+                "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}"
+              }
+          - type: send
+            message: PDUSessionReleaseRequest
+
+  wait_release_command:
+    on_timeout:
+      duration: 15s
+      target: failed
+    transitions:
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: wait_reaction
+        actions:
+          # Reply with a mismatched / non-existent PDU session id. The enricher
+          # only fills the release list when nil, so this bogus id survives.
+          - type: send
+            message: PDUSessionResourceReleaseResponse
+            message_body: |
+              {
+                "pdu_session_resource_release_list": [
+                  { "pdu_session_id": 99 }
+                ]
+              }
+
+  wait_reaction:
+    # Open5GS may silently ignore the mismatched id -> tolerated (documentable).
+    on_timeout:
+      duration: 8s
+      target: tolerated
+    transitions:
+      - event: ErrorIndication
+        target: handled
+      - event: NASDownlinkTransport.5GMMStatus
+        target: handled
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-370 (robustness, expected_terminal: null) — After
+# the mismatched PDUSessionResourceReleaseResponse the NG association stays up, and the
+# session the command actually named is not later referenced by the core as still active
+# (no modify or notify for it)
+#
+# NO NON-FAILURE TERMINAL IS PINNED. REG-370 declares `expected_terminal: null` and its
+# criterion is an ABSENCE — "the NG association stays up, and the session the command
+# actually named is not later referenced by the core as still active (no modify or
+# notify for it)". That absence is `tolerated`, the 8 s timer; `handled` is the core
+# noticing the mismatch and saying so. Both are consistent with the criterion, and
+# pinning the timer would make silence the pass, which CLAUDE.md forbids and which this
+# corpus has already been burned by twice.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: no UE ended in `failed` (the association or the preamble died)
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 6
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

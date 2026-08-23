@@ -1,0 +1,298 @@
+# REG-158 — a mobility registration update whose PDU session status IE declares
+# the UE's only session INACTIVE, and the REGISTRATION ACCEPT that must report
+# back which sessions the AMF still holds.
+#
+# CLAUSES. §5.5.1.3.4's session-state sentences and the §4.4.6 b)1) quotations
+# below are the ones already retrieved and recorded in this tree — see
+# gnb/service_request_nas_container_uplink_data_status.yaml,
+# which quotes §4.4.6 b)1) verbatim from the pinned corpus, and
+# runner/runner/enrichers_ngap_connmgmt.go for the IE semantics of §9.11.3.44.
+# The spec corpus is gitignored and was NOT present in this worktree, so nothing
+# here is quoted as new: every clause reference is one this repo had already
+# retrieved with matrix/scripts/spec-clause.py, and where a sentence could not be
+# re-verified it is described rather than quoted.
+#
+# ---------------------------------------------------------------------------
+# THE §4.4.6 CLEARTEXT JUDGEMENT, AND WHY THIS ROW CANNOT BE DRIVEN WITHOUT IT
+# ---------------------------------------------------------------------------
+#
+# A mobility registration update sent from 5GMM-IDLE is an INITIAL NAS message.
+# §4.4.6 lets such a message carry, in the clear, only the CLEARTEXT IEs — for a
+# REGISTRATION REQUEST: the registration type, the ngKSI, the 5GS mobile identity
+# and the UE security capability (the list recorded in
+# runner/runner/enrichers_gnb_additions.go, which is why the plain
+# RegistrationUpdate sendable needs no container and cites case b)3)).
+#
+# THE PDU SESSION STATUS IE IS NOT ON THAT LIST. It is the same class of IE as
+# the Uplink data status IE of a SERVICE REQUEST, and this tree already has a
+# live, measured demonstration of what happens when one of those travels in the
+# clear: EnrichServiceRequest does exactly that and open5gs answers SERVICE
+# REJECT #95. Sending it unprotected here would therefore make the row fail for
+# OUR reason rather than measure the core — the single worst outcome available.
+#
+# So the probe uses §4.4.6 b)1): the ENTIRE registration request, cleartext and
+# non-cleartext IEs together, inside a NAS message container whose value part is
+# ciphered, with an outer message carrying the cleartext IEs plus the container
+# and a security header type of 'integrity protected'.
+# TestRegistrationUpdatePduSessionStatus_IEIsOnlyInTheContainer decodes the built
+# message and fails if the outer copy exists, so the violation cannot creep back.
+#
+# WHAT THAT MEANS FOR A RED CELL HERE, said plainly. A core with no §4.4.6 b)1)
+# support for REGISTRATION REQUEST cannot see the IE, owes nothing, and this row
+# goes red. That red is CONFOUNDED with the container support REG-201 and REG-207
+# measure, and it is not avoidable: the IE is non-cleartext and the message is an
+# initial NAS message, so there is no conformant way to ask the question without
+# the container. Read this row's red alongside REG-207's before attributing it.
+#
+# ---------------------------------------------------------------------------
+# WHY `ie_present` IS THE ASSERTION THAT MAKES THIS ROW REAL
+# ---------------------------------------------------------------------------
+#
+# §5.5.1.3.4 makes the AMF's PDU session status IE in the REGISTRATION ACCEPT
+# owed BECAUSE the UE included one in the REGISTRATION REQUEST. In this flow the
+# UE's copy exists nowhere except inside the ciphered container, so an AMF that
+# never deciphered it has no reason to emit the IE at all. Its PRESENCE is
+# therefore a statement that the inner copy was read — the same discriminator
+# REG-207 rests on, for the same reason.
+#
+# AND WHY THE BIT ALONE WOULD BE VACUOUS. The UE declares its only session
+# inactive, so the value this row wants back is psi_1 = INACTIVE, which is the
+# ZERO value of the field. An AMF that emitted an all-zero PDU session status IE
+# for an unrelated reason would satisfy `psi_1 == inactive` having read nothing.
+# It is the CONJUNCTION that discriminates: the IE is present (owed only because
+# of a container the AMF had to decipher) AND it reports the session gone AND the
+# session demonstrably existed with a real tunnel a moment earlier.
+#
+# THE BIT IS A BOOLEAN, NOT A NUMBER, and the check says `expected: false` rather
+# than `expected: 0`. proto/nas5g's NAS_PDUSessionStatus fields are Go `bool`, the
+# `equals` op compares `%v` renderings, and "false" != "0" — so `equals 0` here
+# would be a false red, the mirror of the psi_1-inverted defect xp-277 found in
+# REG-207. NAS_PDUSessionReactivationResult's fields ARE uint32, which is why the
+# sibling flow for REG-159 correctly writes `expected: 0`. The two IEs do not
+# agree about this and the templates must not either.
+#
+# `equals false` also FAILS on an absent field rather than passing: the missing-field
+# branch in action_executor.go passes `equals` only when expected is nil. The
+# preceding `ie_present` is kept anyway, because it records the §5.5.1.3.4
+# obligation as its own fact in the trace rather than folding it into a value test.
+#
+# TS 24.501 §9.11.3.44 — bit set = "PDU SESSION ACTIVE", bit clear = "PDU SESSION
+# INACTIVE". The UE sends `pdu_session_status_psi: ""`, i.e. an all-zero bitmap:
+# "I hold no active session". The IE is still EMITTED — see
+# EnrichRegistrationUpdatePduSessionStatus, which refuses to drop it when the list
+# is empty, because §5.5.1.3.4's obligation keys on the IE being included and an
+# absent IE would turn this row into its opposite.
+#
+# WHAT IS ASSERTED, in order
+#   1. the session really existed — PDU SESSION RESOURCE SETUP REQUEST for PSI 1
+#      with a non-zero uplink TEID, so "the AMF released it" has content;
+#   2. it really went to CM-IDLE — UE CONTEXT RELEASE COMMAND observed and
+#      acknowledged, which is what makes a §5.5.1.3 update from idle possible;
+#   3. THE ROW, part one: the update's REGISTRATION ACCEPT carries a PDU session
+#      status IE at all (`ie_present`, which fails on absence);
+#   4. THE ROW, part two: that IE reports PSI(1) INACTIVE — the AMF performed the
+#      local release the UE asked for instead of holding a session the UE has
+#      forgotten.
+#
+# NOT ASSERTED, and said so rather than faked: that the AMF told the SMF. N11 is
+# not on this harness's surfaces and REG-158's own `surface:` is n1/n2 only.
+# "The AMF locally releases every PDU session the UE reports inactive" is
+# observable here only through what the AMF says about its own session set.
+#
+# RE-VERIFICATION IS ANSWERED, NOT TREATED AS THE OUTCOME. §5.5.1.3.4 lets the
+# AMF authenticate, run a security mode procedure or ask for an identity before
+# it accepts, and tinycore re-authenticates every update. Those are
+# self-transitions that answer and keep waiting, exactly as
+# mobility_registration_updating had to be rewritten to do — stopping at the
+# first reaction would score "the AMF said something" as a pass.
+#
+# NOT A BARE TIMER: every terminal but `failed` is reached by a message arriving.
+#
+# NOT MEASURED. No core has run this flow: it was authored in a worktree with no
+# Docker and no core available, so there is no "MEASURED AGAINST" paragraph here
+# and its absence is deliberate rather than an omission. What a live run must
+# settle: whether any of the three cores implements §4.4.6 b)1) for a
+# REGISTRATION REQUEST at all (tinycore's AMF had no container handling outside
+# the SECURITY MODE COMPLETE replay as of 2026-08-12), and whether the accept
+# arrives inside an INITIAL CONTEXT SETUP REQUEST or on its own.
+kind: flow
+name: mobility_update_pdu_session_status_sync
+description: mobility registration update declaring the UE's session inactive inside a ciphered NAS message container — expect a PDU session status IE in the REGISTRATION ACCEPT reporting the session released (YAML)
+detail: |
+  Registration, one PDU session, a gNB-initiated UE Context Release to CM-IDLE,
+  and then a mobility REGISTRATION REQUEST built the way TS 24.501 §4.4.6 b)1)
+  requires: the outer message carries only the cleartext IEs plus a NAS message
+  container whose ciphered value part holds the entire registration request,
+  including a PDU session status IE reporting every PDU session INACTIVE.
+
+  §4.4.6 obliges the AMF to decipher the container and treat what it finds
+  there as the message that triggered the procedure. §5.5.1.3.4 then obliges it
+  to return a PDU session status IE of its own — an IE it owes only because of
+  an IE it could only have seen inside the container.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - reconciled
+  - update_rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_session
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  # ASSERTION 1 — there is a session to declare inactive, and it has a real
+  # tunnel. Without this the whole row could pass against a UE that never had
+  # one, and "the AMF released it" would be a statement about nothing.
+  wait_first_session:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          - { type: send, message: UEContextReleaseRequest }
+
+  # ASSERTION 2 — the UE really is in CM-IDLE, which is what makes the following
+  # REGISTRATION REQUEST an INITIAL NAS message and puts §4.4.6 in play at all.
+  wait_release_command:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_update_answer
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          # THE PROBE. An empty PSI list is an all-zero PDU session status IE —
+          # "no session of mine is active" — and it exists ONLY inside the
+          # ciphered container.
+          - type: send
+            message: RegistrationUpdatePduSessionStatus
+            params:
+              pdu_session_status_psi: ""
+              registration_type: 2
+      # A configuration update may arrive first; consume it so it cannot be
+      # mistaken for the answer to a probe that has not been sent yet.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_command
+
+  wait_update_answer:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      # CARRIER ONE — the accept rides an INITIAL CONTEXT SETUP REQUEST, which is
+      # how an AMF re-establishes the UE context for an update from idle.
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: reconciled
+        actions:
+          # THE ROW, part one: owed by §5.5.1.3.4 only because the UE's own IE was
+          # in the container the AMF had to decipher.
+          - { type: check, field: nas.pdu_session_status, op: ie_present }
+          # THE ROW, part two: the AMF reports the session INACTIVE, i.e. it
+          # performed the local release. Boolean field — see the header on why
+          # this is `false` and not `0`.
+          - { type: check, field: nas.pdu_session_status.psi_1, op: equals, expected: false }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+      # CARRIER TWO — the accept travels alone on N1.
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: reconciled
+        actions:
+          - { type: check, field: nas.pdu_session_status, op: ie_present }
+          - { type: check, field: nas.pdu_session_status.psi_1, op: equals, expected: false }
+          - { type: send, message: RegistrationComplete }
+      # §5.5.1.3.4 re-verification: answered, and the flow keeps waiting for the
+      # accept that ends the procedure.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_update_answer
+        actions:
+          - { type: send, message: AuthResponse }
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_update_answer
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_update_answer
+        actions:
+          - { type: send, message: IdentityResponse }
+      # The AMF engaged and REFUSED. Not silence and not an acceptance; the
+      # expected terminal for this row is `reconciled`, so this lands red while
+      # still telling a trace reader which of the two happened.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: update_rejected
+      - event: InitialContextSetupRequest.RegistrationReject
+        target: update_rejected
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-158 (positive, expected_terminal: reconciled) —
+# nas.pdu_session_status is present in the update's RegistrationAccept and marks as
+# inactive the session the UE declared inactive
+#
+# REG-158: the update's REGISTRATION ACCEPT carries a PDU session status IE marking the
+# session the UE declared inactive. The accept is the only route into `reconciled`;
+# `update_rejected` is a REGISTRATION REJECT, which the criterion does not accept.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
+# these flows can loop through a waiting state, and a floor cannot manufacture a failure
+# the way an equality can.
+final_checks:
+  - name: the flow reached `reconciled` — the terminal this row claims
+    metric: final_state_counts.reconciled
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 7
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0
