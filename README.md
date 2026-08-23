@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="d3x-mark.png" alt="d3x" width="80" height="80">
+</p>
+
 # d3x-templates
 
 Declarative YAML flows and suites for **dflux Runner** (`d3x-run`).
