@@ -1,7 +1,9 @@
 # SBI smoke — server side.
 # d3x-run listens on udm-server's binding and answers every
 # Nudm_SDM_GetSubscriptionData with a canned AccessAndMobilitySubscription
-# Data body. Demonstrates a typed openapi/models payload built from YAML.
+# Data body. Stays in `waiting` — this flow is the background responder for
+# suites/sbi_load_baseline.yaml (~2,000 requests). Do not route to
+# `completed` after one answer.
 
 kind: flow
 name: sbi_nudm_sdm_get_server
@@ -35,3 +37,16 @@ states:
                   }
                 }
               }
+
+# Ambient responder: no procedure terminal until the suite cancels it.
+# Pin traffic, not `completed` — a completed pin would fail sbi_load_baseline
+# and a one-shot target would drop the remaining 1,999 requests.
+final_checks:
+  - name: at least one GetSubscriptionData answer was sent
+    metric: msg_types.tx.sbi.Nudm_SDM_GetSubscriptionData_Answer
+    op: greater_or_equal
+    value: 1
+  - name: at least one GetSubscriptionData request arrived
+    metric: rx_events.sbi.Nudm_SDM_GetSubscriptionData
+    op: greater_or_equal
+    value: 1

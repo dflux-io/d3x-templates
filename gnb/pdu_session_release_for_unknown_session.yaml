@@ -6,9 +6,10 @@
 # correct SMF/AMF rejects or ignores the request for the unknown session rather
 # than acting on it.
 #
-# Lenient terminals: `handled` (AMF flags it: PDUSessionReleaseCommand /
-# 5GMMStatus / DLNASTransport reject), `tolerated` (silently ignored — a
-# documentable result), `failed` on transport error.
+# Success terminal is `handled` (AMF flags it: PDUSessionReleaseCommand /
+# 5GMMStatus / ErrorIndication). `tolerated` is the wait_reaction timer —
+# silence — and the pin below fails closed on it. `failed` is a transport
+# error or a timeout during the registration preamble.
 kind: flow
 name: pdu_session_release_for_unknown_session
 description: Release a non-existent PDU session id; assert AMF rejects/ignores (YAML)
@@ -73,20 +74,44 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# NO `final_checks` BLOCK: THE CRITERION AND THE FSM CONTRADICT EACH OTHER.
-#
-# REG-363 (abnormal, expected_terminal: null) — "PDUSessionReleaseReject received with
-# 5GSM cause #43, AND NO PDUSessionResourceReleaseCommand ARRIVES ON N2."
-#
-# This flow's `handled` terminal is entered on `PDUSessionReleaseCommand` — the exact
-# message the criterion's second clause forbids — alongside a 5GMM STATUS and an ERROR
-# INDICATION. So `handled` cannot mean "the criterion held": one of the three ways into it
-# is the criterion being violated. The other terminal, `tolerated`, is the bare 10 s
-# timer, and the message the criterion actually requires (a 5GSM PDU SESSION RELEASE
-# REJECT) has no transition anywhere in this FSM and no name in the RX event vocabulary
-# either — `d3x-run vocab` → rx_event_names.nas has PDUSessionReleaseCommand and
-# PDUSessionReleaseRequest, and no Reject.
-#
-# Pinning either terminal would manufacture a verdict, so neither is pinned. Closing this
-# needs, in order: a `PDUSessionReleaseReject` NAS event in the resolver, a transition for
-# it, and `PDUSessionReleaseCommand` moved off `handled` and onto the finding it is.
+# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this
+# flow ran correctly. The claim this FSM can currently state is: registration
+# completed, a release for session id 99 went out, and the AMF reacted
+# (`handled`). Silence is `tolerated` and fails the pin.
+final_checks:
+  - name: the AMF reacted to the unknown-session release (`handled`)
+    metric: final_state_counts.handled
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: the context setup was answered
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: the three preamble checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0
