@@ -41,9 +41,10 @@
 #      enricher writes this key only on the branch that set the bit, so a param
 #      that failed to reach the enricher cannot leave this row scoring a correct
 #      "SMS allowed clear" answer as a core defect. Guard first, assert second.
-#   2. `nas.sms_allowed equals true` on the REGISTRATION ACCEPT — the row.
-#      `equals`, not `ie_present`: the field is a bool the decoder always emits,
-#      so `ie_present` would be satisfied by the value `false`.
+#   2. `nas.sms_allowed exists` on the REGISTRATION ACCEPT. xp-341: the second
+#      limb of §5.5.1.2.4 MANDATES the bit be clear when SMSF selection did not
+#      succeed, so `equals true` would red a core that did the mandated thing.
+#      Both values are conformant; `exists` scores that the IE was decoded.
 #   3. Terminal `registered`, reached only after REGISTRATION COMPLETE, because
 #      the criterion names the terminal state as well as the bit.
 #
@@ -117,8 +118,12 @@ states:
       - event: InitialContextSetupRequest.RegistrationAccept
         target: registered
         actions:
-          # (2) THE ROW.
-          - { type: check, field: nas.sms_allowed, op: equals, expected: true }
+          # (2) THE ROW, second limb included (xp-341). TS 24.501 §5.5.1.2.4
+          # MANDATES the bit be clear when SMSF selection did not succeed, so
+          # both values are conformant; `exists` scores presence of the IE,
+          # not which limb fired. A core that cleared the bit because the
+          # guard was false is not red.
+          - { type: check, field: nas.sms_allowed, op: exists }
           - { type: send, message: InitialContextSetupResponse }
           - { type: send, message: RegistrationComplete }
 

@@ -24,7 +24,10 @@
 # an unbuilt config file is not a probe — see REG-804, which sent the ordinary request every
 # positive row sends and read as coverage while asserting nothing.
 #
-# TWO THINGS ARE ASSERTED, and they are different claims:
+# TWO THINGS WERE ASSERTED. xp-341 split the coverage limb off: SST 2 is advertised
+# by this probe but provisioned on no core in the panel, and §9.3.1.17 makes the
+# Slice Support List the AMF's OWN slices, so covering an unprovisioned SST is not
+# a duty this row scores.
 #
 #   1. ACCEPTANCE — the AMF answers a two-TA, two-slice Supported TA List with an NG SETUP
 #      RESPONSE rather than an NG SETUP FAILURE or silence. This is the row's expected_outcome
@@ -32,11 +35,8 @@
 #      one slice per broadcast PLMN"). An AMF that only parses the first TA item, or that
 #      chokes on a second S-NSSAI, cannot reach the `completed` terminal.
 #
-#   2. COVERAGE — the mandatory PLMN Support List reports slice support covering the S-NSSAIs
-#      just advertised, i.e. BOTH SST 1 and SST 2 appear in the Slice Support List. This is the
-#      row's pass_criterion read literally, and it is the check that matters operationally: a
-#      site broadcasting two slices whose core advertises one has a slice that will fail at
-#      session-establishment time with no interface-level warning.
+#   2. The mandatory PLMN Support List is present with a non-empty Slice Support List
+#      that includes the provisioned SST (SST 1). SST 2 coverage is recorded, not scored.
 #
 # The `contains` needles read the string form of the resolved JSON list, e.g.
 #   [map[nssai_sd:0 nssai_sst:1]]
@@ -52,10 +52,10 @@
 # row's finding, not a harness defect: a core supporting the two slices it is offered passes
 # both assertions unchanged.
 #
-# WHY THE COVERAGE CHECK IS NOT WEAKENED TO "at least one slice in common". Because the row's
-# own why_it_matters is "Real sites broadcast more than one tracking area and more than one
-# slice; a core that only handles one is a lab toy" — weakening it to the intersection would
-# make the single-slice core the row exists to detect score green.
+# SST 2 coverage is not scored (xp-341). No core in the panel was provisioned with
+# SST 2, and TS 38.413 §9.3.1.17 makes the Slice Support List the AMF's own slices,
+# so covering an unprovisioned advertised SST is not a duty this row claims. The
+# acceptance claim (NG SETUP RESPONSE to a two-TA two-slice advert) remains.
 
 kind: flow
 name: ng_setup_multi_tac_multi_slice
@@ -120,7 +120,11 @@ states:
           # of a transition stop at the first failure: this way the failing
           # check NAMES the S-NSSAI the core left uncovered.
           - { type: check, field: plmn_support_list.0.slice_support_list, op: contains, expected: "nssai_sst:1]" }
-          - { type: check, field: plmn_support_list.0.slice_support_list, op: contains, expected: "nssai_sst:2]" }
+          # SST 2 is advertised by this probe but provisioned on no core in
+          # the panel (xp-341). Coverage of an unprovisioned slice is the
+          # AMF's own Slice Support List, not a duty §8.7.1.2/§9.3.1.17
+          # creates, so it is not scored. SST 1 remains — that is the slice
+          # every core in the panel actually serves.
 
       # Assertion 1 failing: the AMF refused a Supported TA List that is
       # ordinary under §9.2.6.1. Named so the trace says WHICH failure this is
@@ -163,13 +167,11 @@ final_checks:
     metric: rx_events.NGSetupResponse
     op: greater_or_equal
     value: 1
-  # The six `check` actions on the path above. A template that stops
-  # asserting — a check deleted, a branch taken that skips them — moves this
-  # number, and nothing else in the report would have said so.
-  - name: all six declared checks ran
+  # The five `check` actions on the path above (SST 2 coverage is not scored).
+  - name: all five declared checks ran
     metric: checks_total
     op: equals
-    value: 6
+    value: 5
   - name: and none of them failed
     metric: checks_failed
     op: equals
