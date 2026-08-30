@@ -8,13 +8,17 @@
 #   - status: 200 OK (no Location)
 #
 # Cleanup deregisters the profile.
+#
+# Typed SBI: the RegisterNFInstance enricher mints a UUID on the first
+# send and stores it on the UE, so the second PUT and the DELETE reuse
+# the same path without a URL template.
 
 kind: flow
 name: nrf_nfm_register_201_location
 description: Verify 201+Location on first PUT, 200 on second PUT same UUID.
 type: client
-protocol: rest
-nf: external
+protocol: sbi
+nf: nrf
 initial_state: start
 final_states: [done, failed]
 
@@ -25,13 +29,10 @@ states:
         target: first_put
         actions:
           - type: send
-            message: RegisterFirst
+            message: Nnrf_NFManagement_RegisterNFInstance
             peer: nrf-peer
             message_body: |
               {
-                "method": "PUT",
-                "url": "/nnrf-nfm/v1/nf-instances/{{$uuid}}",
-                "headers": {"Content-Type": "application/json"},
                 "body": {
                   "nfType": "SMF",
                   "nfStatus": "REGISTERED",
@@ -45,31 +46,28 @@ states:
 
   first_put:
     transitions:
-      - event: rest.RegisterFirst_Answer
+      - event: sbi.Nnrf_NFManagement_RegisterNFInstance_Answer
         target: second_put
         actions:
           - type: check
-            field: rest.status
+            field: sbi.status
             op: equals
             expected: 201
           - type: check
-            field: rest.headers.Location
+            field: sbi.headers.Location
             op: contains
             expected: "/nnrf-nfm/v1/nf-instances/"
           - type: extract
-            field: rest.body.nfInstanceId
+            field: sbi.body.nfInstanceId
             store: nfInstanceId
           - type: check
             field: ue.Params.nfInstanceId
             op: not_empty
           - type: send
-            message: RegisterSecond
+            message: Nnrf_NFManagement_RegisterNFInstance
             peer: nrf-peer
             message_body: |
               {
-                "method": "PUT",
-                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}",
-                "headers": {"Content-Type": "application/json"},
                 "body": {
                   "nfType": "SMF",
                   "nfStatus": "REGISTERED",
@@ -83,31 +81,60 @@ states:
 
   second_put:
     transitions:
-      - event: rest.RegisterSecond_Answer
+      - event: sbi.Nnrf_NFManagement_RegisterNFInstance_Answer
         target: cleaning_up
         actions:
           - type: check
-            field: rest.status
+            field: sbi.status
             op: equals
             expected: 200
           - type: send
-            message: DeregisterNF
+            message: Nnrf_NFManagement_DeregisterNFInstance
             peer: nrf-peer
-            message_body: |
-              {
-                "method": "DELETE",
-                "url": "/nnrf-nfm/v1/nf-instances/{{ue.Params.nfInstanceId}}"
-              }
 
   cleaning_up:
     transitions:
-      - event: rest.DeregisterNF_Answer
+      - event: sbi.Nnrf_NFManagement_DeregisterNFInstance_Answer
         target: done
         actions:
           - type: check
-            field: rest.status
+            field: sbi.status
             op: equals
             expected: 204
 
   done: {}
   failed: {}
+
+final_checks:
+  - name: the flow ended in done
+    metric: final_state_counts.done
+    op: greater_or_equal
+    value: 1
+  - name: it did not fail
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: two RegisterNFInstance PUTs went out (create then replace)
+    metric: msg_types.tx.sbi.Nnrf_NFManagement_RegisterNFInstance
+    op: equals
+    value: 2
+  - name: one DeregisterNFInstance DELETE went out
+    metric: msg_types.tx.sbi.Nnrf_NFManagement_DeregisterNFInstance
+    op: equals
+    value: 1
+  - name: two Register answers arrived
+    metric: rx_events.sbi.Nnrf_NFManagement_RegisterNFInstance_Answer
+    op: greater_or_equal
+    value: 2
+  - name: a Deregister answer arrived
+    metric: rx_events.sbi.Nnrf_NFManagement_DeregisterNFInstance_Answer
+    op: greater_or_equal
+    value: 1
+  - name: all five declared checks ran
+    metric: checks_total
+    op: equals
+    value: 5
+  - name: none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

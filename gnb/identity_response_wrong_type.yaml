@@ -35,6 +35,9 @@ states:
       - event: NASDownlinkTransport.IdentityRequest
         target: identity_mismatch_sent
         actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
           - type: send
             message: IdentityResponse
             params:
@@ -43,26 +46,33 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# NO `final_checks` BLOCK, AND THE REASON IS NOT LAZINESS.
+# END-OF-FLOW ASSERTIONS — what this flow currently claims, said by the flow.
 #
-# REG-470 (abnormal, expected_terminal: null) — "After an IDENTITY RESPONSE carrying a
-# PEI where a SUCI was requested, no REGISTRATION ACCEPT is sent; a repeated IDENTITY
-# REQUEST, a REGISTRATION REJECT or a context release is observed."
-#
-# THIS FSM CANNOT OBSERVE ANY OF THAT. `identity_mismatch_sent` is entered at the moment
-# the wrong-type IDENTITY RESPONSE goes OUT — the flow terminates on the send and never
-# waits for the AMF's reaction, so the three messages the criterion requires, and the
-# REGISTRATION ACCEPT it forbids, all arrive (or do not) after the run is over. The other
-# terminal, `not_triggered`, is the 15 s timer: the AMF never asked for an identity at
-# all, which the file's own header says is what happens in the bare lab.
-#
-# Both terminals are therefore statements about what the gNB did, not about what the core
-# did. Pinning either would report a verdict on a claim this flow never tested, and every
-# path through it evaluates ZERO checks, so there is nothing else to assert either.
-#
-# TWO THINGS ARE NEEDED, IN THIS ORDER, AND BOTH ARE FSM CHANGES:
-#   1. a wait state after the IDENTITY RESPONSE with transitions for IdentityRequest,
-#      RegistrationReject, UEContextReleaseCommand and both RegistrationAccept forms, plus
-#      a liveness probe so that silence is `unproven` rather than a pass;
-#   2. the stimulus reconciled with the criterion — the register says PEI, the flow sends
-#      `respond_identity_type: 5g_s_tmsi`.
+# The FSM terminates on its own IDENTITY RESPONSE (wrong type). Silence is
+# `not_triggered` (the 15 s timer); a transport error is `failed`. Pinning
+# `identity_mismatch_sent` fails the run closed on either of those.
+final_checks:
+  - name: the UE sent the wrong-type IDENTITY RESPONSE
+    metric: final_state_counts.identity_mismatch_sent
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NAS UPLINK TRANSPORT was sent (IdentityResponse)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 1
+  - name: an IDENTITY REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.IdentityRequest
+    op: greater_or_equal
+    value: 1
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

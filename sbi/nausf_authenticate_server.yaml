@@ -1,5 +1,6 @@
 # SBI smoke — Nausf_UEAuthentication_Authenticate (server side).
 # Replies with a canned UEAuthenticationCtx payload (5G-AKA shape).
+# One-shot: the request is answered and the flow goes to `completed`.
 
 kind: flow
 name: sbi_nausf_authenticate_server
@@ -18,7 +19,7 @@ states:
   waiting:
     transitions:
       - event: sbi.Nausf_UEAuthentication_Authenticate
-        target: waiting
+        target: completed
         actions:
           - type: send
             message: Nausf_UEAuthentication_Authenticate_Answer
@@ -40,3 +41,17 @@ states:
                   "servingNetworkName": "5G:mnc001.mcc001.3gppnetwork.org"
                 }
               }
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: one Authenticate answer was sent
+    metric: msg_types.tx.sbi.Nausf_UEAuthentication_Authenticate_Answer
+    op: equals
+    value: 1
+  - name: an Authenticate request arrived
+    metric: rx_events.sbi.Nausf_UEAuthentication_Authenticate
+    op: greater_or_equal
+    value: 1

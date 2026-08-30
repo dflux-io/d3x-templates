@@ -32,3 +32,17 @@ states:
     transitions:
       - event: sbi.Nudm_SDM_GetSubscriptionData_Answer
         target: completed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: one Nudm_SDM_GetSubscriptionData was sent
+    metric: msg_types.tx.sbi.Nudm_SDM_GetSubscriptionData
+    op: equals
+    value: 1
+  - name: a GetSubscriptionData answer arrived
+    metric: rx_events.sbi.Nudm_SDM_GetSubscriptionData_Answer
+    op: greater_or_equal
+    value: 1

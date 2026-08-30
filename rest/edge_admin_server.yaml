@@ -1,8 +1,8 @@
 # REST smoke — server side.
-# Mocks a generic admin API. Any inbound POST on /generic/config-rules
-# is acked with a canned 201 response. Demonstrates that server flows
-# match inbound REST requests by "rest.<METHOD>.<url>" event names
-# without any per-endpoint registry.
+# Mocks a generic admin API. One inbound POST on /generic/config-rules
+# is acked with a canned 201 and the flow goes to `completed`. Demonstrates
+# that server flows match inbound REST requests by "rest.<METHOD>.<url>"
+# event names without any per-endpoint registry.
 #
 # NOTE: this template used to model edge's HTTP admin API. Edge's admin
 # plane is now gRPC-only; drive it with edgectl. This template stays
@@ -25,7 +25,7 @@ states:
   waiting:
     transitions:
       - event: rest.POST./generic/config-rules
-        target: waiting
+        target: completed
         actions:
           - type: send
             message: AddConfig_Answer
@@ -38,3 +38,17 @@ states:
                   "result": "installed"
                 }
               }
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: one AddConfig answer was sent
+    metric: msg_types.tx.rest.AddConfig_Answer
+    op: equals
+    value: 1
+  - name: a POST /generic/config-rules arrived
+    metric: rx_events.rest.POST./generic/config-rules
+    op: greater_or_equal
+    value: 1
