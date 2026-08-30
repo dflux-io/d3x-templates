@@ -30,6 +30,7 @@ nf: amf
 initial_state: idle
 final_states:
   - released
+  - failed
 
 states:
   idle:
@@ -47,3 +48,10 @@ states:
         actions:
           - type: send
             message: UEContextReleaseCommand
+
+# `failed` is declared so Dispatch's ERROR INDICATION default is not a
+# no-op here. Without it the default names a terminal the FSM has never
+# heard of and falls through (fsm.DefaultErrorIndicationTarget).
+any_state_transitions:
+  - event: Error
+    target: failed

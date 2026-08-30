@@ -275,6 +275,19 @@ states:
           - { type: check, field: nas.payload_container.n1_sm_message.gsm_cause, op: equals, expected: 54 }
           - { type: check, field: nas.payload_container.n1_sm_message.header.pdu_session_id, op: equals, expected: 1 }
 
+      # THE OTHER CONFORMANT ANSWER. REG-374: a DLNASTransport returning the
+      # unforwarded 5GSM message, PDU session ID set to that id, 5GMM cause
+      # #90 (TS 24.501 §5.4.5.2.5 a) 3) with §5.4.5.3.1 case e)). xp-312
+      # names that event PayloadNotForwarded from the 5GMM cause, not from
+      # the echoed uplink container. free5GC's captured PDU (cause 90) used
+      # to resolve to `.PDUSessionEstablishmentRequest` and this state
+      # dropped it — a conformant refusal read as silence.
+      - event: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+        target: old_session_gone
+        actions:
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 90 }
+          - { type: check, field: nas.pdu_session_id, op: equals, expected: 1 }
+
       # The core still holds the session: it set resources up for it instead of
       # saying it does not exist. This is the leak the row exists to catch.
       # Fires on the FAILURE path on purpose: it is the evidence that the

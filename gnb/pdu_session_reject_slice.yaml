@@ -135,7 +135,13 @@ states:
             - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
         target: rejected
       # AMF path: AMF rejects at the 5GMM level before forwarding to the SMF.
-      - event: NASDownlinkTransport.5GMMStatus
+      # PayloadNotForwarded is the sibling 5GMM-layer refusal: a DL NAS
+      # TRANSPORT that echoes the container back with a 5GMM cause
+      # (TS 24.501 §5.4.5.3.2) instead of a 5GMM STATUS.
+      - event:
+          or:
+            - NASDownlinkTransport.5GMMStatus
+            - NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
         target: rejected
 
 any_state_transitions:
