@@ -1,0 +1,122 @@
+# NEGATIVE / pentest — UpdateSMContext against a just-created smContextRef,
+# as a second "AMF" (stolen reference).
+#
+# 3GPP TS 29.502 §5.2.2.3 / §6.1.3.3; TS 33.501 §13.4.1 (SBI consumer auth).
+# oauth is often off in lab cores, so the only binding from "this AMF created
+# the context" to "this AMF may modify it" is possession of the Location path.
+#
+# WHAT IS ON THE WIRE
+# -------------------
+# 1. POST /nsmf-pdusession/v1/sm-contexts (CreateSMContext) as AMF-A
+#    (servingNfId 00000000-0000-0000-0000-000000000001, pduSessionId 42).
+# 2. extract sbi.headers.Location -> smContextRef (same store: pattern as
+#    ausf_ueauth_5g_aka_confirmation).
+# 3. POST {smContextRef}/modify as a different consumer: different servingNfId
+#    and a different supi in the body. The path is the stolen ref.
+#
+# This flow does NOT require new runner send-params.
+#
+# EXPECTED TERMINAL
+# -----------------
+#   rejected  — modify answered 4xx (SMF refused the stolen ref). Secure.
+#   tolerated — modify silently dropped (timeout). UPF/SMF stayed up.
+#   failed    — 5xx, or create did not yield a Location (typical 4xx on
+#               single-part JSON create without N1 SM NAS). A 2xx on the
+#               stolen modify fails the 4xx check and also lands here —
+#               that IS the finding (stolen ref accepted). Loadable
+#               either way; failed on create is an allowed terminal.
+#
+# category: negative.
+
+kind: flow
+name: smf_nsmf_update_smcontext_stolen_ref
+description: CreateSMContext then POST modify to the stolen smContextRef as a second AMF
+category: negative
+type: client
+protocol: sbi
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - tolerated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_create
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: smf
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nsmf-pdusession/v1/sm-contexts",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000001",
+                  "pduSessionId": 42,
+                  "dnn": "internet",
+                  "sNssai": {"sst": 1, "sd": "000001"},
+                  "servingNfId": "00000000-0000-0000-0000-000000000001",
+                  "guami": {"plmnId": {"mcc": "001", "mnc": "01"}, "amfId": "020040"},
+                  "servingNetwork": {"mcc": "001", "mnc": "01"},
+                  "anType": "3GPP_ACCESS",
+                  "ratType": "NR",
+                  "requestType": "INITIAL_REQUEST",
+                  "smContextStatusUri": "http://127.0.0.1:7777/namf-callback/v1/smContextStatus/1",
+                  "pei": "imeisv-1234567890123456"
+                }
+              }
+
+  wait_create:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_steal
+        actions:
+          # 201 is required to have a Location to steal. A 4xx create (common
+          # on single-part JSON without N1 SM) fails this check -> failed.
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 201
+          - type: extract
+            field: sbi.headers.Location
+            store: smContextRef
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "POST",
+                "path": "{{ue.Params.smContextRef}}/modify",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "supi": "imsi-001010000000999",
+                  "servingNfId": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                  "upCnxState": "DEACTIVATED"
+                }
+              }
+
+  wait_steal:
+    on_timeout:
+      duration: 10s
+      target: tolerated
+    transitions:
+      # Secure: SMF refuses the stolen-ref modify.
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500

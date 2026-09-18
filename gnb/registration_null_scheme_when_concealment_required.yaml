@@ -1,0 +1,134 @@
+# NEGATIVE — null-scheme SUCI while the HPLMN requires concealment
+# (IMSI-catcher / concealment-not-enforced).
+#
+# 3GPP TS 33.501 §6.12.2 / §6.12.3 / Annex C; TS 24.501 §5.5.1.2 / §9.11.3.4.
+#
+#   TS 33.501 §6.12.2: the UE constructs the SUCI using a protection scheme
+#   the HPLMN has provisioned. Null-scheme (identifier 0) does not conceal
+#   the SUPI — the MSIN rides in the clear as the scheme output.
+#
+#   TS 33.501 §6.12.3: the home network shall not accept a SUCI whose
+#   protection-scheme identifier is not allowed for that SUPI.
+#
+# WHAT IS ON THE WIRE
+# -------------------
+# InitialUEMessage carrying a REGISTRATION REQUEST whose 5GS mobile identity
+# is a SUCI with protection scheme identifier 0 (null-scheme). The send param
+# `protection_scheme: 0` makes that claim explicit. Runner default is already
+# 0; this flow requires the send-param (d3x PR feat/pentest-send-params) so
+# the stimulus is authored, not accidental.
+#
+# PRECONDITION (SUT): SUCI concealment (Profile A or Profile B) MUST be
+# configured for the subscriber. Against a core that only allows null-scheme,
+# a RegistrationAccept is the expected (insecure) outcome and is scored
+# `failed` — that is the IMSI-catcher / concealment-not-enforced finding.
+#
+# EXPECTED TERMINAL
+# -----------------
+#   reg_rejected — a NAS REGISTRATION REJECT (pass: concealment enforced).
+#   failed       — REGISTRATION ACCEPT (any carriage), SECURITY MODE COMMAND,
+#                  or silence. Accepting a null-scheme SUCI while concealment
+#                  is required is the finding.
+#
+# AuthenticationRequest is answered and the flow keeps waiting: SIDF may
+# resolve the (unconcealed) SUPI before the AMF notices the scheme is not
+# allowed. IdentityRequest is answered the same way. Neither is a verdict.
+#
+# category: negative.
+
+kind: flow
+name: registration_null_scheme_when_concealment_required
+description: NEGATIVE — null-scheme SUCI while the HPLMN requires concealment must be Registration-Rejected (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - reg_rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reaction
+        actions:
+          # Requires runner send-param protection_scheme (d3x PR feat/pentest-send-params).
+          # Default is already 0; the param makes the null-scheme claim explicit.
+          - type: send
+            message: InitialUEMessage
+            params:
+              protection_scheme: 0
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_reaction:
+    on_timeout:
+      duration: 12s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.RegistrationReject
+        target: reg_rejected
+        actions:
+          - type: check
+            field: nas.gmm_cause
+            op: ie_present
+      # SIDF may resolve the cleartext MSIN before the scheme is refused.
+      # Answer and keep waiting; this is not an outcome.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_reaction
+        actions:
+          - type: send
+            message: AuthResponse
+      - event: NASDownlinkTransport.IdentityRequest
+        target: wait_reaction
+        actions:
+          - type: send
+            message: IdentityResponse
+      # Concealment not enforced: the AMF selected algorithms / accepted
+      # registration for a null-scheme SUCI. That is the finding.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: failed
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: failed
+      - event: NASDownlinkTransport.RegistrationAccept
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `reg_rejected`
+    metric: final_state_counts.reg_rejected
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: no REGISTRATION ACCEPT arrived inside an INITIAL CONTEXT SETUP REQUEST
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: equals
+    value: 0
+  - name: nor as a downlink NAS transport
+    metric: rx_events.NASDownlinkTransport.RegistrationAccept
+    op: equals
+    value: 0
+  - name: a REGISTRATION REJECT arrived
+    metric: rx_events.NASDownlinkTransport.RegistrationReject
+    op: greater_or_equal
+    value: 1
+  - name: at least the RegistrationReject cause check ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0
