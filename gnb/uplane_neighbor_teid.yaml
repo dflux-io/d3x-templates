@@ -1,0 +1,201 @@
+# NEGATIVE — G-PDUs on a foreign (neighbor) TEID are not forwarded.
+#
+# 3GPP TS 23.501 §5.8.2.4.2 / §5.6.1; TS 29.281 §5.1 (GTP-U TEID).
+#
+#   TS 23.501 §5.8.2.4.2 — uplink packets are matched against the session's
+#   uplink PDRs; a packet that matches none is not forwarded.
+#
+#   The N3 GTP-U header TEID is the session's UL NG-U TEID signalled in the
+#   PDU SESSION RESOURCE SETUP REQUEST. A G-PDU carrying any other TEID does
+#   not match this UE's tunnel.
+#
+# WHAT IS ON THE WIRE
+# -------------------
+# Registration, one PDU session, then two user-plane windows over the same
+# inner traffic:
+#
+#   Window one (control) — default remote_teid = the granted session TEID
+#   (ue.UpfTeid). Must produce pkt_rx > 0, so window two's silence is not
+#   a dead datapath.
+#
+#   Window two (probe) — uplane_start param `remote_teid: "3735928559"`
+#   (0xDEADBEEF), which this flow first asserts is NOT the granted TEID.
+#   Same QFI the accept granted, so the only violation is the TEID.
+#
+# There is no `{{add …}}` template function in this corpus (`$inc` is a
+# named counter, not arithmetic). A literal foreign TEID plus a
+# `not_equals` check against the granted value is the loadable form.
+# Operator may replace the placeholder with granted+1 once the session
+# TEID is known.
+#
+# Requires runner `uplane_start` param `remote_teid`
+# (d3x PR feat/pentest-send-params). Until that lands, the param is
+# ignored and window two uses the session TEID — the discard assertion
+# would then fail, which is itself the signal that the runner param is
+# required.
+#
+# EXPECTED TERMINAL
+# -----------------
+#   neighbor_teid_discarded — foreign-TEID packets produce nothing at n6
+#                             (same silence doctrine as unauthorised QFI).
+#   failed                  — control window dead, or foreign TEID forwarded.
+#
+# category: negative.
+
+kind: flow
+name: uplane_neighbor_teid
+description: Registration, one PDU session, a control traffic window, then the same tunnel marked with a foreign GTP-U TEID; assert those packets produce nothing at n6
+detail: |
+  Registration, one PDU session establishment, then two user-plane windows.
+
+  Window one uses the granted session TEID and must succeed — it is what makes
+  window two's silence mean something. Window two sends identical inner traffic
+  with remote_teid 0xDEADBEEF (3735928559), which the flow asserts is not the
+  TEID the core granted, and asserts that nothing comes back.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - neighbor_teid_discarded
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_setup_request
+        actions:
+          - { type: check, field: security_key, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_setup_request:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_granted_teid
+        actions:
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          - { type: check, field: ue.Params.pdu_accept_qos_rule_count, op: equals, expected: 1 }
+          - { type: check, field: ue.Params.pdu_accept_default_qos_rule_count, op: equals, expected: 1 }
+          # The probe TEID must not be the one the core granted, or window two
+          # would be authorised traffic. 3735928559 = 0xDEADBEEF.
+          - { type: check, field: ue.UpfTeid, op: not_equals, expected: 3735928559 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # Window one — control, granted QFI, default (session) remote_teid.
+          - type: uplane_start
+            params:
+              qfi: "{{ue.Params.pdu_accept_default_qos_rule_qfi}}"
+
+  uplane_granted_teid:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: uplane_foreign_teid
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
+          # Window two — same QFI, foreign remote_teid. Requires runner
+          # uplane_start param remote_teid (d3x PR feat/pentest-send-params).
+          # Decimal string so ParamUint32 can parse it (int64/uint32 cases
+          # are not handled). Operator may replace with granted+1.
+          - type: uplane_start
+            params:
+              qfi: "{{ue.Params.pdu_accept_default_qos_rule_qfi}}"
+              remote_teid: "3735928559"
+
+  uplane_foreign_teid:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: neighbor_teid_discarded
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: equals, expected: 0 }
+          - { type: check, field: ue.UplaneReport.dl_gpdu_rx, op: equals, expected: 0 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `neighbor_teid_discarded`
+    metric: final_state_counts.neighbor_teid_discarded
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: all 15 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 15
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

