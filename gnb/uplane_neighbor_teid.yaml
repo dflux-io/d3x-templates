@@ -45,6 +45,10 @@
 kind: flow
 name: uplane_neighbor_teid
 description: Registration, one PDU session, a control traffic window, then the same tunnel marked with a foreign GTP-U TEID; assert those packets produce nothing at n6
+finding:
+  class: isolation
+  attacker: uplane
+  clause: "TS 23.501 §5.8.2.4.2 — uplink packets matching no PDR are not forwarded"
 detail: |
   Registration, one PDU session establishment, then two user-plane windows.
 

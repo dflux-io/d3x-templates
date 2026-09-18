@@ -32,6 +32,10 @@ kind: flow
 name: smf_nsmf_update_smcontext_stolen_ref
 description: CreateSMContext then POST modify to the stolen smContextRef as a second AMF
 category: negative
+finding:
+  class: idor
+  attacker: rogue-sbi
+  clause: "TS 29.502 §5.2.2.3 — UpdateSMContext is bound to the consumer that created the context"
 type: client
 protocol: sbi
 nf: smf

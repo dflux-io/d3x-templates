@@ -7,6 +7,10 @@ kind: flow
 name: udm_ueau_generate_auth_data_malformed_suci
 description: POST generate-auth-data with a malformed SUCI path is rejected with 4xx
 category: negative
+finding:
+  class: dos
+  attacker: rogue-sbi
+  clause: "TS 29.503 §6.3.3.2 — malformed SUCI on Nudm_UEAU GenerateAuthData must 4xx, not abort"
 type: client
 protocol: sbi
 nf: udm

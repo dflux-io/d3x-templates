@@ -38,6 +38,10 @@ detail: |
   released. If instead the AMF returns a RegistrationAccept, that is a
   bidding-down vulnerability and is mapped to the failure terminal.
 category: negative
+finding:
+  class: bidding-down
+  attacker: rogue-gnb
+  clause: "TS 24.501 §4.4.6 — SECURITY MODE COMPLETE must replay the full initial NAS message"
 type: client
 protocol: ngap
 nf: gnb

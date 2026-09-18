@@ -40,6 +40,10 @@ kind: flow
 name: registration_null_scheme_when_concealment_required
 description: NEGATIVE — null-scheme SUCI while the HPLMN requires concealment must be Registration-Rejected (YAML)
 category: negative
+finding:
+  class: concealment
+  attacker: rogue-gnb
+  clause: "TS 33.501 §6.12.3 — home network shall not accept a SUCI whose protection-scheme identifier is not allowed"
 type: client
 protocol: ngap
 nf: gnb

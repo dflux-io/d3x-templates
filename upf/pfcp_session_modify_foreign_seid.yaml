@@ -26,6 +26,10 @@ kind: flow
 name: upf_pfcp_session_modify_foreign_seid
 description: Session Modification with a foreign header SEID after a real establish; UPF must reject (Cause 65)
 category: negative
+finding:
+  class: session-hijack
+  attacker: rogue-smf
+  clause: "TS 29.244 §7.2.2.4.2 — Session Modification with a SEID the UPF did not allocate"
 type: client
 protocol: pfcp
 nf: upf
