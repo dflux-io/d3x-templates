@@ -4,9 +4,9 @@
 # that server flows match inbound REST requests by "rest.<METHOD>.<url>"
 # event names without any per-endpoint registry.
 #
-# NOTE: this template used to model edge's HTTP admin API. Edge's admin
-# plane is now gRPC-only; drive it with edgectl. This template stays
-# as a REST-transport demo paired with edge_admin_client.yaml.
+# NOTE: this template used to model SCP's HTTP admin API. SCP's admin
+# plane is now gRPC-only; drive it with d3x-scpctl. This template stays
+# as a REST-transport demo paired with scp_admin_client.yaml.
 
 kind: flow
 name: rest_generic_admin_server

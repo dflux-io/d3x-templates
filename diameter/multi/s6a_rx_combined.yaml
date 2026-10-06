@@ -6,10 +6,10 @@
 # on the same connection. The bus's diameter pipeline is application-id
 # agnostic: each enricher sets the right AppID on the message header, the
 # RX demux routes by Session-Id (which our UE keeps stable across the
-# whole flow), and edge echoes both directions.
+# whole flow), and SCP echoes both directions.
 #
 # Run with config/lab-diameter-multiapp.yaml which declares
-# application_ids: [16777251, 16777236] on the edge peer.
+# application_ids: [16777251, 16777236] on the SCP peer.
 
 kind: flow
 name: diameter_s6a_rx_combined

@@ -22,7 +22,7 @@
 # load path itself: it proves the workload scheduler drove the flow, the HDR
 # histograms filled, and the thresholds are comparable. Characterising a target
 # means minutes of traffic and 2-3 runs on record; see
-# `edgeguard/test/load/suites/` for what that shape looks like.
+# `scp/test/load/suites/` for what that shape looks like.
 #
 # WHY THE BURST FLOW IS NOT A SECOND STEP. `load_nudm_sdm_get_burst` needs a
 # target that answers concurrent requests independently, and the runner's own

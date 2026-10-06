@@ -4,7 +4,7 @@
 
 kind: flow
 name: diameter_s6a_clr_cla_relay
-description: S6a CLR/CLA 4-step echo (relay) against edge
+description: S6a CLR/CLA 4-step echo (relay) against SCP
 category: functional
 type: client
 protocol: diameter

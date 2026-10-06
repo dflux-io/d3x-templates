@@ -55,8 +55,8 @@ d3x-run run-suite \
 | `sbi/` | Generic SBI client/server and load |
 | `pfcp/` | PFCP client/server setup and fuzz |
 | `diameter/` | S6a / Gx / Rx |
-| `rest/` | Edge-admin REST |
-| `edge/` | Edge policy (Diameter lifecycle) |
+| `rest/` | SCP-admin REST |
+| `scp/` | SCP policy (Diameter lifecycle) |
 | `multinf/` | Multi-protocol (NGAP + Diameter on one UE) |
 | `suites/` | Multi-flow packs (compliance, security, smoke, load) |
 

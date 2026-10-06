@@ -1,8 +1,8 @@
 # S6a ULR/ULA 4-step echo flow.
 #
-# Drives the dsr-sim style "echo proxy" pattern (the default edge test mode):
-# d3x-run originates a ULR, edge echoes it back as if it were a fresh
-# request, d3x-run replies with a ULA, edge echoes that back. Each
+# Drives the dsr-sim style "echo proxy" pattern (the default SCP test mode):
+# d3x-run originates a ULR, SCP echoes it back as if it were a fresh
+# request, d3x-run replies with a ULA, SCP echoes that back. Each
 # echo arrives as an inbound diameter message and fires a same-named FSM
 # event ("ULR" then "ULA"). Both message-build steps are plain `send:`
 # actions — request vs answer is a per-enricher concern (EnrichULR generates
@@ -15,7 +15,7 @@
 
 kind: flow
 name: diameter_s6a_ulr_ula_success
-description: S6a ULR/ULA 4-step echo against edge
+description: S6a ULR/ULA 4-step echo against SCP
 category: functional
 type: client
 protocol: diameter
