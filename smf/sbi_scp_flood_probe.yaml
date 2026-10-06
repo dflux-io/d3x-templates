@@ -6,10 +6,10 @@
 # denied path would short-circuit at 403).
 #
 # Suite step: repetitions: 20, rate: 50, success_when at_least_one
-# final_state rate_limited (see edge e2e 08-sbi-rate-limit-burst-yields-429).
+# final_state rate_limited (see SCP e2e 08-sbi-rate-limit-burst-yields-429).
 kind: flow
-name: sbi_edge_flood_probe
-description: GET am-data through edge — expect 429 when flood-limit is installed
+name: sbi_scp_flood_probe
+description: GET am-data through SCP — expect 429 when flood-limit is installed
 category: negative
 type: client
 protocol: sbi

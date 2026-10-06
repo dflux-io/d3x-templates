@@ -14,7 +14,7 @@
 #
 # Run against:
 #   - a 5G core that echoes NGAP InitialUEMessage (e.g. Open5GS AMF), AND
-#   - edge in server mode for Diameter ULR/ULA (conf/edge-diameter-server.yaml)
+#   - SCP in server mode for Diameter ULR/ULA (conf/scp-diameter-server.yaml)
 # with the lab-multinf env config:
 #
 #   ./bin/d3x-run run \

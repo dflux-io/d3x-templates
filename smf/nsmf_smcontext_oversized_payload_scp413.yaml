@@ -1,13 +1,13 @@
-# Signature demo Act 4 — oversized CreateSMContext trips edge body limit.
+# Signature demo Act 4 — oversized CreateSMContext trips SCP body limit.
 #
-# Topology edge-demo-allow.yaml sets server.max_request_body_size: 4096.
+# Topology scp-demo-allow.yaml sets server.max_request_body_size: 4096.
 # This flow posts ~8 KiB of padding so MaxBytesReader yields 413 before
 # policy/rate-limit filters run.
 #
 # Reuses generic SBI_Request + {{$padding N}} (see runner/template.go).
 kind: flow
-name: smf_nsmf_smcontext_oversized_payload_edge413
-description: CreateSMContext with oversized body — expect edge 413 Payload Too Large
+name: smf_nsmf_smcontext_oversized_payload_scp413
+description: CreateSMContext with oversized body — expect SCP 413 Payload Too Large
 category: negative
 type: client
 protocol: sbi

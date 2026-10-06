@@ -9,7 +9,7 @@
 
 kind: flow
 name: diameter_gx_ccr_cca_init
-description: Gx CCR/CCA INITIAL 4-step echo against edge
+description: Gx CCR/CCA INITIAL 4-step echo against SCP
 category: functional
 type: client
 protocol: diameter

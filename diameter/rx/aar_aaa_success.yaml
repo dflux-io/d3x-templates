@@ -4,7 +4,7 @@
 
 kind: flow
 name: diameter_rx_aar_aaa_success
-description: Rx AAR/AAA 4-step echo against edge
+description: Rx AAR/AAA 4-step echo against SCP
 category: functional
 type: client
 protocol: diameter

@@ -1,19 +1,19 @@
 # Multi-application S6a + Rx flow with mid-flow Rx drop.
 #
 # Mirrors dsr-sim's s6a_rx_edge_drops_aar.json: the S6a half (ULR/ULA)
-# completes normally, then we send AAR but edge is configured to drop
+# completes normally, then we send AAR but SCP is configured to drop
 # Rx requests. The Rx receive-step times out — `on_timeout` routes to
 # `completed` so the timeout is treated as the expected outcome rather
 # than a flow failure.
 #
-# When edge is in default echo mode, the AAR comes back as expected and
+# When SCP is in default echo mode, the AAR comes back as expected and
 # the AAR transition fires, taking the flow through AAA echo to completion.
 # Either path lands at `completed`; the doc-string is what marks intent.
 #
 # Run with config/lab-diameter-multiapp.yaml so CER advertises both apps.
 
 kind: flow
-name: diameter_s6a_rx_edge_drops_aar
+name: diameter_s6a_rx_scp_drops_aar
 description: Multi-app S6a+Rx with Rx drop — S6a completes, AAR times out
 category: negative
 type: client
@@ -59,8 +59,8 @@ states:
           - type: send
             message: AAR
 
-  # The Rx leg: edge drop mode means no AAR echo arrives, on_timeout fires
-  # and the flow lands at completed (S6a half already succeeded). When edge
+  # The Rx leg: SCP drop mode means no AAR echo arrives, on_timeout fires
+  # and the flow lands at completed (S6a half already succeeded). When SCP
   # is in default echo mode, the AAR transition catches the echo and the
   # flow continues through AAA to the same terminal state.
   wait_aar_echo:

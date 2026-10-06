@@ -46,7 +46,7 @@
 # This is why suites/sbi_load_baseline.yaml runs only the
 # sustained-rate flow: that suite is self-contained by design, and a
 # self-contained burst would be asserting against the defect above. Run this one
-# against a real UDM, or against edge with a real upstream.
+# against a real UDM, or against SCP with a real upstream.
 # ---------------------------------------------------------------------------
 #
 #   ./bin/d3x-run run-flow -flow load_nudm_sdm_get_burst \

@@ -9,7 +9,7 @@
 #
 # What this exercises:
 #   - issuer throughput / state-leak under a simultaneous burst
-#   - EdgeGuard-style rate limiting: a 429 split shows up directly in the
+#   - SCP-style rate limiting: a 429 split shows up directly in the
 #     report's rx status tally, making the rate-limit scene punchy and
 #     self-contained.
 #

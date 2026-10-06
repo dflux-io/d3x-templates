@@ -3,7 +3,7 @@
 
 kind: flow
 name: diameter_s6a_pur_pua_success
-description: S6a PUR/PUA 4-step echo against edge
+description: S6a PUR/PUA 4-step echo against SCP
 category: functional
 type: client
 protocol: diameter

@@ -4,7 +4,7 @@
 
 kind: flow
 name: diameter_s6a_nor_noa_relay
-description: S6a NOR/NOA 4-step echo (relay) against edge
+description: S6a NOR/NOA 4-step echo (relay) against SCP
 category: functional
 type: client
 protocol: diameter

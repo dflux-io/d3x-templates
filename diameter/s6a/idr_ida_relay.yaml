@@ -1,11 +1,11 @@
 # S6a IDR/IDA 4-step echo flow (relay scenario).
 # Insert-Subscriber-Data-Request/Answer (3GPP TS 29.272 §7.2.9).
-# Mirrors dsr-sim's idr_ida_relay test — exercises edge's relay handling
+# Mirrors dsr-sim's idr_ida_relay test — exercises SCP's relay handling
 # of HSS-originated push messages.
 
 kind: flow
 name: diameter_s6a_idr_ida_relay
-description: S6a IDR/IDA 4-step echo (relay) against edge
+description: S6a IDR/IDA 4-step echo (relay) against SCP
 category: functional
 type: client
 protocol: diameter

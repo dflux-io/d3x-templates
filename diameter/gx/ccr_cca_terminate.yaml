@@ -3,7 +3,7 @@
 
 kind: flow
 name: diameter_gx_ccr_cca_terminate
-description: Gx CCR/CCA TERMINATION 4-step echo against edge
+description: Gx CCR/CCA TERMINATION 4-step echo against SCP
 category: functional
 type: client
 protocol: diameter

@@ -1,13 +1,13 @@
-# Signature demo Act 4 — forged CreateSMContext blocked at EdgeGuard.
+# Signature demo Act 4 — forged CreateSMContext blocked at SCP.
 #
 # Same abuse as smf_nsmf_create_smcontext_unauthorized_token, but pins
-# sbi.status == 403 (edge PolicyRule "block-forged" path deny). Use after
-# edgectl apply -f demo-policy.yaml (or policy-rules add @block-forged.json).
+# sbi.status == 403 (SCP PolicyRule "block-forged" path deny). Use after
+# d3x-scpctl apply -f demo-policy.yaml (or policy-rules add @block-forged.json).
 #
 # Do not use against a bare SMF: Open5GS/TinyCore may return a different 4xx.
 kind: flow
-name: smf_nsmf_create_smcontext_edge_403
-description: CreateSMContext with forged token — expect edge 403 Forbidden
+name: smf_nsmf_create_smcontext_scp_403
+description: CreateSMContext with forged token — expect SCP 403 Forbidden
 category: negative
 type: client
 protocol: sbi

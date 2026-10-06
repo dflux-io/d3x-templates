@@ -2,13 +2,13 @@
 #
 # diameter/s6a/air_aia_success.yaml reduced to a single AIR send with a `fuzz:`
 # block and relaxed assertions. Fuzzes the encoded AIR (AVP body bytes) against
-# the edge echo.
+# the SCP echo.
 #
 # For Diameter the mutate stage corrupts the encoded AVP body bytes at the
-# diameter.tx.mutate seam. The malformed AIR is then echoed by the edge.
+# diameter.tx.mutate seam. The malformed AIR is then echoed by the SCP.
 #
 # ORACLE
-#   survived  the edge echoed the AIR at all — the frame round-tripped
+#   survived  the SCP echoed the AIR at all — the frame round-tripped
 #   failed    no echo within the timeout: a hang/drop, which is a finding
 #
 # No AIA is sent — this is deliberately the minimal one-message shape. Only that
@@ -16,7 +16,7 @@
 
 kind: flow
 name: fuzz_s6a_air
-description: Wire-level fuzz of the S6a Authentication-Information-Request against the edge echo
+description: Wire-level fuzz of the S6a Authentication-Information-Request against the SCP echo
 category: robustness
 type: client
 protocol: diameter
