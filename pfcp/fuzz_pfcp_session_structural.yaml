@@ -5,7 +5,7 @@
 # truncate 37/37 and extend 45/45 died at the UPF's outer length check because
 # the declared length still promised the original size, and only bitflip reached
 # the decoder at all. This driver is identical up to the `fuzz:` block, but its
-# strategy is STRUCTURE-AWARE: the runner mutates a typed field / IE of the
+# strategy is STRUCTURE-AWARE: Runik mutates a typed field / IE of the
 # message it already holds and re-runs pfcp.Encode(), which recomputes the length
 # determinant. The malformed frame therefore CLEARS the outer check and lands in
 # the IE walk — the surface F1 could not reach.
@@ -26,7 +26,7 @@
 #      UPF stops serving good traffic the campaign FAILS — the state-corruption
 #      oracle no per-frame verdict can see.
 #
-#   d3x-run run-flow -flow fuzz_pfcp_session_structural \
+#   rk run-flow -flow fuzz_pfcp_session_structural \
 #     -templates . -c config/lab-upf-metrics.yaml -gen-subscriber \
 #     -fuzz-metrics-url http://127.0.0.1:9095/metrics
 

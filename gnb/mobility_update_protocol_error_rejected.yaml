@@ -32,7 +32,7 @@
 # THE ROW BINDABLE
 # ===========================================================================
 #
-# The deleted runner-missing-capabilities.md ledger and REG-164's own verification
+# The deleted runik-missing-capabilities.md ledger and REG-164's own verification
 # note both said: "the `fuzz:` block mutates the encoded frame at random after NAS
 # integrity protection, which a conformant AMF discards on MAC failure (TS 24.501
 # §4.4.4.3)". TWO THINGS ABOUT THAT ARE NOT TRUE OF MalformedRegistrationRequest:
@@ -187,7 +187,7 @@
 #   failed                      the de-registration was not answered either: the
 #                               context did not survive, or the AMF did not.
 #
-# BUDGET. matrix/scripts/run passes the register row's `timeout_s` to d3x-run as
+# BUDGET. matrix/scripts/run passes the register row's `timeout_s` to rk as
 # the GLOBAL engine timeout, so the silent path must fit inside it or NEITHER
 # `no_report_context_alive` NOR `failed` is reachable and the row records an empty
 # actual_terminals — our defect, not the core's, and exactly what xp-269 measured
@@ -372,7 +372,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-164 (negative, expected_terminal: rejected) — A

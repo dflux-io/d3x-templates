@@ -1,27 +1,27 @@
 # SBI sustained-rate load — Nudm_SDM_GetSubscriptionData.
 #
 # THE FIRST TEMPLATE IN THE CORPUS THAT ASSERTS A LOAD THRESHOLD. Everything it
-# needs already existed in the runner and had never been driven from a template:
+# needs already existed in Runik and had never been driven from a template:
 # the workload scheduler (`Workload{Rate,Duration,Repetitions}`,
-# runner/runner/engine.go), the HDR histograms behind the percentile keys
-# (runner/runner/metrics.go), and `final_checks` as the place a flow states its
+# runik/engine/engine.go), the HDR histograms behind the percentile keys
+# (runik/engine/metrics.go), and `final_checks` as the place a flow states its
 # claim. This file uses all three.
 #
 # One flow start = one Nudm SDM Get and its answer. Drive it at a rate:
 #
-#   ./bin/d3x-run run-flow -flow load_nudm_sdm_get \
-#       -templates . -c runner/config/lab-sbi.yaml \
+#   ./bin/rk run-flow -flow load_nudm_sdm_get \
+#       -templates . -c runik/config/lab-sbi.yaml \
 #       -gen-subscriber -rate 200 -repetitions 2000 -timeout 60s
 #
 # A flow template cannot declare its own workload — `rate` / `duration` /
 # `repetitions` are properties of the RUN, set by the `-rate` / `-repetitions`
-# CLI flags or by a suite step (`SuiteStep.Rate`, runner/runner/fsm/suite.go).
+# CLI flags or by a suite step (`SuiteStep.Rate`, runik/engine/fsm/suite.go).
 # `suites/sbi_load_baseline.yaml` is the suite that pairs this
 # flow with a workload; run that if you want the numbers below to mean what the
 # comments say they mean.
 #
 # WHAT ANSWERS IT. It needs a UDM that answers /nudm-sdm/v2/{supi}/am-data. The
-# shipped `runner/config/lab-sbi.yaml` closes the loop inside one runner process
+# shipped `runik/config/lab-sbi.yaml` closes the loop inside one Runik process
 # — `sbi_nudm_sdm_get_server` binds 127.0.0.1:18443 and the client dials it —
 # so the flow is runnable on any host with no core, no lab and no network. Point
 # `sbi-out.base_url` at a real UDM to load that instead; the thresholds then need
@@ -117,7 +117,7 @@ final_checks:
   #
   # DERIVATION (2026-08-19, this worktree at e444839, loopback config
   # lab-sbi.yaml driven by suites/sbi_load_baseline.yaml — 1,999 flow starts at
-  # 200/s for 10s, on one dev host with a sibling agent's runner also on the
+  # 200/s for 10s, on one dev host with a sibling agent's Runik also on the
   # CPU): p50_latency_ms 0.7, p95_latency_ms 1.05, p99_latency_ms 1.6, max 4.
   # A second run at the same workload gave p95 0.90. See the PR for both.
   #
@@ -125,7 +125,7 @@ final_checks:
   # doing the real work here — it is NOT a claim that the SBI path takes 50ms.
   # Three things it has to absorb, none of which is a defect:
   #   - a shared CI box or a laptop under thermal load — the measurement above
-  #     was taken with a sibling agent's runner also on the CPU;
+  #     was taken with a sibling agent's Runik also on the CPU;
   #   - a real UDM with a database behind it rather than a canned 200;
   #   - Go GC pauses at the tail of a several-thousand-flow run.
   # What it will NOT absorb is a regression of a different order: a lock

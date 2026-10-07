@@ -57,8 +57,8 @@
 # instead of an `inconclusive`. It is NOT done here, and the reason is a defect in a shared fact
 # rather than a judgement about this row.
 #
-# `run` derives the `rejected` fact by grepping runner.log for a set of refusal strings, and
-# `InitialContextSetupFailure` is one of them — but runner.log records what WE SEND as well as
+# `run` derives the `rejected` fact by grepping runik.log for a set of refusal strings, and
+# `InitialContextSetupFailure` is one of them — but runik.log records what WE SEND as well as
 # what arrives. tinycore's REG-252 log, line 5:47PM DBG, reads
 # `... event=InitialContextSetupRequest.RegistrationAccept ... send=InitialContextSetupFailure`,
 # and facts.json for that run duly reports `"rejected": true`. It is true on all three cores, and
@@ -204,7 +204,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-252 (negative, expected_terminal: rejected) —

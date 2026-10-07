@@ -1,4 +1,4 @@
-# Demo suite — exercises the suite runner end-to-end against the existing
+# Demo suite — exercises the suite Runik end-to-end against the existing
 # gNB registration / deregistration flows.
 #
 # Each step independently acquires its own subscribers from the pool (no
@@ -9,7 +9,7 @@
 # tests.
 #
 # Run with:
-#   ./bin/d3x-run run-suite -suite gnb-register-deregister \
+#   ./bin/rk run-suite -suite gnb-register-deregister \
 #       -templates template -c config/lab.yaml -s config/subscribers.yaml
 #
 # Outer-loop options (run the full cycle multiple times):

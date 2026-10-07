@@ -15,7 +15,7 @@
 #
 # THE STIMULUS IS ON THE WIRE, NOT JUST IN THE YAML.
 # `params: { follow_on_request: true }` is consumed by EnrichInitialUEMessage
-# (runner/runner/enrichers.go) and sets NAS_RegistrationRequest.FollowOnRequest,
+# (runik/engine/enrichers.go) and sets NAS_RegistrationRequest.FollowOnRequest,
 # which the encoder puts in bit 4 of the 5GS registration type octet. Measured
 # on tinycore 2026-08-11 in the -trace decode of the INITIAL UE MESSAGE:
 # `"registration_type": 1, "follow_on_request": true` — against `false` on the
@@ -147,7 +147,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-108 (positive, expected_terminal: connection_kept)

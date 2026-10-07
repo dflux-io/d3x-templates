@@ -31,7 +31,7 @@
 # 4-octet field, so containment is equality here — no partial-match ambiguity.
 #
 # THE TRAP: `not_contains` PASSES ON A MISSING FIELD. evaluateCheck
-# (runner/runner/action_executor.go) treats absence as "nothing to match
+# (runik/engine/action_executor.go) treats absence as "nothing to match
 # against, so vacuously satisfied". An AMF that omitted the 5G-GUTI IE from the
 # update accept entirely — the more serious violation of the same clause —
 # would sail through a bare `not_contains`. So the inequality is preceded by
@@ -177,7 +177,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-157 (positive, expected_terminal:

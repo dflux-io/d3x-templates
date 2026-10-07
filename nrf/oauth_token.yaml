@@ -5,7 +5,7 @@
 # 400), so the flow registers an SMF profile first, requests the token
 # against that nfInstanceId, then deregisters as cleanup.
 #
-# Form-urlencoded body workaround: runner's REST enricher serializes the
+# Form-urlencoded body workaround: Runik's REST enricher serializes the
 # `body` field as JSON (RESTMessageProto.Body json.RawMessage), so raw
 # application/x-www-form-urlencoded payloads cannot be authored. The NRF
 # handler uses r.FormValue, which reads both URL query and form body, so

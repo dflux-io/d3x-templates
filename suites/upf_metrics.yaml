@@ -6,21 +6,21 @@
 # standalone UPF (cmd/upf -datapath stub) over loopback.
 #
 # Run against a FRESHLY launched UPF (the baseline step asserts == 0):
-#   ./bin/d3x-run run-suite -suite upf_metrics \
+#   ./bin/rk run-suite -suite upf_metrics \
 #       -templates . -c config/lab-upf-metrics.yaml \
 #       -gen-subscriber
 #
-# REQUIRES the runner `http1` REST option (dflux-io/d3x-run #309):
+# REQUIRES Runik `http1` REST option (dflux-io/rk #309):
 # the /metrics endpoint is HTTP/1.1, the default REST client is h2c-only.
 #
 # Scope: this proves the 0→1 increment (robust, deterministic). The full
 # F-05 (N-session count) and F-16 (association-restart wipe → 0) need more
-# than templates — distinct CP F-SEIDs per session to avoid runner
+# than templates — distinct CP F-SEIDs per session to avoid Runik
 # correlation collisions, and recovery-timestamp control / a cross-protocol
 # flow for the wipe — see docs/upf/sanity-tests.md §9.
 #
 # GATE: the baseline scrape is the hard gate (stop_on_failure: true) — if
-# the metrics endpoint is unreachable (e.g. runner without http1) or already
+# the metrics endpoint is unreachable (e.g. Runik without http1) or already
 # dirty, the increment assertion is meaningless. The establish leaves one
 # session installed at suite end (no cross-flow SEID to delete it).
 

@@ -110,8 +110,8 @@
 # be disturbed by it.
 #
 # WHAT THE LADDER STILL CANNOT SAY, AND IT IS NOT THIS FLOW'S DOING. `run`
-# derives the `rejected` fact by grepping runner.log for refusal strings, and
-# `InitialContextSetupFailure` is one of them — but runner.log records what WE
+# derives the `rejected` fact by grepping runik.log for refusal strings, and
+# `InitialContextSetupFailure` is one of them — but runik.log records what WE
 # SEND too, and this flow sends exactly that. facts.json reports
 # `"rejected": true` for this row on all three cores as a result. lib/outcome.py
 # step 9 reads `rejected` + kind negative as `rejected-correctly`, a PASS, so
@@ -310,7 +310,7 @@ states:
 any_state_transitions:
   - { event: Error, target: failed }
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-483 (negative, expected_terminal: rejected) —

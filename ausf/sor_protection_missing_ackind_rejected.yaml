@@ -1,6 +1,6 @@
 # Nausf_SoRProtection — missing mandatory ackInd (security / negative).
 # 3GPP TS 29.509 §6.2.6.2.2; §6.2.7.3 (400 MANDATORY_IE_MISSING).
-# runner POSTs ue-sor with a body that OMITS the mandatory ackInd (raw_body so it is
+# Runik POSTs ue-sor with a body that OMITS the mandatory ackInd (raw_body so it is
 # genuinely absent). The AUSF must REJECT with 400 + ProblemDetails and STAY UP.
 
 kind: flow

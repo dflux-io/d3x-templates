@@ -1,6 +1,6 @@
 # SBI smoke — client side.
-# d3x-run calls Nudm_SDM_GetSubscriptionData against udm-peer
-# (which resolves to a sibling d3x-run running the server-side
+# rk calls Nudm_SDM_GetSubscriptionData against udm-peer
+# (which resolves to a sibling rk running the server-side
 # template, or any UDM that responds to /nudm-sdm/v2/{supi}/am-data).
 
 kind: flow

@@ -1,7 +1,7 @@
 # PFCP Association Setup advertising unknown/reserved CP Function Features
 # (3GPP TS 29.244 §8.2.58 / §5.20).
 #
-# Security/robustness: runner advertises a CP Function Features IE with reserved /
+# Security/robustness: Runik advertises a CP Function Features IE with reserved /
 # future bits set (flags=0xFFFFFFFF). Per TS 29.244 §5.20 feature negotiation
 # must ignore bits a peer does not understand — the UPF must NOT fault on
 # unknown CP feature bits. A spec-correct UPF accepts the association

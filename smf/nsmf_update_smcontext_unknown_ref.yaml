@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_UpdateSMContext — unknown smContextRef (negative/security).
 # 3GPP TS 29.502 §6.1.6.3.5.
 #
-# runner (AMF) POSTs a modify to a fabricated /sm-contexts/{ref}/modify path that
+# Runik (AMF) POSTs a modify to a fabricated /sm-contexts/{ref}/modify path that
 # was never created. A spec-correct SMF MUST reject with 404 Not Found (or
 # another 4xx ProblemDetails) and stay up — it must not 5xx or hang.
 kind: flow

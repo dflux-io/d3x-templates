@@ -1,7 +1,7 @@
 # Nnssf_NSSelection — UE Configuration Update mode slice selection. TS 29.531
 # §6.1.3.2 (GET /network-slice-information, nf-type + slice-info-request-for-ue-cu
 # → 200 AuthorizedNetworkSliceInfo). slice-info-request-for-ue-cu is a JSON
-# object passed as a query value (runner url-encodes it). Asserts the allowed
+# object passed as a query value (Runik url-encodes it). Asserts the allowed
 # list (not merely configuredNssai) carries the requested+subscribed+configured
 # slice (sd 000001). Inline subscribedNssai keeps the step hermetic without UDR.
 kind: flow

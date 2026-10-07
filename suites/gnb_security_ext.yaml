@@ -18,7 +18,7 @@
 # run is the real signal.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite gnb-security-ext \
+#   ./bin/rk run-suite -suite gnb-security-ext \
 #       -templates <templates-dir> -c config/open5gs-gnb.yaml \
 #       -s config/subscribers.yaml -trace
 

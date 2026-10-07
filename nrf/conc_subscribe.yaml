@@ -9,7 +9,7 @@
 # Per-UE invariant checked here: 201 + Location + a non-empty
 # subscriptionId. There is no GET-collection endpoint for subscriptions
 # (only GET /subscriptions/{id}), so DISTINCTNESS is verified by the
-# runner, which scrapes every subscriptions/<uuid> out of the burst's
+# Runik, which scrapes every subscriptions/<uuid> out of the burst's
 # -trace output and asserts `sort -u | wc -l == 100`.
 #
 # Layer A counterpart: TestConcurrency_CONC06_DistinctSubscriptionIDs.

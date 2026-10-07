@@ -43,10 +43,10 @@
 # encoders use, so a mutator can now emit an IE no implementation has ever seen.
 #
 # REQUIRES THE DOCKER LAB. NGAP is SCTP, which darwin has no kernel support for,
-# so the runner must run as the gNB INSIDE the lab (deploy/lab, e2e-gnb-run.sh);
+# so Runik must run as the gNB INSIDE the lab (deploy/lab, e2e-gnb-run.sh);
 # the AMF's panic site is d3x_recovered_panics_total{site="amf_n2"}.
 #
-#   d3x-run run-flow -flow fuzz_ngap_initial_ue_structural \
+#   rk run-flow -flow fuzz_ngap_initial_ue_structural \
 #     -templates . -c <lab-amf.yaml> -gen-subscriber \
 #     -fuzz-metrics-url http://<amf>:<port>/metrics \
 #     -fuzz-known-good registration_simple
@@ -74,7 +74,7 @@ fuzz:
   # ORACLE: the panic counter is primary here, armed via
   # `-fuzz-metrics-url http://<amf>:8081/metrics` (d3x_recovered_panics_total
   # {site="amf_n2"}). It is the only oracle that fits a -gen-subscriber campaign
-  # against a REAL AMF: the runner is the gNB with SYNTHETIC UEs, so no
+  # against a REAL AMF: Runik is the gNB with SYNTHETIC UEs, so no
   # known-good NAS flow authenticates — a state-corruption replay would fail on
   # auth, not on corruption (W2-F3 measured this against the lab AMF).
   #

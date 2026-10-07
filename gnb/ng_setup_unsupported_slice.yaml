@@ -21,7 +21,7 @@
 # TAC. Nothing else deviates: the PLMN is the one the AMF serves, so a failure here cannot be
 # blamed on §8.7.1.4's PLMN condition, and an answer that omits SST 3 cannot be an answer about
 # the PLMN. The deviation is carried by the send action's `slice_ssts` param
-# (NGSetupRequestAdvertisedTAs, runner/runner/enrichers_ngap_ifmgmt.go), NOT by a gNB config
+# (NGSetupRequestAdvertisedTAs, runik/engine/enrichers_ngap_ifmgmt.go), NOT by a gNB config
 # file: the register asks for `config: slice-mismatched-gnb`, which was never built, and REG-804
 # is the standing evidence of what an external-config probe costs — it sent the ordinary
 # well-formed request every positive row sends and asserted nothing.
@@ -141,7 +141,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-805 (negative, expected_terminal:

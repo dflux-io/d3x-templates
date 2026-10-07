@@ -38,7 +38,7 @@
 #      the first half of the row's pass criterion verbatim.
 #   2. `ue.Params.sms_mo_rp_ref not_empty` — the SMS really was encoded, so the
 #      silence below cannot be the silence of a send that never happened.
-#   3. Every SMS downlink sub-event the runner can name transitions to
+#   3. Every SMS downlink sub-event Runik can name transitions to
 #      `sms_relayed_after_deregistration`, a FAILING terminal. Silence for
 #      absent_after_s (10 s, from the register row) is the conformant answer —
 #      §5.4.5.2.5's abort is silent by construction.
@@ -67,7 +67,7 @@
 # A 5GMM STATUS IS NOT SILENCE (xp-312). open5gs answers this submit with a 5GMM
 # STATUS carrying 5GMM cause #96 — captured on the wire as NGAP NAS DOWNLINK
 # TRANSPORT `7e 02 .. .. .. .. 7e 00 64 60` (0x64 = 5GMM STATUS, 0x60 = 96).
-# Until this row named that event the runner refused it into `bus_audit.refused`
+# Until this row named that event Runik refused it into `bus_audit.refused`
 # and dropped it, and the row scored open5gs as silent — crediting the core with
 # an absence it did not produce, exactly the defect REG-622 carried. It now has
 # its own failing terminal, `status_returned`, so final_state_counts says WHICH
@@ -258,7 +258,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-607 (negative, expected_terminal:

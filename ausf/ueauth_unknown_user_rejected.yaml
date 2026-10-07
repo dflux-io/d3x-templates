@@ -1,6 +1,6 @@
 # Nausf_UEAuthentication — unknown subscriber (security / negative).
 # 3GPP TS 29.509 §6.1.7.3 (cause USER_NOT_FOUND, 404).
-# runner initiates with a well-formed but unprovisioned SUPI. The AUSF reaches UDM
+# Runik initiates with a well-formed but unprovisioned SUPI. The AUSF reaches UDM
 # internally, finds no subscriber, and must REJECT with 404 + ProblemDetails and
 # STAY UP.
 

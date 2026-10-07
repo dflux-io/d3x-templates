@@ -8,7 +8,7 @@
 # identity from the persistent store, not an in-memory cache that the
 # restart would have cleared.
 #
-# Form params go in `query` (not body): runner serializes `body` as JSON,
+# Form params go in `query` (not body): Runik serializes `body` as JSON,
 # and the NRF token handler reads r.FormValue, which covers URL query.
 # Verification requires the NRF to run with -jwt-key.
 #

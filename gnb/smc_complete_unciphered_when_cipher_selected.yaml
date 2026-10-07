@@ -35,7 +35,7 @@
 #      IS silence and silence had just been made inadmissible. `inconclusive`, not `pass`.
 #
 # DEFENCE 11 AND lib/outcome.py ARE DELETED (2026-08-13), AND EVERY DEFENCE NAMED BELOW WITH IT.
-# The runner owns the verdict now, and the two outcomes those rules produced — `inconclusive` and
+# Runik owns the verdict now, and the two outcomes those rules produced — `inconclusive` and
 # `disabled-by-config` — do not exist: there is `pass`, `fail` and `unsupported`. That is why the
 # FSM below carries the discrimination itself, in transitions and `final_checks`, rather than
 # leaning on a rule outside it. Read the DEFENCE numbers as the reason a branch is shaped the way
@@ -83,7 +83,7 @@
 #                ACCEPTING core could emit any of them too). We learned NOTHING about §4.4.5,
 #                and that must never read as a pass. It is not the terminal `final_checks` below
 #                pins, so however it is reached — by the timer or by one of those messages — the
-#                runner's verdict is `fail`, and the row says honestly that it could not tell.
+#                Runik's verdict is `fail`, and the row says honestly that it could not tell.
 #                (DEFENCE 11 used to name this `inconclusive`; that rule and that word are gone,
 #                which is why the pin is in this file.)
 #
@@ -165,7 +165,7 @@ states:
           # algorithm, or the core configured to select a cipher; reading the trace by hand is the
           # interim. It is deliberately NOT written as `greater_than 1` here: that would FAIL the
           # row on a core whose premise simply does not hold, which is the same wrong answer
-          # arriving by a shorter road, and it is the runner's `fail` that a reader would then
+          # arriving by a shorter road, and it is Runik's `fail` that a reader would then
           # take for a confidentiality finding.
           #
           # `greater_or_equal 1` is the real assertion here, and it is not vacuous: the enum is
@@ -332,7 +332,7 @@ states:
 any_state_transitions:
   - { event: Error, target: failed }
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-437 (negative, expected_terminal: rejected) —

@@ -20,7 +20,7 @@
 # ONLY. The create→AUTHENTICATE→delete leg (the freshly provisioned SUPI
 # generating a real 5G-AKA vector through the AUSF) is covered by the Go
 # integration test dpf/integration TestProvision_Auth_Delete_E2E — it needs the
-# UE-side Milenage crypto the runner AUSF flow doesn't drive here.
+# UE-side Milenage crypto Runik AUSF flow doesn't drive here.
 #
 # A fresh SUPI (imsi-001010000000042) not in the canonical seed is used so the
 # create starts from a clean 404 and the delete fully removes it. Credentials

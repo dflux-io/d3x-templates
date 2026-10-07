@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_UpdateSMContext — UP deactivation (compliance).
 # 3GPP TS 29.502 §5.2.2.3; TS 23.502 §4.2.6.
 #
-# runner (AMF) creates an SM context, extracts its ref, then POSTs a
+# Runik (AMF) creates an SM context, extracts its ref, then POSTs a
 # SmContextUpdateData with upCnxState=DEACTIVATED to {ref}/modify, requesting
 # release of the user-plane connection (AN release). A spec-correct SMF replies
 # 200 OK and returns the deactivation result.

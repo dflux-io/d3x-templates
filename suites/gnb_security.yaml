@@ -11,7 +11,7 @@
 # real signal. The cleanup step runs always.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite gnb-security \
+#   ./bin/rk run-suite -suite gnb-security \
 #       -templates <templates-dir> -c config/open5gs-gnb.yaml \
 #       -s config/subscribers.yaml -trace
 #

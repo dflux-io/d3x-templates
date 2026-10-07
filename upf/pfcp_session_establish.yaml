@@ -1,6 +1,6 @@
 # PFCP Session Establishment (3GPP TS 29.244 §7.5.2 / §5.2.1).
 #
-# runner (SMF) establishes the node-level association, then sends a
+# Runik (SMF) establishes the node-level association, then sends a
 # PFCPSessionEstablishmentRequest carrying a hand-authored uplink Create PDR
 # (source interface ACCESS, request the UPF to CHOOSE the N3 F-TEID via CH=true,
 # outer-header removal of GTP-U/UDP/IPv4) and a Create FAR (Apply Action FORW,

@@ -12,7 +12,7 @@
 # the engine default (any non-"failed" terminal passes) is the right condition.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite gnb-compliance-ext \
+#   ./bin/rk run-suite -suite gnb-compliance-ext \
 #       -templates <templates-dir> -c config/open5gs-gnb.yaml \
 #       -s config/subscribers.yaml -trace
 

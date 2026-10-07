@@ -11,7 +11,7 @@
 # value, not the learned one. Distinct from upf_pfcp_session_modify_unknown_fseid,
 # which never establishes a session and stuffs a bogus SEID in message_body.header.
 #
-# Requires runner send-param `seid` on PFCP session messages
+# Requires Runik send-param `seid` on PFCP session messages
 # (d3x PR feat/pentest-send-params).
 #
 # EXPECTED TERMINAL
@@ -102,7 +102,7 @@ states:
             op: equals
             expected: "Request accepted"
           # Header SEID is NOT the learned RemoteSEID.
-          # Requires runner param seid (d3x PR feat/pentest-send-params).
+          # Requires Runik param seid (d3x PR feat/pentest-send-params).
           # Decimal equivalent of 0xdeadbeefcafebabe = 16045690984503098046.
           - type: send
             message: PFCPSessionModificationRequest

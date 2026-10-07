@@ -1,7 +1,7 @@
 # Registration + immediate re-registration with same SUCI.
 #
 # YAML mirror of the built-in `duplicate_registration` flow defined in
-# runner/flows/gnb/flow_duplicate_registration.go.
+# runik/flows/gnb/flow_duplicate_registration.go.
 
 kind: flow
 name: duplicate_registration

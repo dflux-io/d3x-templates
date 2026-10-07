@@ -1,7 +1,7 @@
 # N4/PFCP — Association Update (compliance).
 # 3GPP TS 29.244 §6.2.7 / §7.4.5.
 #
-# runner (SMF) sets up a PFCP association, then sends a
+# Runik (SMF) sets up a PFCP association, then sends a
 # PFCPAssociationUpdateRequest (NodeID auto-filled). The UPF replies with
 # PFCPAssociationUpdateResponse carrying Cause=Request accepted, asserted via
 # the pfcp.cause resolver. Exercises the new AssociationUpdate send.

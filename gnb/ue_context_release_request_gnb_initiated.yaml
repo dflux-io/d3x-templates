@@ -92,7 +92,7 @@ states:
             # This UE does have uplink NAS pending after registration — the
             # §10.6 stale-AP-ID probe in wait_release_cmd — so the Follow-on
             # request indicator must say so (TS 24.501 §5.5.1.2.2), and
-            # `d3x-run lint` refuses the flow without it. It bears on the
+            # `rk lint` refuses the flow without it. It bears on the
             # UPLINK direction only, so it does not soften §8.3.2.2's "there is
             # no downlink signaling" condition, which is handled separately by
             # answering the CONFIGURATION UPDATE COMMAND below.

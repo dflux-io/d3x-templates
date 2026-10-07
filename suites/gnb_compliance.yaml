@@ -14,7 +14,7 @@
 # terminal passes).
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite gnb-compliance \
+#   ./bin/rk run-suite -suite gnb-compliance \
 #       -templates <templates-dir> -c config/open5gs-gnb.yaml \
 #       -s config/subscribers.yaml -trace
 #

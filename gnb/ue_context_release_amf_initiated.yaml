@@ -33,7 +33,7 @@
 #   2. It carries the AMF UE NGAP ID — the §8.3.3.2 "shall" — and the value equals the one the
 #      AMF assigned on this connection, extracted from the AUTHENTICATION REQUEST many messages
 #      earlier. Different messages on both sides of the comparison; neither is re-read from the
-#      message under test. Note the AMF UE NGAP ID plays no part in the runner's inbound demux
+#      message under test. Note the AMF UE NGAP ID plays no part in Runik's inbound demux
 #      (ngap.rx.demux keys on the RAN UE NGAP ID alone), so nothing but the AMF's own conduct can
 #      make this check green.
 #   3. It also carries the RAN UE NGAP ID ("if available" — it is: the connection is up), equal

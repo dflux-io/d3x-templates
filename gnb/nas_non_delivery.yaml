@@ -15,8 +15,8 @@
 # `non_delivered` (it received a DL NAS and answered NASNonDeliveryIndication);
 # the failure-notification assertion is the receiver's PASS.
 #
-# Requires the engine NASNonDeliveryIndication TX enricher (d3x-run
-# runner/enrichers_gnb_additions.go) which echoes the last DL NAS PDU verbatim.
+# Requires the engine NASNonDeliveryIndication TX enricher (rk
+# runik/enrichers_gnb_additions.go) which echoes the last DL NAS PDU verbatim.
 
 kind: flow
 name: nas_non_delivery

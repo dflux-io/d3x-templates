@@ -1,6 +1,6 @@
 # Nausf_SoRProtection — unknown SUPI (security / negative).
 # 3GPP TS 29.509 §6.2.7.3 (404); TS 33.501 §6.14.
-# runner POSTs ue-sor for a SUPI the AUSF has no security context / subscriber for.
+# Runik POSTs ue-sor for a SUPI the AUSF has no security context / subscriber for.
 # The AUSF must REJECT (404, or 403 if no K_AUSF) + ProblemDetails and STAY UP.
 
 kind: flow

@@ -1,6 +1,6 @@
 # Nudm_SDM Get SMF Selection subscription data — compliance.
 # 3GPP TS 29.503 §6.1.3.4 (GET /nudm-sdm/v2/{supi}/smf-select-data).
-# runner drives a real UDM; expects 200 with SmfSelectionSubscriptionData.
+# Runik drives a real UDM; expects 200 with SmfSelectionSubscriptionData.
 
 kind: flow
 name: udm_sdm_get_smf_select_data_ok

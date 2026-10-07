@@ -5,7 +5,7 @@
 # 09-nssf-allowed in scripts/e2e-gnb-run.sh.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite gnb-nssf-allowed \
+#   ./bin/rk run-suite -suite gnb-nssf-allowed \
 #       -templates <templates-dir> -c <lab-gnb.yaml> -s <subscribers.yaml> -trace
 
 kind: suite

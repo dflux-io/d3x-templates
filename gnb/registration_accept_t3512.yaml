@@ -47,7 +47,7 @@
 # `registration_result`, `guti` and `allowed_nssai` only, and check (1) reports
 # `<missing>`. Not a decoder artefact: the same build decodes free5gc's accept
 # into `t3512_value.value = 6` (matrix/traces/free5gc/
-# registration_guti_reallocation-REG-102/runner.json), so IEI 0x5E parses. The
+# registration_guti_reallocation-REG-102/runik.json), so IEI 0x5E parses. The
 # check stays as written.
 #
 # Terminals are (registered, failed) only and every on_timeout targets `failed`.

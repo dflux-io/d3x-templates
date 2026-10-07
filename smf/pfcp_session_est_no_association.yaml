@@ -1,7 +1,7 @@
 # N4/PFCP — Session Establishment with no established association (negative).
 # 3GPP TS 29.244 §7.5.2; §8.2.1 (Cause 73 — No established PFCP Association).
 #
-# runner (SMF) sends a PFCPSessionEstablishmentRequest WITHOUT first performing an
+# Runik (SMF) sends a PFCPSessionEstablishmentRequest WITHOUT first performing an
 # Association Setup. A spec-correct UPF MUST reject with Cause="No established
 # PFCP Association" (asserted via the pfcp.cause resolver) and stay up.
 #

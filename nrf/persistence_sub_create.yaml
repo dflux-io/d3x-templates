@@ -4,11 +4,11 @@
 # Subscriptions are the ONE persistence resource whose ID is
 # server-assigned (POST returns it in the Location header + body), so
 # unlike the NF-instance pairs this one cannot use a fixed client-chosen
-# UUID. runner has no way to inject a value into a flow at invocation time
+# UUID. Runik has no way to inject a value into a flow at invocation time
 # (the template function registry is fixed; there is no $env and no
 # -param flag), so the verify half is a *.tmpl* that the harness renders
 # with the captured subscriptionId — this is the "fixture file owned by
-# the harness, not runner" contract from §2.14.3.
+# the harness, not runik" contract from §2.14.3.
 #
 # This flow just creates the subscription and asserts the 201 contract;
 # the harness scrapes the subscriptionId from the run output to render

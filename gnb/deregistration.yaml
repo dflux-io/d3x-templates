@@ -1,7 +1,7 @@
 # Registration + UE-initiated deregistration (3GPP TS 24.501 §5.5.1 + §5.5.2).
 #
 # YAML mirror of the built-in `deregistration` flow defined in
-# runner/flows/gnb/flow_deregistration.go. Composes registrationStates +
+# runik/flows/gnb/flow_deregistration.go. Composes registrationStates +
 # deregistrationStates.
 
 kind: flow

@@ -1,6 +1,6 @@
 # Nausf_UPUProtection — unknown SUPI (security / negative).
 # 3GPP TS 29.509 §6.3.7.3 (404); TS 33.501 §6.15.
-# runner POSTs ue-upu for a SUPI the AUSF has no security context / subscriber for.
+# Runik POSTs ue-upu for a SUPI the AUSF has no security context / subscriber for.
 # The AUSF must REJECT (404, or 403 if no K_AUSF) + ProblemDetails and STAY UP.
 
 kind: flow

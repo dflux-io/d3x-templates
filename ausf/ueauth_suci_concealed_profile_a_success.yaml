@@ -1,10 +1,10 @@
 # Nausf_UEAuthentication — initiation with a concealed SUCI (Profile A) (compliance).
 # 3GPP TS 29.509 §6.1.3.2.3.1; TS 33.501 §6.12 / Annex C (SUCI / ECIES Profile A).
-# runner supplies a pre-formed concealed SUCI string verbatim (runner does NOT conceal /
+# Runik supplies a pre-formed concealed SUCI string verbatim (Runik does NOT conceal /
 # de-conceal — the AUSF + UDM/SIDF do that on the wire). The AUSF must accept it
 # and return a 5G-AKA auth context (201). Requires the matching home-network key /
 # subscriber provisioned in the Open5GS UDM for de-conceal to succeed (lab
-# provisioning, not an runner gap) — terminal kept to completed.
+# provisioning, not a Runik gap) — terminal kept to completed.
 
 kind: flow
 name: ausf_ueauth_suci_concealed_profile_a_success

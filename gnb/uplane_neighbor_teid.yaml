@@ -28,10 +28,10 @@
 # Operator may replace the placeholder with granted+1 once the session
 # TEID is known.
 #
-# Requires runner `uplane_start` param `remote_teid`
+# Requires Runik `uplane_start` param `remote_teid`
 # (d3x PR feat/pentest-send-params). Until that lands, the param is
 # ignored and window two uses the session TEID — the discard assertion
-# would then fail, which is itself the signal that the runner param is
+# would then fail, which is itself the signal that Runik param is
 # required.
 #
 # EXPECTED TERMINAL
@@ -134,7 +134,7 @@ states:
           - { type: check, field: ue.UplaneReport, op: not_empty }
           - { type: check, field: ue.UplaneReport.pkt_tx, op: greater_than, expected: 0 }
           - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_than, expected: 0 }
-          # Window two — same QFI, foreign remote_teid. Requires runner
+          # Window two — same QFI, foreign remote_teid. Requires Runik
           # uplane_start param remote_teid (d3x PR feat/pentest-send-params).
           # Decimal string so ParamUint32 can parse it (int64/uint32 cases
           # are not handled). Operator may replace with granted+1.

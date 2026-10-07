@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — missing mandatory IE (negative/security).
 # 3GPP TS 29.502 §6.1.6.2.2; TS 29.571 §5.2.4.1.
 #
-# runner (AMF) POSTs a SmContextCreateData that OMITS mandatory fields (no supi,
+# Runik (AMF) POSTs a SmContextCreateData that OMITS mandatory fields (no supi,
 # no pduSessionId, no dnn, no sNssai). A spec-correct SMF MUST reject with 4xx
 # and a ProblemDetails carrying cause MANDATORY_IE_INCORRECT /
 # MANDATORY_IE_MISSING and stay up.

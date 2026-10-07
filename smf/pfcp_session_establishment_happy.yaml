@@ -1,7 +1,7 @@
 # N4/PFCP — Session Establishment happy path (compliance).
 # 3GPP TS 29.244 §7.5.2 / §7.5.3.
 #
-# runner (SMF) first sets up a PFCP association, then sends a
+# Runik (SMF) first sets up a PFCP association, then sends a
 # PFCPSessionEstablishmentRequest. The establishment enricher auto-fills the
 # header + CP F-SEID + NodeID; the UPF replies with
 # PFCPSessionEstablishmentResponse. With the pfcp.cause resolver we assert the

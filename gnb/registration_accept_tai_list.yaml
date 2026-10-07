@@ -44,7 +44,7 @@
 # harness defect, and the check stays as written. The decoder is not the
 # suspect: the same build decodes free5gc's accept into
 # `tai_list.elements.0.partial_tai.tac = "AAAB"` (matrix/traces/free5gc/
-# registration_guti_reallocation-REG-102/runner.json), so IEI 0x54 parses.
+# registration_guti_reallocation-REG-102/runik.json), so IEI 0x54 parses.
 # registration_guti_reallocation.yaml records the same tinycore observation and
 # deliberately does NOT assert it — this flow is where it is asserted.
 #

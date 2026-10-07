@@ -45,7 +45,7 @@
 # uplink TEIDs distinct; same DNN "internet" and same S-NSSAI SST 1 / SD 1 on
 # both; no release of session 1.
 #
-# KNOWN RUNNER LIMIT, DELIBERATELY NOT ASSERTED: the gNB-side downlink TEID
+# KNOWN RUNIK LIMIT, DELIBERATELY NOT ASSERTED: the gNB-side downlink TEID
 # (ue.NGAP.LocalTeid) is assigned once per UE, so both PDU SESSION RESOURCE
 # SETUP RESPONSEs this flow sends carry the same downlink TEID. That is a
 # property of the simulated gNB, not of the core, so nothing here asserts it —

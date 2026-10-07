@@ -1,7 +1,7 @@
 # CONC-02 — 100 concurrent PUTs to the SAME UUID (Layer B burst).
 #
 # Every one of the N=100 burst UEs PUTs the SAME fixed client-chosen
-# nf-instance ID. runner has no invocation-time parameter injection (no $env,
+# nf-instance ID. Runik has no invocation-time parameter injection (no $env,
 # no -param), so the shared ID must be a literal baked into the flow — see
 # the persistence flows for the same constraint. With every UE writing the
 # same key, the NRF is exercised on its read-modify-write path: the first
@@ -11,7 +11,7 @@
 # Per-UE invariant checked here: the response is 2xx (200 OR 201 — which
 # one a given UE gets is racy, so we bound rather than equate) and the
 # echoed nfInstanceId equals the fixed UUID (body consistency). The
-# "exactly 1 profile" invariant is the runner's curl step.
+# "exactly 1 profile" invariant is Runik's curl step.
 #
 # Layer A counterpart: TestConcurrency_CONC02_SameUUIDPuts. On sqlite this
 # passes today because SetMaxOpenConns(1) serializes writers; the bug it

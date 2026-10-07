@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — invalid/forged OAuth2 token (negative).
 # 3GPP TS 29.500 §6.7.3; TS 33.501 §13.4.1.
 #
-# runner (AMF) POSTs a CreateSMContext but attaches a bogus bearer token in the
+# Runik (AMF) POSTs a CreateSMContext but attaches a bogus bearer token in the
 # Authorization header. When the SMF enforces OAuth2 (TS 33.501 §13), it MUST
 # reject with 401 Unauthorized / 403 Forbidden (ProblemDetails) and stay up.
 #

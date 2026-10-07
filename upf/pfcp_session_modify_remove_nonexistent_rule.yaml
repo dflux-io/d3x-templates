@@ -1,7 +1,7 @@
 # PFCP Session Modification removing a non-existent rule
 # (3GPP TS 29.244 §7.5.4 / §8.2.1 / §7.6).
 #
-# Security/negative: runner establishes an association + a session (one PDR/FAR),
+# Security/negative: Runik establishes an association + a session (one PDR/FAR),
 # then sends a PFCPSessionModificationRequest that asks the UPF to Remove FAR
 # id 88 and Remove PDR id 88 — rule IDs that were never installed. A
 # spec-correct UPF must reject the dangling removal (Cause "Rule

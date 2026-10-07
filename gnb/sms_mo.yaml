@@ -10,7 +10,7 @@
 # (sms_mo_loopback owns the loopback assertion).
 #
 # The SMSF answers with two downlink containers, each surfaced as its own FSM
-# event by the runner's SMS classifier (enrichers_sms.go):
+# event by Runik's SMS classifier (enrichers_sms.go):
 #   1. CP-ACK                              → …DLNASTransport.SMSCpAck
 #   2. CP-DATA(RP-ACK(SMS-SUBMIT-REPORT))  → …DLNASTransport.SMSSubmitReport
 # The UE closes the transaction with a CP-ACK (TS 24.011 §5.3) and terminates
@@ -84,13 +84,13 @@ states:
           message: SMSSubmit
           params:
             destination: "19995550123"
-            text: "hello from d3x-run"
+            text: "hello from rk"
 
   # First downlink leg: the SMSF acknowledges the CP-DATA with a bare CP-ACK.
   #
   # ORDER-TOLERANT (W5-A, xp-205). The SMSF emits the CP-ACK and the
   # RP-ACK(SUBMIT-REPORT) back to back, and the UE sends nothing between them,
-  # so BOTH are in flight at once. The runner's EventBus gives per-UE mutual
+  # so BOTH are in flight at once. Runik's EventBus gives per-UE mutual
   # exclusion but not per-UE ORDERING, so it can present them either way round,
   # and a state that does not name an event drops it silently — the exact
   # mechanism that made sms_mo_loopback flaky for three waves. This flow has

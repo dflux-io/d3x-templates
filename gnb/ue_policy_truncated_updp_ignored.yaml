@@ -27,7 +27,7 @@
 # ignored something. Two checks pin the wire:
 #   `ue.Params.updp_container_len equals 1` and `ue.Params.updp_container equals
 #   "01"`. The enricher writes both from the bytes it actually handed the NAS
-#   encoder (runner/runner/enrichers_uepolicy.go sendUEPolicyContainer), so they
+#   encoder (runik/engine/enrichers_uepolicy.go sendUEPolicyContainer), so they
 #   cannot agree unless a one-octet UPDS message really went out. `equals 1` and
 #   not `less_than 2`: the row is about THIS truncation, and a zero-length
 #   container is a different case (an empty Payload container IE, §9.11.3.39).
@@ -37,7 +37,7 @@
 #   - Within the 10 s window (the register row's absent_after_s), a
 #     UEContextReleaseCommand, an NGAP ErrorIndication, or a 5GMM STATUS each
 #     has its OWN failing terminal, so final_state_counts names the breach.
-#   - An SCTP abort or reset surfaces as the runner's Error event; the window
+#   - An SCTP abort or reset surfaces as Runik's Error event; the window
 #     names it explicitly and lands in `association_down` rather than the generic
 #     `failed`, because "the two-byte payload knocked the association over" is
 #     the exact failure the row exists to catch and must not be reported as a
@@ -196,7 +196,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-709 (robustness, expected_terminal: updp_ignored)

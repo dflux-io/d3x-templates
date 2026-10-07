@@ -62,7 +62,7 @@
 #
 # THE VIOLATION IS ON THE WIRE, and it is pinned by a test rather than asserted
 # here: TestServiceRequestNasContainer_NonCleartextIEIsOnlyInTheContainer
-# (runner/runner/enrichers_wave3_probes_test.go) decodes the built message and
+# (runik/engine/enrichers_wave3_probes_test.go) decodes the built message and
 # fails if the outer SERVICE REQUEST carries an Uplink data status IE, and
 # TestServiceRequestNasContainer_ContainerIsActuallyCiphered fails if the
 # container's value part decodes without deciphering. Without the first of
@@ -359,7 +359,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-207 (positive, expected_terminal:

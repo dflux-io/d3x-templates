@@ -14,7 +14,7 @@
 #   - true concurrent burst (simultaneous POSTs; 200/429 split in the report)
 #
 # Still deferred (both flows):
-#   - distinct-jti assertion across 100+ tokens (needs runner JWT-decode)
+#   - distinct-jti assertion across 100+ tokens (needs Runik JWT-decode)
 #
 # Per d3x-core docs/nrf/sanity-tests.md §4.7.4 OAUTH-07.
 
@@ -123,7 +123,7 @@ states:
             field: rest.body.access_token
             op: not_empty
           # Cross-token distinctness ("token N != token N-1") is left
-          # for the future JWT-decode-enabled flow — runner's check.expected
+          # for the future JWT-decode-enabled flow — Runik's check.expected
           # field doesn't currently resolve {{ue.Params.X}} templates, so
           # the comparison can't be expressed today. The non-empty check
           # above + the suite-step repetitions amplification still catch

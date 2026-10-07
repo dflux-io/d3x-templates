@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — unsupported/invalid requestType (negative).
 # 3GPP TS 29.502 §6.1.6.2.x.
 #
-# runner (AMF) POSTs a CreateSMContext carrying an invalid enum value for
+# Runik (AMF) POSTs a CreateSMContext carrying an invalid enum value for
 # requestType (not one of INITIAL_REQUEST / EXISTING_PDU_SESSION /
 # INITIAL_EMERGENCY_REQUEST / ...). A spec-correct SMF MUST reject with 4xx
 # (ProblemDetails cause MANDATORY_IE_INCORRECT) and stay up.

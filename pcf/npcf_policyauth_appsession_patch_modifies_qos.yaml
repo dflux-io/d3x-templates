@@ -4,7 +4,7 @@
 #
 # Chain of the install flow, then PATCH the app-session bumping marBwDl
 # 20→40 Mbps, then GET the sm-policy and confirm the derived QoS reflects the
-# new bound (the runner-observable stand-in for the UpdateNotify leg — the notify
+# new bound (the runik-observable stand-in for the UpdateNotify leg — the notify
 # wire itself is flows #11/#12 + the Go tier). The patched component keeps an
 # fDescs entry (E5). GET asserts via `contains "40 Mbps"` over the decision
 # subtree (E4/E6 — `sbi.body.policy.` prefix, runtime-UUID rule keys).

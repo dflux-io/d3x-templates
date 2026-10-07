@@ -1,6 +1,6 @@
 # Nudm_SDM Get slice selection (NSSAI) subscription data — compliance.
 # 3GPP TS 29.503 §6.1.3.7 (GET /nudm-sdm/v2/{supi}/nssai).
-# runner drives a real UDM; expects 200 with Nssai (defaultSingleNssais).
+# Runik drives a real UDM; expects 200 with Nssai (defaultSingleNssais).
 
 kind: flow
 name: udm_sdm_get_nssai_ok

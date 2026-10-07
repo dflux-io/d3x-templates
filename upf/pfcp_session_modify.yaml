@@ -1,6 +1,6 @@
 # PFCP Session Modification (3GPP TS 29.244 §7.5.4 / §7.5.5).
 #
-# runner (SMF) brings up an association + session, then modifies the session by
+# Runik (SMF) brings up an association + session, then modifies the session by
 # updating the FAR — switching Apply Action to FORW with an Outer Header
 # Creation IE (GTP-U/UDP/IPv4, description=256/0x100 per TS 29.244 §8.2.56)
 # pointing at a downlink F-TEID, the typical "activate downlink path" step.

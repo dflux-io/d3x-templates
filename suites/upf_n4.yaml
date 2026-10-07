@@ -18,7 +18,7 @@
 #       - F-14 establish on unknown DNN → "No resources available"    (session_handlers.go:127)
 #
 # NOT included (and why):
-#   - F-10 assoc setup without NodeID — runner has no suppress_node_id, so the
+#   - F-10 assoc setup without NodeID — Runik has no suppress_node_id, so the
 #     no-NodeID stimulus can't be authored yet (driver gap, cf. G2).
 #   - F-15 pool exhaustion — needs the UPF launched with a tiny (/30) pool;
 #     lives in a separate mini-suite with its own launch line.
@@ -30,7 +30,7 @@
 #   reject-negatives here — see docs/upf/sanity-tests.md §9.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite upf_n4 \
+#   ./bin/rk run-suite -suite upf_n4 \
 #       -templates . -c config/lab-upf.yaml \
 #       -gen-subscriber
 #
@@ -38,7 +38,7 @@
 # Every other step runs to completion so the report is full. Pass =
 # checks_failed == 0 with every step on its pinned terminal.
 #
-# NOTE: requires an runner built from current source (the committed binary
+# NOTE: requires a Runik built from current source (the committed binary
 # predates the PFCP read-side field resolver — checks would read <missing>).
 
 kind: suite

@@ -19,7 +19,7 @@
 # WHAT IS ON THE WIRE. Two Supported TA Items — TAC 1 and TAC 2 — each broadcasting the gNB's
 # own PLMN with TWO S-NSSAIs, SST 1 and SST 2. The multi-TAC / multi-slice shape is carried by
 # the send action's `tacs` / `slice_ssts` params (NGSetupRequestAdvertisedTAs,
-# runner/runner/enrichers_ngap_ifmgmt.go), NOT by a gNB config file: the register asks for
+# runik/engine/enrichers_ngap_ifmgmt.go), NOT by a gNB config file: the register asks for
 # `config: multi-tac-multi-slice-gnb`, which was never built. A probe whose deviation lives in
 # an unbuilt config file is not a probe — see REG-804, which sent the ordinary request every
 # positive row sends and read as coverage while asserting nothing.

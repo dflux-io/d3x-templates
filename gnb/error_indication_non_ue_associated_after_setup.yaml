@@ -52,7 +52,7 @@
 #                outage this row exists to catch.
 #
 # WHY AN IN-FLOW NG SETUP IS A MEASURED PROBE AND NOT A HOPEFUL ONE. NG Setup also runs once at
-# association time inside the transport (runner/runner/transport.go), before any flow starts,
+# association time inside the transport (runik/engine/transport.go), before any flow starts,
 # and that one is not observable from a flow. A SECOND, in-flow NG Setup on the established
 # association IS: REG-802 (ng_setup_response_mandatory_ies) does exactly this and passed on
 # tinycore, Open5GS AND free5GC in the 50effc0 baseline, 13 checks each. So the probe is known

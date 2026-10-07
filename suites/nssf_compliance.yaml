@@ -1,4 +1,4 @@
-# runner -> standalone NSSF SBI compliance suite (TS 29.531). runner as the AMF
+# Runik -> standalone NSSF SBI compliance suite (TS 29.531). Runik as the AMF
 # consumer against cmd/nssf (subscribed reads from seeded dpf UDR). Run as
 # 08-nssf-compliance in scripts/dpf-sanity-run.sh. Empty expected-fail list —
 # every step must pass.
@@ -13,7 +13,7 @@
 # producer; do not add steps that expect them.
 kind: suite
 name: nssf-compliance
-description: Nnssf_NSSelection (registration/default/ue-cu) + Nnssf_NSSAIAvailability (TA-aware) conformance for runner as SBI consumer against standalone NSSF.
+description: Nnssf_NSSelection (registration/default/ue-cu) + Nnssf_NSSAIAvailability (TA-aware) conformance for Runik as SBI consumer against standalone NSSF.
 steps:
   - name: registration_ok
     flow: nnssf_registration_ok

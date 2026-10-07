@@ -5,7 +5,7 @@
 # N1N2MsgTxfrFailureNotification{cause, n1n2MsgDataUri} to the consumer's
 # n1n2FailureTxfNotifURI.
 #
-# runner binds a rest-listen listener and waits for dmf to POST the failure
+# Runik binds a rest-listen listener and waits for dmf to POST the failure
 # notification to /n1n2-failure. The trigger half is a curl
 # N1N2MessageTransfer carrying n1n2FailureTxfNotifURI → this listener's URI,
 # fired by scripts/e2e-gnb-run.sh against a CM-IDLE UE that never answers

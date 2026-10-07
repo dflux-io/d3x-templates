@@ -1,10 +1,10 @@
 # CONC-01 — 100 distinct registrations (Layer B burst).
 #
-# One UE = one PUT to a FRESH random UUID. The burst runner fires N=100
+# One UE = one PUT to a FRESH random UUID. The burst Runik fires N=100
 # of these at once (`run-flow -repetitions 100 -rate 0`), so the NRF sees
 # 100 concurrent PUTs to 100 distinct nf-instance IDs. Each must land its
 # own row; the cross-UE invariant — "exactly 100 NFs exist afterwards" —
-# is checked by the runner's curl step (a single UE/flow can't see other
+# is checked by Runik's curl step (a single UE/flow can't see other
 # UEs' results), NOT here.
 #
 # DELIBERATELY no cleanup (no deregister): the post-burst list count is

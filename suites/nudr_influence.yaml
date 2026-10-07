@@ -1,8 +1,8 @@
-# runner -> dpf Nudr application-data/influenceData SBI suite — one execution per
+# Runik -> dpf Nudr application-data/influenceData SBI suite — one execution per
 # flow.
 #
 # Drives dpf's UDR application-data facade
-# (/nudr-dr/v2/application-data/influenceData, TS 29.519) with runner acting as
+# (/nudr-dr/v2/application-data/influenceData, TS 29.519) with Runik acting as
 # the SBI consumer (the AF→NEF→UDR provisioning role). Every step is a single
 # deterministic execution scored on its own spec-correct terminal.
 #
@@ -14,7 +14,7 @@
 # + a live SMF and stay Go-gated.
 #
 # Run (script step 10-nudr-influence in d3x-core scripts/dpf-sanity-run.sh):
-#   d3x-run run-suite -suite nudr-influence \
+#   rk run-suite -suite nudr-influence \
 #       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
 #
 # Requires the lab config to declare a `udr` NF binding at the dpf base URL

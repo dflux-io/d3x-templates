@@ -31,9 +31,9 @@
 # THE PROBE IS IN THE MESSAGE, NOT IN THE HARNESS CONFIGURATION, and it has to
 # be. Every register row owns a provisioned subscriber (matrix/scripts/lib/
 # subscriber.py refuses to run a row whose derived IMSI is not in the pool), so
-# there is no "unprovisioned subscriber" file to hand the runner — the row's own
+# there is no "unprovisioned subscriber" file to hand Runik — the row's own
 # subscriber IS provisioned. `InitialUEMessageUnknownSupi`
-# (runner/runner/enrichers_registration_identity.go) therefore substitutes the
+# (runik/engine/enrichers_registration_identity.go) therefore substitutes the
 # subscriber's MSIN for 0999999999 for exactly one message, which is outside
 # both the register-derived range (0000000nnn) and the multi-UE headroom block
 # (9000000001..) that the pool allocates from — so it can neither name a real
@@ -166,7 +166,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-118 (negative, expected_terminal: rejected) — A

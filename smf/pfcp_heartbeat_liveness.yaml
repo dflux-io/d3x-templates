@@ -1,7 +1,7 @@
 # N4/PFCP — Heartbeat liveness (compliance).
 # 3GPP TS 29.244 §6.2.2 / §7.4.2.
 #
-# runner (SMF) sends a PFCPHeartbeatRequest (RecoveryTimeStamp + sequence
+# Runik (SMF) sends a PFCPHeartbeatRequest (RecoveryTimeStamp + sequence
 # auto-stamped) and the UPF replies with PFCPHeartbeatResponse. Liveness is
 # verified by the round-trip and a non-empty RecoveryTimeStamp in the response.
 kind: flow

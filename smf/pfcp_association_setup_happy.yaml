@@ -1,7 +1,7 @@
 # N4/PFCP — Association Setup happy path (compliance).
 # 3GPP TS 29.244 §6.2.6 / §7.4.4.
 #
-# runner plays the SMF (CP function) and drives a real Open5GS UPF over N4. It
+# Runik plays the SMF (CP function) and drives a real Open5GS UPF over N4. It
 # sends a PFCPAssociationSetupRequest (NodeID + RecoveryTimeStamp auto-filled
 # from the binding) and the UPF replies with PFCPAssociationSetupResponse
 # carrying Cause=Request accepted. The pfcp.cause resolver lets us assert the

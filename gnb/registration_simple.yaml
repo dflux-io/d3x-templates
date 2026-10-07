@@ -12,8 +12,8 @@
 # auto-NGSetup at connect time, and the server-mode AMF auto-admits —
 # both exchanges still appear on the wire (useful for pcap inspection).
 #
-# Intended for runner-vs-runner runs (e.g. the docker/ SCTP-over-Docker lab
-# in d3x-run): one container runs registration_amf, this flow
+# Intended for runik-vs-runik runs (e.g. the docker/ SCTP-over-Docker lab
+# in rk): one container runs registration_amf, this flow
 # dials it.
 
 kind: flow
@@ -21,7 +21,7 @@ name: registration_simple
 description: "gNB-side stub: send InitialUEMessage, expect UEContextReleaseCommand, confirm release (YAML)"
 detail: |
   Wiring-validation flow pairing with the server-mode registration_amf
-  stub. Proves the full client pipeline against an runner-simulated AMF:
+  stub. Proves the full client pipeline against a Runik-simulated AMF:
   SCTP dial → auto-NGSetup → InitialUEMessage with a real NAS
   Registration Request → AMF FSM responds UEContextReleaseCommand →
   UEContextReleaseComplete → terminal state.

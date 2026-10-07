@@ -14,7 +14,7 @@
 #   TS 38.413 §9.3.1.87 — where it lands on the wire: the Security Key IE of the
 #   INITIAL CONTEXT SETUP REQUEST, a 256-bit BIT STRING.
 #
-# WHY THIS ROW COULD NOT BE WRITTEN BEFORE #248. The runner held a KgNB only on
+# WHY THIS ROW COULD NOT BE WRITTEN BEFORE #248. Runik held a KgNB only on
 # its AMF (server) side. The client-side UE never derived one and resolveUEField
 # exposed no key material at all, so a flow could assert that the Security Key
 # IE was PRESENT and 256 bits long — which is REG-480's claim — and nothing

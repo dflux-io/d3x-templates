@@ -41,7 +41,7 @@
 # HARNESS NOTE — the accept's IEs are read from ue.Params, not `nas.*`: the
 # accept rides on the per-item NAS-PDU IE that extractNasPdu() never sees (see
 # pdu_session_setup.yaml). exposePduSessionAcceptParams
-# (runner/runner/enrichers_pdu_session_accept.go) projects the decoded accept
+# (runik/engine/enrichers_pdu_session_accept.go) projects the decoded accept
 # there, writing -1 for an ABSENT optional IE so "absent" and "zero" stay
 # distinguishable.
 

@@ -9,9 +9,9 @@
 # allows 10s; the wait state below allows 5s and lands on `failed`.
 #
 # YAML mirror of the built-in `ng_setup` flow defined in
-# runner/flows/gnb/flow_ngsetup.go. Run with:
+# runik/flows/gnb/flow_ngsetup.go. Run with:
 #
-#   ./bin/d3x-run run -flow template/gnb/ng_setup.yaml \
+#   ./bin/rk run -flow template/gnb/ng_setup.yaml \
 #       -c config/lab.yaml -s config/subscribers.yaml -trace
 #
 # Non-UE-associated procedure: UEs running this flow are registered with

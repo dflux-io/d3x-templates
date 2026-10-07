@@ -1,6 +1,6 @@
 # Nudm_SDM Get SessionManagement subscription data — compliance.
 # 3GPP TS 29.503 §6.1.3.5 / §5.2.2.2 (GET /nudm-sdm/v2/{supi}/sm-data).
-# runner drives a real UDM; expects 200 with SessionManagementSubscriptionData.
+# Runik drives a real UDM; expects 200 with SessionManagementSubscriptionData.
 
 kind: flow
 name: udm_sdm_get_sm_data_ok

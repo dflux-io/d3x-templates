@@ -41,7 +41,7 @@
 #     from the phase-1 accept.
 #
 # THE TRAP IN THAT LAST CHECK: `not_contains` PASSES ON A MISSING FIELD
-# (evaluateCheck in runner/runner/action_executor.go treats absence as vacuously
+# (evaluateCheck in runik/engine/action_executor.go treats absence as vacuously
 # satisfied). An accept with no 5G-GUTI IE at all would slip through it. That is
 # why the inequality is preceded by `nas.guti ie_present`, `identity_type equals
 # 2` and `nas.guti.tmsi_5g ie_present`, every one of which fails on absence.
@@ -187,7 +187,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-185 (positive, expected_terminal: re_registered) —

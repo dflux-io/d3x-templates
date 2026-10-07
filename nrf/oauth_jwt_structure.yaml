@@ -2,7 +2,7 @@
 #
 # Full claim-level validation (iss == NRF instance id, sub == consumer
 # nfInstanceId, aud == requested NF type, exp - iat ≈ expires_in,
-# alg == RS256) requires a JWT decode helper in runner that is not yet
+# alg == RS256) requires a JWT decode helper in Runik that is not yet
 # available. This flow asserts the structural / shape invariants that
 # do not need decoding:
 #   - access_token contains '.' (the JWT header.payload.signature
@@ -12,7 +12,7 @@
 #     "ey", and the second char is "J" because the next encoded byte is
 #     "alg")
 #
-# When runner gains a `jwt-decode` action or `rest.body.access_token.jwt.*`
+# When Runik gains a `jwt-decode` action or `rest.body.access_token.jwt.*`
 # resolver, extend this flow with the iss/sub/aud/exp/alg assertions
 # called out in §4.7.4 OAUTH-06.
 #

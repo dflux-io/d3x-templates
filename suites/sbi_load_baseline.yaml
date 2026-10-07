@@ -1,21 +1,21 @@
 # SBI load baseline — the workload half of `load_nudm_sdm_get`.
 #
 # A flow template cannot declare a workload: `rate` / `duration` /
-# `repetitions` are properties of the RUN (`Workload`, runner/runner/engine.go),
+# `repetitions` are properties of the RUN (`Workload`, runik/engine/engine.go),
 # set either by the `-rate` / `-repetitions` flags on `run-flow` or by a suite
-# step (runner/runner/fsm/suite.go). This suite is where the numbers live, so
+# step (runik/engine/fsm/suite.go). This suite is where the numbers live, so
 # the flow stays runnable at any workload and this file states the one it was
 # characterised at.
 #
-#   ./bin/d3x-run run-suite -suite sbi_load_baseline \
-#       -templates . -c runner/config/lab-sbi.yaml \
+#   ./bin/rk run-suite -suite sbi_load_baseline \
+#       -templates . -c runik/config/lab-sbi.yaml \
 #       -gen-subscriber
 #
-# SELF-CONTAINED. With the shipped `runner/config/lab-sbi.yaml` both ends are in
-# one runner process: `sbi_nudm_sdm_get_server` runs as a background flow and
+# SELF-CONTAINED. With the shipped `runik/config/lab-sbi.yaml` both ends are in
+# one Runik process: `sbi_nudm_sdm_get_server` runs as a background flow and
 # binds 127.0.0.1:18443, and the load flow dials it. No core, no lab, no
 # network — which is the point. Run it on a new host to find out what the
-# runner's own floor is there BEFORE reading any number it produces against a
+# Runik's own floor is there BEFORE reading any number it produces against a
 # real UDM as a fact about that UDM.
 #
 # THIS IS NOT A CAMPAIGN. 2,000 requests over ten seconds is a smoke test of the
@@ -25,9 +25,9 @@
 # `scp/test/load/suites/` for what that shape looks like.
 #
 # WHY THE BURST FLOW IS NOT A SECOND STEP. `load_nudm_sdm_get_burst` needs a
-# target that answers concurrent requests independently, and the runner's own
+# target that answers concurrent requests independently, and Runik's own
 # server-mode responder does not — every copy in a `parallel_send` burst carries
-# the correlation header the request was enriched with once, and a runner
+# the correlation header the request was enriched with once, and a Runik
 # listener keys its pending-answer map on that header, so simultaneous arrivals
 # collide and all but one get a 504. That file's LIMITATION 2 has the measured
 # numbers. Adding it here would produce a suite that fails on every host for a
@@ -85,7 +85,7 @@ steps:
 
 final_checks:
   # Merged across the cycle. Percentiles here come from the MERGED HDR
-  # histograms (the suite loader's own comment, runner/runner/fsm/suite.go), not
+  # histograms (the suite loader's own comment, runik/engine/fsm/suite.go), not
   # from averaging per-step percentiles — so on a multi-step suite this is a
   # real p99 over every sample. It is the strictest statement in the file.
   - name: nothing failed across the whole baseline

@@ -82,7 +82,7 @@ states:
             expected: 200
           # Token endpoint is public; the consumer is pre-registered
           # (harness-seeded) so issuance succeeds. Form params go in query
-          # (the handler reads r.FormValue; runner serializes body as JSON).
+          # (the handler reads r.FormValue; Runik serializes body as JSON).
           - type: send
             message: GetToken
             peer: nrf-peer

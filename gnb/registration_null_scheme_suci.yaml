@@ -23,7 +23,7 @@
 #
 # WHAT THE UE SENDS
 # -----------------
-# The runner's REGISTRATION REQUEST always carries a SUCI with protection scheme
+# Runik's REGISTRATION REQUEST always carries a SUCI with protection scheme
 # identifier 0 and the MSIN as the scheme output verbatim — enrichers.go sets
 # IdentityType SUCI, ProtectionSchemeId 0. Measured TX, both cores, 2026-08-10:
 #     7e 00 41 71 00 0d 01 00 f1 10 00 00 00 00 00 00 00 40 03 …

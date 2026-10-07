@@ -39,7 +39,7 @@
 # REQUEST, which extractNasPdu() does not see, so `nas.*` here would read the
 # PREVIOUS message (see the HARNESS NOTE in pdu_session_setup.yaml). The
 # decoded accept is instead projected onto ue.Params by
-# exposePduSessionAcceptParams (runner/runner/enrichers_pdu_session_accept.go),
+# exposePduSessionAcceptParams (runik/engine/enrichers_pdu_session_accept.go),
 # where an ABSENT optional IE reads -1 and a present one reads its real value —
 # so "the core sent SSC mode 0" and "the core sent no SSC mode" stay different
 # observations. The selected SSC mode is a MANDATORY IE of the accept

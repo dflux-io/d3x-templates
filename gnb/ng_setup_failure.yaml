@@ -29,7 +29,7 @@
 # PLMN mismatch now lives in the send action below, so the request is bad by
 # construction on any core and under any config.
 #
-# NOTE ON ORDERING: the runner's transport completes a normal NG Setup when it
+# NOTE ON ORDERING: Runik's transport completes a normal NG Setup when it
 # opens the SCTP association, so this request arrives as a re-setup on an
 # established association. §8.7.1 treats a repeated NG SETUP REQUEST as a
 # configuration re-setup and the acceptance test is the same one; an AMF that
@@ -148,7 +148,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-804 (negative, expected_terminal: rejected) —

@@ -88,7 +88,7 @@ states:
 any_state_transitions:
   - { event: Error, target: failed }
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-435 (negative, expected_terminal: rejected) —
@@ -103,7 +103,7 @@ any_state_transitions:
 # branches into `rejected` (AUTHENTICATION REQUEST, ERROR INDICATION) carry no checks at
 # all, and the file's own comment says they are left that way on purpose so that a run
 # which terminates having asserted NOTHING is not read as a pass. That guard lived in
-# matrix/scripts/lib/outcome.py, outside the runner. `checks_total greater_or_equal 1`
+# matrix/scripts/lib/outcome.py, outside the Runik. `checks_total greater_or_equal 1`
 # is the same guard, in the template, where CLAUDE.md says the verdict belongs.
 #
 # Counts below are derived from this FSM's own transitions and from the clauses named

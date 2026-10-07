@@ -41,7 +41,7 @@
 #
 # AN ALL-ZERO BITMAP IS A PRESENT IE, NOT AN ABSENT ONE, and the enricher emits
 # it for exactly that reason (ServiceRequestPduSessionStatus,
-# runner/runner/enrichers_ngap_connmgmt.go, with a test pinning it). §5.6.1.4.1
+# runik/engine/enrichers_ngap_connmgmt.go, with a test pinning it). §5.6.1.4.1
 # keys the AMF's entire obligation on the IE being "included in the SERVICE
 # REQUEST message"; an enricher that dropped an empty IE would leave the AMF
 # owing nothing and this row would score a core on a duty it was never given.
@@ -250,7 +250,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-203 (positive, expected_terminal: reconciled) —

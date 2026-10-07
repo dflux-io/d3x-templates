@@ -9,7 +9,7 @@
 #
 # upf_qers_active is an unlabelled gauge, so it renders as the exposition line
 # `upf_qers_active 1`; assert via substring `contains` (JSON-path resolution
-# misses on a raw-text /metrics body). Requires the runner http1 REST option (#309).
+# misses on a raw-text /metrics body). Requires Runik http1 REST option (#309).
 
 kind: flow
 name: upf_metrics_qers_active

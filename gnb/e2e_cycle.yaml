@@ -1,7 +1,7 @@
 # The whole life of a UE, in one flow: register, open a PDU session, pass real
 # user-plane traffic through it, release the session, deregister.
 #
-#   ./bin/d3x-run run-flow -flow e2e_cycle \
+#   ./bin/rk run-flow -flow e2e_cycle \
 #       -templates . \
 #       -c matrix/cores/tinycore/gnb-2gnb.yaml \
 #       -s matrix/e2e/subscribers-10.yaml \
@@ -24,7 +24,7 @@
 # 3/3, and neither is a fault.
 #
 # ONE GTP-U SOCKET SERVES ALL OF THEM. gNBs that answer on the same N3 address
-# share one executor (runner/runner/uplane_n3.go), so a two-gNB env needs one
+# share one executor (runik/engine/uplane_n3.go), so a two-gNB env needs one
 # host address, not two. Each UE's downlink TEID is allocated, not aliased from
 # its RAN-UE-NGAP-ID, which is what makes them distinguishable on that one
 # socket.
@@ -155,7 +155,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than

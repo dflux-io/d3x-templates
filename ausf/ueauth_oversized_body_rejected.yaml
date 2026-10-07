@@ -1,6 +1,6 @@
 # Nausf_UEAuthentication — oversized request body (security / negative).
 # 3GPP TS 29.509 §6.1.7.3 (413); TS 29.500 §5.2.7 (payload size limits).
-# runner sends an initiate POST whose body carries a very large junk field generated
+# Runik sends an initiate POST whose body carries a very large junk field generated
 # with the $padding template function. The AUSF must REJECT (413 Payload Too
 # Large, or 400) and STAY UP — never accept it as a valid authentication.
 # Cross-cutting goal mirrors the gNB security suite: spec-correct reaction +

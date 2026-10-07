@@ -1,6 +1,6 @@
 # PFCP Association Setup (3GPP TS 29.244 §6.2.6.2 / §7.4.4).
 #
-# runner plays the SMF/CP-function peer and establishes a node-level PFCP
+# Runik plays the SMF/CP-function peer and establishes a node-level PFCP
 # association with a real Open5GS UPF over N4. The enricher auto-fills our
 # NodeID (from the binding config) and a RecoveryTimeStamp; the UPF replies
 # with PFCPAssociationSetupResponse carrying Cause "Request accepted".

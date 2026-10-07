@@ -1,6 +1,6 @@
 # S6a AIR/AIA 4-step echo flow.
 # Authentication-Information-Request/Answer (3GPP TS 29.272 §7.2.5).
-# Same 4-step echo shape as ulr_ula — d3x-run originates the
+# Same 4-step echo shape as ulr_ula — rk originates the
 # AIR + answers with AIA, SCP echoes both directions.
 
 kind: flow

@@ -25,7 +25,7 @@
 # would let an AMF resolve the context from the other and the row would be probing nothing —
 # tinycore reads the NGAP IE first and falls back to the NAS copy (lookupServiceRequestUE,
 # tinycore/dmf/amf/registration.go), so both had to move. The deviation lives in the sender
-# (ServiceRequestUnknownTmsi, runner/runner/enrichers_ngap_ifmgmt.go) and is pinned by
+# (ServiceRequestUnknownTmsi, runik/engine/enrichers_ngap_ifmgmt.go) and is pinned by
 # TestServiceRequestUnknownTmsi_BothIdentitiesDeviate, which decodes the NAS PDU back off the
 # built message and checks both copies.
 #
@@ -226,7 +226,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-215 (negative, expected_terminal: rejected) —

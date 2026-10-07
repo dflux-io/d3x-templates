@@ -1,7 +1,7 @@
 # Npcf_SMPolicyControl — UpdateNotify trigger (client, NOTIFY half).
 # The client half of the notify round-trip (paired with
 # npcf_smpolicy_update_notify_receiver). Creates an SM policy whose
-# notificationUri points at the runner REST listener
+# notificationUri points at Runik REST listener
 # (http://127.0.0.1:39998/sm-policy-notify), installs an AF app-session, then
 # PATCHes the app-session marBwDl 20→40 Mbps. The decision change makes dpf's
 # PolicyNotifier POST an SmPolicyNotification to {notificationUri}/update — the

@@ -300,7 +300,7 @@ states:
           - { type: check, field: nas.authentication_param_rand, op: ie_present }
           - { type: check, field: nas.abba, op: ie_present }
       # An identity procedure on the way to authenticating, or a refusal: alive, reached, and
-      # nothing registered. No mandatory IE either carries that this runner reads under a name we
+      # nothing registered. No mandatory IE either carries that this Runik reads under a name we
       # can justify, and a gate that cannot be justified silently discards observations.
       - event:
           or:
@@ -327,7 +327,7 @@ states:
 any_state_transitions:
   - { event: Error, target: failed }
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-416 (negative, expected_terminal: rejected) —

@@ -1,7 +1,7 @@
-# runner -> dpf Nudr runtime subscriber-provisioning SBI suite (UDM-1 + UDR-1).
+# Runik -> dpf Nudr runtime subscriber-provisioning SBI suite (UDM-1 + UDR-1).
 #
 # Drives dpf's Nudr_DataRepository write surface
-# (/nudr-dr/v1/subscription-data/{ueId}/..., TS 29.504/29.505) with runner
+# (/nudr-dr/v1/subscription-data/{ueId}/..., TS 29.504/29.505) with Runik
 # acting as the SBI provisioner: create a brand-new subscriber
 # (authentication-subscription + provisioned data), read it back through the
 # aggregate provisioned-data resource AND the UDM SDM /nssai leaf (derived
@@ -16,7 +16,7 @@
 # stays Go-gated in dpf/integration TestProvision_Auth_Delete_E2E.
 #
 # Run (script step 11-nudr-provisioning in scripts/dpf-sanity-run.sh):
-#   d3x-run run-suite -suite nudr-provisioning \
+#   rk run-suite -suite nudr-provisioning \
 #       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
 #
 # Requires the lab config to declare `udr` AND `udm` NF bindings at the dpf

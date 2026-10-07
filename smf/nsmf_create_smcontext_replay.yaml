@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — replay / identical resend (negative/security).
 # 3GPP TS 29.500 §6.x; TS 29.502 §5.2.2.2.
 #
-# runner (AMF) sends a CreateSMContext, then re-sends the byte-identical request
+# Runik (AMF) sends a CreateSMContext, then re-sends the byte-identical request
 # again. A spec-correct SMF must handle the replay deterministically — it must
 # not create two divergent contexts nor crash; it either idempotently returns a
 # reference or rejects the duplicate. The security assertion is that the SMF

@@ -8,7 +8,7 @@
 # from the procedure side. An acknowledge that switches the downlink and
 # returns no uplink endpoint leaves the user plane half-moved.
 #
-# WHY THE DECODE HAPPENS IN THE RUNNER. The transfer is an opaque OCTET STRING
+# WHY THE DECODE HAPPENS IN THE RUNIK. The transfer is an opaque OCTET STRING
 # inside the NGAP envelope, so a check against the message itself could only
 # ever say "some bytes were carried" — which a zero-length or garbage transfer
 # would also satisfy. The RX enrichment decodes it (TS 38.413 §9.3.4.9) and
@@ -129,7 +129,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than

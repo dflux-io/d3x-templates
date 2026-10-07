@@ -23,7 +23,7 @@
 # and neither existing flow makes it.
 #
 # WHAT IS ON THE WIRE. Phase 1 is an ordinary SUCI registration, which ends with
-# a REGISTRATION ACCEPT carrying the assigned 5G-GUTI; the runner stores it on
+# a REGISTRATION ACCEPT carrying the assigned 5G-GUTI; Runik stores it on
 # the UE (ue.NGAP.Guti*). The gNB then releases the UE context so the UE is back
 # in CM-IDLE, reallocates its RAN UE NGAP ID (`ngap_realloc`), and phase 2 sends
 # `RegistrationUpdate` with `registration_type: 1` — the enricher
@@ -183,7 +183,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-107 (positive, expected_terminal: guti_resolved) —

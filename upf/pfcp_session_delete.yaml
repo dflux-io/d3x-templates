@@ -1,6 +1,6 @@
 # PFCP Session Deletion (3GPP TS 29.244 §7.5.6 / §7.5.7).
 #
-# runner (SMF) brings up an association + session then tears the session down with
+# Runik (SMF) brings up an association + session then tears the session down with
 # a PFCPSessionDeletionRequest. The deletion enricher reuses the RemoteSEID
 # learned from the establishment response, so deletion must follow establishment
 # in the same UE execution. The UPF removes the session context and answers

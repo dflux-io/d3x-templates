@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_RetrieveSMContext — happy path (compliance).
 # 3GPP TS 29.502 §5.2.2.5 / §6.1.3.x.
 #
-# runner (AMF) creates an SM context, extracts its ref, then POSTs
+# Runik (AMF) creates an SM context, extracts its ref, then POSTs
 # SmContextRetrieveData to {ref}/retrieve to fetch the stored SM context (e.g.
 # during EPS<->5GS interworking / handover). A spec-correct SMF replies 200 OK
 # with a SmContextRetrievedData body.

@@ -10,9 +10,9 @@
 #     handler emits today)
 #
 # nrfInstanceId regex-validation is approximated with length=36 +
-# contains "-" — runner doesn't ship a `matches` op so a full v4 regex
+# contains "-" — Runik doesn't ship a `matches` op so a full v4 regex
 # isn't expressible inline yet. Full v4 grammar is left for a future
-# runner regex-check helper.
+# Runik regex-check helper.
 #
 # Verification works against any NRF mode (oauth2 on or off); body
 # shape is identical because oauth2Required is just a status map.

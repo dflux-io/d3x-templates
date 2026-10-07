@@ -1,6 +1,6 @@
-# runner -> Open5GS UDM SBI security / robustness suite — one request per flow.
+# Runik -> Open5GS UDM SBI security / robustness suite — one request per flow.
 #
-# Drives abnormal, malformed, and security-edge Nudm requests from runner acting
+# Drives abnormal, malformed, and security-edge Nudm requests from Runik acting
 # as the SBI CONSUMER/peer against a real Open5GS UDM. The cross-cutting
 # assertion is that the UDM reacts in a spec-correct way and STAYS UP — these
 # flows deliberately send things the UDM should REJECT with a ProblemDetails
@@ -21,7 +21,7 @@
 # failed negative is itself a finding to be recorded, not a reason to abort.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite udm-security \
+#   ./bin/rk run-suite -suite udm-security \
 #       -templates <templates-dir> -c config/open5gs-udm.yaml -trace
 #
 # ORDERING rationale (top -> bottom):
@@ -59,7 +59,7 @@
 #     for an unknown /v99 (correct) or, on some builds, fall through oddly;
 #     either way a non-crash 4xx satisfies `rejected`.
 #
-# First-run results (2026-06-05, Open5GS v2.7.x, runner as SBI consumer):
+# First-run results (2026-06-05, Open5GS v2.7.x, Runik as SBI consumer):
 # 8/24 pass — but the score UNDERSTATES it: all 8 passes are the steps that
 # ran BEFORE the UDM died, and they passed correctly (malformed-SUPI 400,
 # invalid-dataset 400, subscribe missing-callback/malformed-body/wrong-

@@ -1,8 +1,8 @@
 # SMF security / robustness suite — one flow, one execution per flow.
 #
 # Drives abnormal, malformed, unauthorized, and oversized Nsmf_PDUSession SBI
-# requests (over N11, runner plays the AMF / Nsmf consumer) and malformed/illegal
-# N4/PFCP requests (runner plays the SMF toward the UPF) against a real Open5GS
+# requests (over N11, Runik plays the AMF / Nsmf consumer) and malformed/illegal
+# N4/PFCP requests (Runik plays the SMF toward the UPF) against a real Open5GS
 # deployment. The cross-cutting assertion is that the SMF/UPF reacts in a
 # spec-correct way — rejects with the right class of error (4xx ProblemDetails
 # for SBI; a PFCP response with the spec-correct reject Cause for N4) or
@@ -16,7 +16,7 @@
 # shared state to carry.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite smf-security \
+#   ./bin/rk run-suite -suite smf-security \
 #       -templates <templates-dir> -c config/open5gs-smf.yaml -trace
 #
 # stop_on_failure is false on every step: a misbehaviour on one probe must not
@@ -57,12 +57,12 @@
 # N4 addressing note (REQUIREMENT, now resolved): the PFCP probes need NodeID ==
 # our own IP bound on UDP 8805 (Open5GS routes PFCP responses to NodeID:8805, not
 # the UDP source port). config/open5gs-smf.yaml sets pfcp.local "172.22.0.250:8805"
-# + node_id.value "172.22.0.250" and the harness runs the runner container on
-# --ip 172.22.0.250; runner's PFCP RX path then receives + dispatches the responses
-# normally — there is NO runner PFCP client-RX correlation bug (an earlier run
+# + node_id.value "172.22.0.250" and the harness runs Runik container on
+# --ip 172.22.0.250; Runik's PFCP RX path then receives + dispatches the responses
+# normally — there is NO Runik PFCP client-RX correlation bug (an earlier run
 # misdiagnosed the addressing issue as one).
 #
-# Results (2026-06-05, Open5GS v2.7.x, runner as SMF consumer):
+# Results (2026-06-05, Open5GS v2.7.x, Runik as SMF consumer):
 # 18/20 pass — the strongest suite. Every Nsmf SBI negative (malformed JSON,
 # missing mandatory IE, unknown DNN, bad S-NSSAI, unsupported request-type,
 # unauthorized token, unsupported media type, oversized payload, update/release/
@@ -73,7 +73,7 @@
 # accepted" where the probe pinned the strict reject Cause ("Mandatory IE
 # missing" / "No established PFCP Association") — the real UPF accepts our bare
 # establishment rather than emitting the spec reject, so the strict pin scores
-# FAIL. That is a UPF Cause-fidelity observation, NOT a core gap or an runner RX bug.
+# FAIL. That is a UPF Cause-fidelity observation, NOT a core gap or a Runik RX bug.
 # pfcp_session_mod_unknown_seid passes (Cause "Session context not found").
 
 kind: suite

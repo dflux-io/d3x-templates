@@ -1,13 +1,13 @@
-# runner -> dpf Npcf SBI compliance suite — one execution per flow.
+# Runik -> dpf Npcf SBI compliance suite — one execution per flow.
 #
 # Drives dpf's PCF service (Npcf_SMPolicyControl + Npcf_PolicyAuthorization)
-# with runner acting as the SBI consumer (SMF role for SM-policy CRUD, AF role for
+# with Runik acting as the SBI consumer (SMF role for SM-policy CRUD, AF role for
 # the app-session N5 chain). Every step is a single deterministic execution
 # (repetitions: 1, no rate) scored on its own spec-correct terminal — a
 # conformance pass, not a load test. See d3x-core docs/dpf/sanity-tests.md.
 #
 # Run (script step 05-pcf-compliance in scripts/dpf-sanity-run.sh):
-#   d3x-run run-suite -suite pcf-compliance \
+#   rk run-suite -suite pcf-compliance \
 #       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
 #
 # The notify round-trip (npcf_smpolicy_update_notify_receiver +
@@ -29,12 +29,12 @@
 #
 # ORDERING: SM-policy CRUD first (the gate, then GET/update/delete/negatives),
 # then the N5 PolicyAuthorization chain (each chain creates its own SM policy
-# first — runner executions are independent, no cross-flow state — but ordering
+# first — Runik executions are independent, no cross-flow state — but ordering
 # them after the CRUD block fails fast if CreateSMPolicy is broken).
 
 kind: suite
 name: pcf-compliance
-description: One-execution-per-flow Npcf SBI conformance pass for runner as SBI consumer against dpf's PCF.
+description: One-execution-per-flow Npcf SBI conformance pass for Runik as SBI consumer against dpf's PCF.
 steps:
   # --- SM-policy CRUD (dynamic-decision gate, then round-trips) -----------
   - name: smpolicy_create_dynamic_ok
@@ -83,7 +83,7 @@ steps:
 
   # Usage monitoring (TS 29.512 §5.6.2.12): metered DNN emits a umDec + a
   # monitored PCC rule; accuUsageReports accumulate past the seeded quota and
-  # the monitored rule is revoked. SMF role is stubbed (runner POSTs the
+  # the monitored rule is revoked. SMF role is stubbed (Runik POSTs the
   # reports directly).
   - name: smpolicy_usage_report_revoke
     flow: npcf_smpolicy_usage_report_revoke

@@ -1,7 +1,7 @@
 # N4/PFCP — Association Release (compliance).
 # 3GPP TS 29.244 §6.2.8 / §7.4.6.
 #
-# runner (SMF) sets up a PFCP association, then tears it down with a
+# Runik (SMF) sets up a PFCP association, then tears it down with a
 # PFCPAssociationReleaseRequest (NodeID auto-filled). The UPF replies with
 # PFCPAssociationReleaseResponse carrying Cause=Request accepted, asserted via
 # the pfcp.cause resolver. Exercises the new AssociationRelease send.

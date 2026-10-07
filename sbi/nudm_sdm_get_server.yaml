@@ -1,5 +1,5 @@
 # SBI smoke — server side.
-# d3x-run listens on udm-server's binding and answers every
+# rk listens on udm-server's binding and answers every
 # Nudm_SDM_GetSubscriptionData with a canned AccessAndMobilitySubscription
 # Data body. Stays in `waiting` — this flow is the background responder for
 # suites/sbi_load_baseline.yaml (~2,000 requests). Do not route to

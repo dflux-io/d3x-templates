@@ -9,7 +9,7 @@
 #
 # Requires the NRF to support the `routing-indicator` discovery filter
 # (d3x-core handler_disc.go / store) — added alongside this flow.
-# Discovery query params go in `query` (runner serializes body as JSON; the
+# Discovery query params go in `query` (Runik serializes body as JSON; the
 # handler reads r.URL.Query()).
 
 kind: flow

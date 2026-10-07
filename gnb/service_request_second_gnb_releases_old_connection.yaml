@@ -28,11 +28,11 @@
 # THE SCENARIO IS RADIO-LINK FAILURE, NOT HANDOVER. The UE gives up on the cell
 # it registered through and comes back via another one; the source gNB never
 # asks for a handover and may be unreachable. Nothing in the handover machinery
-# applies — in particular the runner's `handover_swap` action cannot produce
+# applies — in particular Runik's `handover_swap` action cannot produce
 # this state, because it consumes a bridge recorded by a target gNB's auto-reply
 # to a HANDOVER REQUEST, and no HANDOVER REQUEST is ever sent here. The move is
 # done by the sender (`ServiceRequestViaSecondGnb`,
-# runner/runner/enrichers_ngap_second_gnb.go).
+# runik/engine/enrichers_ngap_second_gnb.go).
 #
 # WHAT MAKES THE ROW OBSERVABLE, AND THE DEFECT THAT WOULD HAVE HIDDEN IT.
 # The UE CONTEXT RELEASE COMMAND the AMF owes arrives ON THE OLD ASSOCIATION,
@@ -40,7 +40,7 @@
 # gNB's (RAN-UE-NGAP-ID → ContextID) binding when it moves the UE; without that
 # the RX demux drops the command as `unknown_ue` before any flow sees it, and
 # this row would report silence from a core that had answered correctly. That
-# failure mode is not hypothetical — it is recorded in the runner's own
+# failure mode is not hypothetical — it is recorded in Runik's own
 # `keep_source_binding` comment (execNgapHandoverSwap, action_executor.go),
 # where it was paid for once already.
 #
@@ -74,7 +74,7 @@
 #
 # ORDER IS NOT ASSERTED, on purpose. §5.3.3.3.2 does not order the release
 # against the accept, and the two arrive on different SCTP associations where
-# neither the network nor this runner guarantees an interleaving. Both states
+# neither the network nor this Runik guarantees an interleaving. Both states
 # below therefore accept either message and converge, so an arrival order that
 # the clause does not fix cannot decide the verdict.
 #

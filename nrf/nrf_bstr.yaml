@@ -15,7 +15,7 @@
 # gated, and this is precisely how nrf_sub's broken SUB-02 assertion survived
 # since the monorepo import.
 #
-# BSTR-02 now runs where an `-oauth2` NRF actually exists: runner/scripts/
+# BSTR-02 now runs where an `-oauth2` NRF actually exists: runik/scripts/
 # nrf-oauth-enforced.sh, which is the `nrf-oauth-enf` phase of sanity-all.sh and
 # already stands up exactly that NRF for OAUTH-ENF-01. What is left here is
 # mode-agnostic (the bootstrap body is identical in both modes; only

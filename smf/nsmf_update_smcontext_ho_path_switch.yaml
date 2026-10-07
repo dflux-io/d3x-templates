@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_UpdateSMContext — handover path switch (compliance).
 # 3GPP TS 29.502 §5.2.2.3.x; TS 23.502 §4.9.
 #
-# runner (AMF) creates an SM context, extracts its ref, then POSTs a
+# Runik (AMF) creates an SM context, extracts its ref, then POSTs a
 # SmContextUpdateData to {ref}/modify requesting an N2 handover path switch
 # (upCnxState=ACTIVATING with new AN-side N2 info / target tunnel). A
 # spec-correct SMF replies 200 OK.

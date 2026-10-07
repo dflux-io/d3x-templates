@@ -1,7 +1,7 @@
 # SMF/CP ↔ UPF PFCP (N4) security / robustness suite — one flow per probe.
 #
 # Drives abnormal, malformed, and security-edge PFCP procedures (TS 29.244)
-# SMF-side against a real 5G user plane (Open5GS UPF). runner plays the SMF/CP
+# SMF-side against a real 5G user plane (Open5GS UPF). Runik plays the SMF/CP
 # peer over N4. The cross-cutting assertion is that the UPF reacts in a
 # spec-correct way and STAYS UP — these probes deliberately send things the
 # UPF should reject with the right Cause, silently drop, or idempotently
@@ -19,7 +19,7 @@
 # protect — each probe stands alone. The cleanup step runs always.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite upf-security \
+#   ./bin/rk run-suite -suite upf-security \
 #       -templates <templates-dir> -c config/open5gs-upf.yaml -trace
 #
 # ORDER rationale: the node-level / tolerant probes (stray heartbeat, heartbeat
@@ -65,12 +65,12 @@
 # source port. Driving a real UPF therefore requires advertising NodeID == our
 # own IP and binding it on :8805 — config/open5gs-upf.yaml sets pfcp.local
 # "172.22.0.250:8805" + node_id.value "172.22.0.250", and the harness runs the
-# runner container on --ip 172.22.0.250 so it owns that NodeID. With that in place
-# runner's PFCP RX path receives and dispatches responses normally — there is NO
-# runner PFCP client-RX correlation bug (an earlier run misdiagnosed the addressing
+# Runik container on --ip 172.22.0.250 so it owns that NodeID. With that in place
+# Runik's PFCP RX path receives and dispatches responses normally — there is NO
+# Runik PFCP client-RX correlation bug (an earlier run misdiagnosed the addressing
 # issue as one).
 #
-# Results (2026-06-05, Open5GS v2.7.x, runner as SMF/CP function over N4): 5/10.
+# Results (2026-06-05, Open5GS v2.7.x, Runik as SMF/CP function over N4): 5/10.
 # PASS: pfcp_heartbeat_no_association + pfcp_heartbeat_recovery_stable (recovery
 # ts stable), pfcp_session_establish_missing_fseid (Cause "Mandatory IE missing"
 # via suppressed CP F-SEID), pfcp_session_modify_unknown_fseid +

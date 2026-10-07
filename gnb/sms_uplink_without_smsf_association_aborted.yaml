@@ -24,7 +24,7 @@
 # reading anything into the name: nas5g emits the 5GS update type IE only when
 # the bit is set, so what goes on the wire is "IE ABSENT", which is §5.5.1.2.4
 # case e) rather than case d). The clause legislates both identically, which is
-# what makes the substitution legitimate; see runner/runner/enrichers_uepolicy.go.
+# what makes the substitution legitimate; see runik/engine/enrichers_uepolicy.go.
 #
 # WHAT THE CHECKS ASSERT — this row's criterion and nothing else.
 #   1. `nas.sms_allowed equals false` on the REGISTRATION ACCEPT. The
@@ -38,14 +38,14 @@
 #      silent no-op send cannot reach the silence window and be scored as an
 #      abort. The wire proof is in -trace: the UL NAS TRANSPORT carries
 #      payload_container_type 1 (SMS).
-#   3. THE ROW: every one of the six SMS downlink sub-events the runner can name
+#   3. THE ROW: every one of the six SMS downlink sub-events Runik can name
 #      transitions to `sms_forwarded`, a FAILING terminal. Silence for
 #      absent_after_s (10 s, from the register row) is the conformant answer.
 #      AND A 5GMM STATUS IS NOT SILENCE. §5.4.5.2.5 says "abort the procedure";
 #      it does not license answering. open5gs answers this submit with a 5GMM
 #      STATUS carrying 5GMM cause #96 (invalid mandatory information) — captured
 #      on the wire, NGAP NAS DOWNLINK TRANSPORT `7e 02 .. .. .. .. 7e 00 64 60`,
-#      0x64 = 5GMM STATUS, 0x60 = 96. Until this row named that event the runner
+#      0x64 = 5GMM STATUS, 0x60 = 96. Until this row named that event Runik
 #      refused it into `bus_audit.refused` and dropped it, and the row scored
 #      open5gs as silent — crediting the core with an absence it did not produce.
 #      It is a FAILING terminal of its own, `status_returned`, so
@@ -67,7 +67,7 @@
 #
 #      ErrorIndication and the bare NASDownlinkTransport.DLNASTransport that
 #      REG-718 also enumerates are NOT added: no core has been observed sending
-#      either here, nothing in the runner has changed underneath them, and an
+#      either here, nothing in Runik has changed underneath them, and an
 #      assertion never shown to fail is not evidence.
 #   4. SILENCE IS NOT SCORED ON A BARE TIMER. §5.4.5.2.5's "abort" is an abort of
 #      the NAS TRANSPORT procedure, NOT of the connection, so the row's criterion
@@ -82,7 +82,7 @@
 # and submitting the same SMS — which is gnb/sms_mo.yaml, a flow that terminates
 # in sms_sent against a core that forwards. The silence detector here and the
 # arrival detector there are the same six events, so a `sms_aborted` terminal
-# cannot be a runner that simply never sees SMS downlinks.
+# cannot be a Runik that simply never sees SMS downlinks.
 #
 # Terminals: sms_aborted (PASS), sms_forwarded / status_returned / context_released / failed (FAIL).
 
@@ -201,7 +201,7 @@ states:
       # that answers an unauthorised SMS by releasing the context has done
       # something §5.4.5.2.5 does not license, and the row's criterion requires
       # the connection to stay up. Named terminal, not `failed`, so
-      # final_state_counts distinguishes it from a runner stall.
+      # final_state_counts distinguishes it from a Runik stall.
       - { event: UEContextReleaseCommand, target: context_released }
 
   # (4) The positive acceptance observable. DEREGISTRATION REQUEST rides the SAME
@@ -218,7 +218,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-622 (negative, expected_terminal: sms_aborted) —

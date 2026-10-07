@@ -1,6 +1,6 @@
 # Nausf_UEAuthentication — missing mandatory IE servingNetworkName (security / negative).
 # 3GPP TS 29.509 §6.1.6.2.2; §6.1.7.3 (400, MANDATORY_IE_MISSING).
-# runner sends an initiate body that OMITS the mandatory servingNetworkName entirely.
+# Runik sends an initiate body that OMITS the mandatory servingNetworkName entirely.
 # Sent via the generic SBI_Request raw body so the field is genuinely absent on
 # the wire (not coerced to a zero-value by the typed model). The AUSF must REJECT
 # with 400 + ProblemDetails and STAY UP.

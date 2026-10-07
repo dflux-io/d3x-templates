@@ -1,6 +1,6 @@
 # PFCP Session with QER (F-08) — install + modify a QoS Enforcement Rule.
 #
-# runner (SMF) establishes a session whose uplink PDR is bound to a Create QER
+# Runik (SMF) establishes a session whose uplink PDR is bound to a Create QER
 # carrying a Maximum Bitrate (MBR) and open gates, then sends a Session
 # Modification that updates the QER's MBR, then deletes. The standalone UPF
 # installs the QER into its datapath (upf/n4/session_handlers.go:228) and

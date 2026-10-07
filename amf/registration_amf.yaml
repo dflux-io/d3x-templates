@@ -1,7 +1,7 @@
 # AMF-side server-mode wiring stub.
 #
 # YAML mirror of the built-in `registration_amf` flow defined in
-# runner/flows/amf/flow_registration_amf.go.
+# runik/flows/amf/flow_registration_amf.go.
 #
 # Server-mode flow: receives an InitialUEMessage from any admitted gNB,
 # replies with UEContextReleaseCommand, and lands in the terminal
@@ -37,7 +37,7 @@ states:
     transitions:
       # The demux resolves NAS-bearing frames to the dotted form
       # (InitialUEMessage.RegistrationRequest when the gNB includes a real
-      # NAS Registration Request, e.g. runner's registration* flows) and
+      # NAS Registration Request, e.g. Runik's registration* flows) and
       # NAS-less frames to the bare name. Event matching is exact, so
       # accept both.
       - event:

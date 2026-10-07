@@ -17,7 +17,7 @@
 #   - SCP in server mode for Diameter ULR/ULA (conf/scp-diameter-server.yaml)
 # with the lab-multinf env config:
 #
-#   ./bin/d3x-run run \
+#   ./bin/rk run \
 #       -c config/lab-multinf.yaml \
 #       -s config/subscribers.yaml \
 #       -flow template/multinf/ngap_plus_diameter.yaml \

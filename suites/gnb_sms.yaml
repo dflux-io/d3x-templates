@@ -13,7 +13,7 @@
 # a short sweep interval (smsf -sweep 2s) so the 60s step budget holds.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite gnb-sms \
+#   ./bin/rk run-suite -suite gnb-sms \
 #       -templates <templates-dir> -c <lab.yaml> -s <subscribers.yaml> -trace
 
 kind: suite

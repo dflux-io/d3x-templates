@@ -113,7 +113,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than
@@ -165,7 +165,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-370 (robustness, expected_terminal: null) — After
