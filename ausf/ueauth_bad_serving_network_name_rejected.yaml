@@ -1,6 +1,6 @@
 # Nausf_UEAuthentication — unauthorized serving network (security / negative).
 # 3GPP TS 29.509 §6.1.7.3 (cause SERVING_NETWORK_NOT_AUTHORIZED, 403).
-# runner initiates authentication with a serving-network name the AUSF must not
+# Runik initiates authentication with a serving-network name the AUSF must not
 # authorize. The AUSF must REJECT with 403 + ProblemDetails and STAY UP.
 
 kind: flow

@@ -48,7 +48,7 @@
 # would see a gNB whose advertised list still says TAC 1 — either way the probe
 # would be half-deviated and a green cell would mean nothing. The ULI half is
 # pinned on the wire by TestInitialUEMessageAtTac_TacIsOnTheWire
-# (runner/runner/enrichers_wave3_probes_test.go), which fails if the TAC falls
+# (runik/engine/enrichers_wave3_probes_test.go), which fails if the TAC falls
 # back to the gNB's configured 1.
 #
 # WHY THE NG SETUP HALF HAS ITS OWN TERMINAL. An AMF that refuses the re-setup
@@ -210,7 +210,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-124 (negative, expected_terminal: rejected) — A

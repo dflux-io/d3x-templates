@@ -15,7 +15,7 @@
 # TAC 7 broadcasting PLMN 999/99 — the MCC TS 23.003 §12.1 reserves for test networks, so no
 # core under test can legitimately serve it — with S-NSSAI SST 3. The list is APER-encoded by
 # the flow's own sender (RANConfigurationUpdateAdvertisedTAs,
-# runner/runner/enrichers_ngap_ifmgmt.go) and the encoding is pinned by a round-trip test
+# runik/engine/enrichers_ngap_ifmgmt.go) and the encoding is pinned by a round-trip test
 # through ngap5g.DecodeSupportedTAList — the very function the AMF parses this IE with
 # (tinycore/dmf/amf/config_update.go) — so "the violation is on the wire" is a measured claim,
 # not a YAML-level intention. The deviation lives in the flow rather than in a gNB config file
@@ -131,7 +131,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-823 (negative, expected_terminal: rejected) —

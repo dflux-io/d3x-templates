@@ -1,6 +1,6 @@
 # PFCP Session on a secondary DNN (F-06) — UE-IP from a second pool.
 #
-# runner (SMF) establishes a session whose uplink PDR pins PDI NetworkInstance
+# Runik (SMF) establishes a session whose uplink PDR pins PDI NetworkInstance
 # to a secondary DNN ("sanity2") and requests a UE IP via CHOOSE (chv4). The
 # standalone UPF resolves the DNN to its secondary pool and allocates a UE-IP
 # from it, then accepts; delete tears it down. Complements the unknown-DNN
@@ -14,7 +14,7 @@
 #
 # Sanity scope: asserts the establish/delete are accepted (Cause "Request
 # accepted"). Asserting the allocated UE-IP falls inside 10.46.0.0/24 needs a
-# pfcp.ue_ip_address resolver path runner doesn't expose (gap G7,
+# pfcp.ue_ip_address resolver path Runik doesn't expose (gap G7,
 # docs/upf/sanity-tests.md §9); the allocation itself is still exercised.
 
 kind: flow

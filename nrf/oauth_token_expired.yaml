@@ -4,13 +4,13 @@
 # Proves the issuer honours the configured token lifetime: the advertised
 # `expires_in` matches the NRF's `-token-expiry`, and the JWT's own `exp`
 # claim is in the future at issue but in the past after the window passes.
-# Uses the `$jwt_decode` template op (runner) to read `exp` client-side — the
+# Uses the `$jwt_decode` template op (Runik) to read `exp` client-side — the
 # NRF has no token-introspection endpoint, so this is the only way to
 # inspect the claim without a protected endpoint to replay against.
 #
 # REQUIRES the NRF launched with `-token-expiry 30s -jwt-key <pem>`. Run
-# with a per-flow timeout > 40s (the runner uses 60s). Form params go in
-# `query` (the token handler reads r.FormValue; runner serializes body as JSON).
+# with a per-flow timeout > 40s (Runik uses 60s). Form params go in
+# `query` (the token handler reads r.FormValue; Runik serializes body as JSON).
 
 kind: flow
 name: nrf_oauth_token_expired

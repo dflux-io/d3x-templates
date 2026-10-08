@@ -4,7 +4,7 @@
 # This flow posts ~8 KiB of padding so MaxBytesReader yields 413 before
 # policy/rate-limit filters run.
 #
-# Reuses generic SBI_Request + {{$padding N}} (see runner/template.go).
+# Reuses generic SBI_Request + {{$padding N}} (see runik/template.go).
 kind: flow
 name: smf_nsmf_smcontext_oversized_payload_scp413
 description: CreateSMContext with oversized body — expect SCP 413 Payload Too Large

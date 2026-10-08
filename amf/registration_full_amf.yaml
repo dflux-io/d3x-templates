@@ -3,7 +3,7 @@
 # The network half of the registration procedure: drives a real 5G-AKA
 # challenge and NAS security activation against a gNB running the
 # `registration` flow. Pairs with gnb/registration.yaml; used by the
-# d3x-run docker/ SCTP-over-Docker lab.
+# rk docker/ SCTP-over-Docker lab.
 #
 # Requires subscribers loaded on the AMF side (-s subscribers.yaml): the
 # RX enrichment resolves the subscriber the inbound RegistrationRequest
@@ -85,13 +85,13 @@ states:
   # ORDER-TOLERANT (W5-A, xp-205). The gNB acks the InitialContextSetupRequest
   # and sends RegistrationComplete — gnb/registration.yaml emits both from ONE
   # transition, i.e. in a single burst — and this side sends nothing in
-  # between, so both are in flight at once. The runner's EventBus gives per-UE
+  # between, so both are in flight at once. Runik's EventBus gives per-UE
   # mutual exclusion but not per-UE ORDERING (shared work queue, striped lock),
   # so it can present them either way
   # round, and a state that does not name an event drops it silently and
   # unrecoverably. That is the same defect that made gnb/sms_mo_loopback flaky
   # for three waves; this flow carried it too and was never measured only
-  # because it runs in runner/docker/, outside tinycore's gate. Both frames are
+  # because it runs in runik/docker/, outside tinycore's gate. Both frames are
   # still mandatory — only their order is no longer asserted, and it could not
   # honestly be asserted from here while the harness itself reorders.
   wait_context_setup_response:

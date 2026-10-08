@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — bad/unsupported S-NSSAI (negative/security).
 # 3GPP TS 29.502 §6.1.6.3.4; TS 23.501 §5.15.
 #
-# runner (AMF) POSTs a CreateSMContext whose sNssai is not in the subscriber's
+# Runik (AMF) POSTs a CreateSMContext whose sNssai is not in the subscriber's
 # allowed NSSAI / not supported by the SMF. A spec-correct SMF MUST reject with
 # 4xx and a SmContextCreateError ProblemDetails (cause SNSSAI_DENIED) and
 # stay up.

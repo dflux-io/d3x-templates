@@ -65,7 +65,7 @@
 # wire value, so this row was accidentally right; it is now right on purpose. When
 # encodeServiceRequest is fixed this must become 3.
 #
-# STRUCTURE IS LOAD-BEARING — DO NOT RENAME STATES. runner/runner/flows_integration_test.go
+# STRUCTURE IS LOAD-BEARING — DO NOT RENAME STATES. runik/engine/flows_integration_test.go
 # TestE2E_PagingResponse_Dispatch drives this FSM by state name (wait_release_cmd → wait_paging →
 # wait_service_response → connected) and dispatches the BARE `InitialContextSetupRequest` event,
 # and tinycore/scripts/e2e-gnb-run.sh step 04-mt-paging greps this flow's log for `to=connected`.
@@ -119,7 +119,7 @@ states:
           - type: extract
             field: amf_ue_ngap_id
             store: pilot_amf_id
-          # The pre-release RAN UE NGAP ID. Captured here because `d3x-run lint`
+          # The pre-release RAN UE NGAP ID. Captured here because `rk lint`
           # refuses an extract that follows a send.
           - type: extract
             field: ue.RanUeNgapId
@@ -326,13 +326,13 @@ final_checks:
     value: 3
   # STAYS 1 — AND 1 IS NOT WHAT EVERY CORE PRODUCES. Read this before changing it.
   #
-  # Since #364 the runner answers a UE CONTEXT RELEASE COMMAND that no state names
+  # Since #364 Runik answers a UE CONTEXT RELEASE COMMAND that no state names
   # (TS 38.413 §8.3.3, unconditional), so this metric is now "the one Complete this
   # flow declares in wait_release_cmd" PLUS one per unnamed command the core chose
   # to send. That second term is a property of the CORE, not of this FSM.
   #
   # Measured, not inferred — three sweeps agree (5ee60cd 2026-08-13, 8a48fa1 and
-  # f227f12-v1 2026-08-17), REG-231's own runner.json:
+  # f227f12-v1 2026-08-17), REG-231's own runik.json:
   #     tinycore  rx UEContextReleaseCommand 1 -> 1 Complete
   #     open5gs   rx UEContextReleaseCommand 1 -> 1 Complete
   #     free5gc   rx UEContextReleaseCommand 2 -> 2 Completes

@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — unknown DNN (negative/security).
 # 3GPP TS 29.502 §6.1.6.3.4; §4.3.2.2.2.
 #
-# runner (AMF) POSTs a CreateSMContext referencing a DNN that is not configured /
+# Runik (AMF) POSTs a CreateSMContext referencing a DNN that is not configured /
 # not allowed for the subscriber. A spec-correct SMF MUST reject with 4xx and a
 # SmContextCreateError ProblemDetails (cause DNN_DENIED / DNN_NOT_SUPPORTED)
 # and stay up.

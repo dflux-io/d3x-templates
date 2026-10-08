@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_UpdateSMContext — malformed JSON body (negative/security).
 # 3GPP TS 29.502 §6.1.6; TS 29.500 §6.3.
 #
-# runner (AMF) POSTs a truncated, non-parseable JSON body to a modify endpoint via
+# Runik (AMF) POSTs a truncated, non-parseable JSON body to a modify endpoint via
 # raw_body. A spec-correct SMF MUST reject with 400 Bad Request and stay up.
 # (Aimed at a fabricated ref so the parse error dominates; even if the ref were
 # unknown the correct behaviour is still a clean 4xx, never a 5xx/crash.)

@@ -14,7 +14,7 @@
 # -------------------
 # InitialUEMessage carrying a REGISTRATION REQUEST whose 5GS mobile identity
 # is a SUCI with protection scheme identifier 0 (null-scheme). The send param
-# `protection_scheme: 0` makes that claim explicit. Runner default is already
+# `protection_scheme: 0` makes that claim explicit. Runik default is already
 # 0; this flow requires the send-param (d3x PR feat/pentest-send-params) so
 # the stimulus is authored, not accidental.
 #
@@ -58,7 +58,7 @@ states:
       - event: Start
         target: wait_reaction
         actions:
-          # Requires runner send-param protection_scheme (d3x PR feat/pentest-send-params).
+          # Requires Runik send-param protection_scheme (d3x PR feat/pentest-send-params).
           # Default is already 0; the param makes the null-scheme claim explicit.
           - type: send
             message: InitialUEMessage

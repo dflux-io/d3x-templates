@@ -1,7 +1,7 @@
 # N4/PFCP — Session Establishment missing mandatory IE (negative/security).
 # 3GPP TS 29.244 §7.5.2; §8.2.1 (Cause 67 — Mandatory IE missing).
 #
-# runner (SMF) associates, then sends a PFCPSessionEstablishmentRequest with
+# Runik (SMF) associates, then sends a PFCPSessionEstablishmentRequest with
 # suppress_cp_fseid=true so the mandatory CP F-SEID IE is omitted. A
 # spec-correct UPF MUST reject with Cause="Mandatory IE missing" (asserted via
 # the pfcp.cause resolver) and stay up.

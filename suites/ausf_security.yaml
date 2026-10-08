@@ -1,7 +1,7 @@
-# runner ↔ AUSF Nausf SBI security / robustness suite — one UE, one execution per flow.
+# Runik ↔ AUSF Nausf SBI security / robustness suite — one UE, one execution per flow.
 #
 # Drives abnormal, malformed, unauthorized, and security-edge Nausf requests
-# consumer-side against a real 5G core (Open5GS AUSF). runner is the SBI
+# consumer-side against a real 5G core (Open5GS AUSF). Runik is the SBI
 # consumer/peer. The cross-cutting assertion is that the AUSF reacts in a
 # spec-correct way and STAYS UP — these flows deliberately send things the
 # AUSF should REJECT (403/404/400/415/413) or tolerate, never crash. Most
@@ -16,7 +16,7 @@
 # discovering the others. The cleanup step runs always.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite ausf-security \
+#   ./bin/rk run-suite -suite ausf-security \
 #       -templates <templates-dir> -c config/open5gs-ausf.yaml -trace
 #
 # ORDER rationale: the simple stateless initiate-reject probes (single POST,
@@ -53,7 +53,7 @@
 # mandatory field, RFC7807 problem+json fidelity with no SUPI leak). A failure
 # there points at the core, not at our flows.
 #
-# First-run results (2026-06-05, Open5GS v2.7.x, runner as SBI consumer):
+# First-run results (2026-06-05, Open5GS v2.7.x, Runik as SBI consumer):
 # 9/17 pass; the AUSF never crashed (the core robustness assertion held).
 # Pass: oversized_body, sor_missing_ackind, upu_missing_mandatory_field,
 # confirmation_unknown_ctx, confirmation_missing_res_star, wrong_res_star,

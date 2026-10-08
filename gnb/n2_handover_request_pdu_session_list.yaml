@@ -9,7 +9,7 @@
 # A handover that "completes" while the request named no PDU session has moved
 # a signalling connection and left the user plane behind.
 #
-# WHY THIS FLOW OWNS THE TARGET SIDE. The runner's target-gNB auto-reply
+# WHY THIS FLOW OWNS THE TARGET SIDE. Runik's target-gNB auto-reply
 # answers an inbound HANDOVER REQUEST and never shows it to the flow, so no
 # assertion about its contents was possible at all. Declaring a
 # `HandoverRequest` transition makes this flow the target: the decoded request
@@ -126,7 +126,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than

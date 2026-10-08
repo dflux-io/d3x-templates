@@ -1,6 +1,6 @@
 # Nausf_UPUProtection — UE Parameters Update information protection (compliance, runtime-risk).
 # 3GPP TS 29.509 §5.4.2.2 / §6.3.3.2 (POST /nausf-upuprotection/v1/{supi}/ue-upu);
-# TS 33.501 §6.15. runner (consumer, acting as the UDM) drives a real Open5GS AUSF
+# TS 33.501 §6.15. Runik (consumer, acting as the UDM) drives a real Open5GS AUSF
 # via the generic SBI_Request and asserts a 200 UpuSecurityInfo (upuMacIausf).
 #
 # RUNTIME RISK: like SoR, the AUSF derives upuMacIausf from the K_AUSF for {supi}

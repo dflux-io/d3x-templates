@@ -61,7 +61,7 @@ any_state_transitions:
 # still does; the run was reported `pass` and is now reported `unsupported`. THAT IS THE
 # ONLY MOVEMENT, and it is the direction the declaration can move a run in at all: the
 # verdict is computed in full first, and only a run that would have PASSED is refined
-# (runner/runner/verdict.go, ComputeVerdict). A hang is still `failed` and still red — an
+# (runik/engine/verdict.go, ComputeVerdict). A hang is still `failed` and still red — an
 # absent feature and a dead AMF are told apart by the fact that one of them SENT
 # something, which is why `failed` (reached by the wait_reaction timer) can never carry
 # this meaning and the loader refuses to let it.
@@ -86,7 +86,7 @@ unsupported_states:
       emergency service is not distinguishable here from "emergency registration is not
       supported"; the trace carries the cause and a reader should check it.
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-112 (positive, expected_terminal: null) — A

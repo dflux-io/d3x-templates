@@ -22,7 +22,7 @@
 # could never have been DELIVERED, and a template that is not currently run is
 # exactly the kind of thing that gets run six months from now by somebody who
 # assumes it works. The address matches the sibling amf_statuschange_subscribe
-# flow's convention — the default LAB_SUBNET (10.55.0.0/24) and the runner's
+# flow's convention — the default LAB_SUBNET (10.55.0.0/24) and Runik's
 # rest-listen port — so wiring it up later means substituting a real IP, not
 # discovering the field is unusable.
 #

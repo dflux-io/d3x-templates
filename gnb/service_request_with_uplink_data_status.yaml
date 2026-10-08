@@ -26,10 +26,10 @@
 #   Table 9.11.3.50.1: service type 0001 = data.
 #
 # ============================================================================================
-# BLOCKED ON A RUNNER FIX — READ BEFORE TREATING A RED CELL HERE AS A CORE DEFECT
+# BLOCKED ON A RUNIK FIX — READ BEFORE TREATING A RED CELL HERE AS A CORE DEFECT
 # ============================================================================================
 # The Uplink data status IE is NOT in §4.4.6's cleartext list for a SERVICE REQUEST, so a
-# conformant UE must send it inside a CIPHERED NAS message container. runner/runner/enrichers.go
+# conformant UE must send it inside a CIPHERED NAS message container. runik/engine/enrichers.go
 # EnrichServiceRequest puts it in the CLEARTEXT part instead (`svcReq.UplinkDataStatus = ...`
 # straight into the message body, then EncodeSecureInitial) and never builds the container; the
 # proto has the field (proto/nas5g/messages_5gmm.go NAS_ServiceRequest.NasMessageContainer,
@@ -39,7 +39,7 @@
 # (`7e 00 4c 01 ... 40 02 02 00` — service type 0001 = data, Uplink data status IEI 0x40 with
 # PSI-1 set, in the clear):
 #   - Open5GS answers SERVICE REJECT with 5GMM cause #95 "semantically incorrect message". That
-#     is Open5GS being RIGHT and the runner being wrong. It is OUR defect, not a core finding.
+#     is Open5GS being RIGHT and Runik being wrong. It is OUR defect, not a core finding.
 #   - tinycore accepts the malformed request — which is its own leniency — and then omits the
 #     PDU session reactivation result IE from the SERVICE ACCEPT anyway (decoded accept is the
 #     3 bytes `7e 00 4e`), which the §5.6.1.4.1 "shall" above forbids.
@@ -158,7 +158,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
           - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
           - { type: check, field: ue.PduAddress, op: not_empty }

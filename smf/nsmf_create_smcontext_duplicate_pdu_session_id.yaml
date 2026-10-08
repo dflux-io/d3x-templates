@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — duplicate pduSessionId (negative/security).
 # 3GPP TS 29.502 §5.2.2.2 / §6.1.6.3.4.
 #
-# runner (AMF) issues TWO CreateSMContext POSTs with the SAME supi + pduSessionId.
+# Runik (AMF) issues TWO CreateSMContext POSTs with the SAME supi + pduSessionId.
 # The first may be accepted (201) or rejected for unrelated runtime reasons; the
 # SECOND, naming an already-existing PDU session id for the same SUPI, MUST be
 # rejected by a spec-correct SMF (4xx, ProblemDetails) rather than silently

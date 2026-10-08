@@ -38,7 +38,7 @@
 #        ^^ security header type 0 = PLAIN: no MAC, no sequence number
 #           ^^ message type 0x45 = DEREGISTRATION REQUEST (UE originating)
 #
-# Compare the frame the runner sent two messages earlier on the same
+# Compare the frame Runik sent two messages earlier on the same
 # connection — `7e 02 <MAC×4> <SN> …`, security header type 2, integrity
 # protected and ciphered. The probe is the same UE, the same association, the
 # same active context, and no protection at all.
@@ -168,7 +168,7 @@ states:
 any_state_transitions:
   - { event: Error, target: failed }
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-451 (negative, expected_terminal: rejected) —

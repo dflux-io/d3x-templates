@@ -33,14 +33,14 @@
 # state `nas.header.message_type` reads 66 (REGISTRATION ACCEPT) on tinycore
 # and 84 (CONFIGURATION UPDATE COMMAND) on open5gs — i.e. the previous
 # message, silently. The NAS accept is instead asserted through ue.PduAddress,
-# which enrichPduSessionAccept (runner/runner/ue_enrichment.go) populates ONLY
+# which enrichPduSessionAccept (runik/engine/ue_enrichment.go) populates ONLY
 # by decoding that item's NAS PDU as a PDU SESSION ESTABLISHMENT ACCEPT with a
 # 4-byte IPv4 PDU address. Paired with the `nas_pdu` IE-present check below,
 # that is the criterion's "NAS payload is a PDUSessionEstablishmentAccept with
 # a PDU address".
 #
 # YAML mirror of the built-in `pdu_session_setup` flow defined in
-# runner/flows/gnb/flow_pdu_session.go. Composes registrationStates +
+# runik/flows/gnb/flow_pdu_session.go. Composes registrationStates +
 # pduSessionStates. Exercises the DFL-379 extract → $-ref → path-set
 # pipeline: pilot_amf_id is stashed in wait_auth_request, consumed in
 # wait_pdu_session_accept's PDUSessionResourceSetupResponse params.

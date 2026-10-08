@@ -1,6 +1,6 @@
 # Nausf_SoRProtection — Steering of Roaming information protection (compliance, runtime-risk).
 # 3GPP TS 29.509 §5.3.2.2 / §6.2.3.2 (POST /nausf-sorprotection/v1/{supi}/ue-sor);
-# TS 33.501 §6.14. runner (consumer, acting as the UDM) drives a real Open5GS AUSF
+# TS 33.501 §6.14. Runik (consumer, acting as the UDM) drives a real Open5GS AUSF
 # via the generic SBI_Request and asserts a 200 SorSecurityInfo (sorMacIausf).
 #
 # RUNTIME RISK: this needs the K_AUSF for {supi} present in the AUSF's state — in

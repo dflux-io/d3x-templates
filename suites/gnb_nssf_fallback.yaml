@@ -4,7 +4,7 @@
 # static -sst 1. Empty expected-fail list. Wired as 10-nssf-fallback.
 #
 # Run (with NSSF already stopped):
-#   ./bin/d3x-run run-suite -suite gnb-nssf-fallback \
+#   ./bin/rk run-suite -suite gnb-nssf-fallback \
 #       -templates <templates-dir> -c <lab-gnb.yaml> -s <subscribers.yaml> -trace
 
 kind: suite

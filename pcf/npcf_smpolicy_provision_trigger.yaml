@@ -4,7 +4,7 @@
 # SM SUBSCRIPTION DATA through the Nudr provisioning API and lets the co-located
 # PCF re-evaluate on its own — no SMF-asserted trigger.
 #
-# Steps: (1) create an SM policy whose notificationUri points at the runner REST
+# Steps: (1) create an SM policy whose notificationUri points at Runik REST
 # listener (http://127.0.0.1:39998/sm-policy-notify); (2) PUT the subscriber's
 # provisioned-data/sm-data with a NEW session-AMBR (999/1500 Mbps, vs the seed's
 # 200/400). The PUT fires dpf's in-process PCF re-evaluation, which recomputes

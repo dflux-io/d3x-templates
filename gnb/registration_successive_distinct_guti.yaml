@@ -41,7 +41,7 @@
 # form of the same 4-octet field, so containment is equality here.
 #
 # THE TRAP: `not_contains` PASSES ON A MISSING FIELD. evaluateCheck
-# (runner/runner/action_executor.go) treats absence as "nothing to match
+# (runik/engine/action_executor.go) treats absence as "nothing to match
 # against, so vacuously satisfied", so an accept that omitted the 5G-GUTI IE
 # altogether — the more serious violation of §5.5.1.2.4 — would sail through a
 # bare `not_contains`. The inequality is therefore preceded by `nas.guti

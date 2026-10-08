@@ -1,7 +1,7 @@
 # Registration + PDU session + user-plane GTP-U traffic.
 #
 # YAML mirror of the built-in `uplane_traffic` flow defined in
-# runner/flows/gnb/flow_uplane_traffic.go. Composes registrationStates +
+# runik/flows/gnb/flow_uplane_traffic.go. Composes registrationStates +
 # pduSessionStates(uplane_running, uplane_start) + uplaneStates.
 
 kind: flow
@@ -107,7 +107,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than
@@ -149,7 +149,7 @@ states:
           #
           # `pkt_tx > 0` was then added as "REG-900's half", and that claim was
           # WRONG in the same way. UspaceExecutor.startWriter
-          # (runner/runner/uplane_uspace.go) increments cumPktTx immediately
+          # (runik/engine/uplane_uspace.go) increments cumPktTx immediately
           # after WriteToGTP on an UNCONNECTED UDP socket: it counts "we called
           # send", not "a G-PDU crossed N3". Nothing on the far end has to
           # exist. It therefore passed against the stub too, and would pass
@@ -160,7 +160,7 @@ states:
           #
           # pkt_rx > 0 is the assertion that cannot be faked from this side:
           # the reader increments PktRx only when an inbound G-PDU's TEID
-          # matches the localTeid this runner put in the DL GTP Tunnel IE of
+          # matches the localTeid this Runik put in the DL GTP Tunnel IE of
           # its setup response, on a socket bound to the gNB N3 address. A
           # non-zero pkt_rx IS "the packet reached N6, something answered, and
           # the core delivered the answer on the DL TEID and address we
@@ -188,16 +188,16 @@ any_state_transitions:
 #
 # REG-900 — After PDU session establishment, ICMP echo requests encapsulated in GTP-U on
 # the UPF-signalled TEID produce ICMP echo replies observed on n3 on the gNB's own DL
-# TEID; the runner's UplaneReport shows pkt_rx > 0
+# TEID; Runik's UplaneReport shows pkt_rx > 0
 #
 # REG-901 — Downlink G-PDUs arrive on n3 at the gNB address and UDP port 2152, with the
-# GTP-U TEID field equal to the DL TEID the runner put in
+# GTP-U TEID field equal to the DL TEID Runik put in
 # PDUSessionResourceSetupResponse
 #
 # REG-970 — NUMBER — sustained uplink and downlink bits/s and packets/s at a stated loss
-# rate over a stated duration, from the runner's UplaneReport
+# rate over a stated duration, from Runik's UplaneReport
 #
-# REG-972 — NUMBER — loss rate and min/avg/max/jitter RTT from the runner's
+# REG-972 — NUMBER — loss rate and min/avg/max/jitter RTT from Runik's
 # UplaneReport, held within a stated band over a stated soak duration
 #
 # `final_states` lists every way this flow can END; only this block says which one it

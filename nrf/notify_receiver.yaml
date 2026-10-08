@@ -1,7 +1,7 @@
 # SUB-05 / NOTIFY-01 — subscription notification round-trip (receiver
 # half). See d3x-core docs/nrf/sanity-tests.md §2.13 / §4.2.5.
 #
-# A REST *server* flow: runner binds the `notify-listener` rest-listen
+# A REST *server* flow: Runik binds the `notify-listener` rest-listen
 # binding (:39999) and waits for the NRF to POST a status notification to
 # /notify. scripts/nrf-notify.sh drives the other half — it creates a
 # subscription with nfStatusNotificationUri = http://127.0.0.1:39999/notify
@@ -15,7 +15,7 @@
 # §5.2.2.4 / nrf/notifier.go NotificationBody).
 #
 # Run via scripts/nrf-notify.sh (a server flow runs for -duration, so the
-# runner backgrounds it and triggers the notification within the window).
+# Runik backgrounds it and triggers the notification within the window).
 
 kind: flow
 name: nrf_notify_receiver

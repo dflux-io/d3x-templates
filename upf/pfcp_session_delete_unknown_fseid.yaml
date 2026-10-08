@@ -1,7 +1,7 @@
 # PFCP Session Deletion against an unknown SEID (replay / double-delete)
 # (3GPP TS 29.244 §7.2.2.4.2 / §8.2.1).
 #
-# Security/negative: after establishing the association, runner sends a
+# Security/negative: after establishing the association, Runik sends a
 # PFCPSessionDeletionRequest whose PFCP header SEID is a bogus value
 # (0xDEADBEEF) the UPF never allocated — modelling a replayed/double delete or
 # a stale SEID. A spec-correct UPF must REJECT with Cause "Session context not

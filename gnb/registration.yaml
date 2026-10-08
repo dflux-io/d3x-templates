@@ -20,9 +20,9 @@
 # `failed`, so this flow cannot end in a "didn't fail" state.
 #
 # YAML mirror of the built-in `registration` flow defined in
-# runner/flows/gnb/flow_registration.go. Run with:
+# runik/flows/gnb/flow_registration.go. Run with:
 #
-#   ./bin/d3x-run run -flow template/gnb/registration.yaml \
+#   ./bin/rk run -flow template/gnb/registration.yaml \
 #       -c config/lab.yaml -s config/subscribers.yaml -trace
 #
 # Demonstrates `message_body` (#154) — the FSM author pre-populates a few
@@ -128,7 +128,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — what REG-100 claims, stated so the runner can answer
+# END-OF-FLOW ASSERTIONS — what REG-100 claims, stated so Runik can answer
 # it without anything downstream reconstructing the verdict.
 #
 # TX is asserted EXACTLY: every one of these messages is ours, so the count is

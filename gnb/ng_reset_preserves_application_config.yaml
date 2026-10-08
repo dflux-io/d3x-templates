@@ -32,7 +32,7 @@
 #      succeeds without a new NGSetupRequest".
 #
 # NO NG SETUP IS SENT BY THIS FLOW AT ALL. The only NG Setup in the run is the one the transport
-# performs when it opens the SCTP association (runner/runner/transport.go), before any flow
+# performs when it opens the SCTP association (runik/engine/transport.go), before any flow
 # starts and therefore before the reset. Everything after step 2 rides configuration that
 # predates the reset — which is precisely the claim under test.
 #
@@ -79,7 +79,7 @@ states:
         target: wait_auth_request
         actions:
           # The RAN UE NGAP ID of the connection the reset is going to clear.
-          # Captured before any send, because `d3x-run lint` refuses an extract
+          # Captured before any send, because `rk lint` refuses an extract
           # that follows a send.
           - type: extract
             field: ue.RanUeNgapId

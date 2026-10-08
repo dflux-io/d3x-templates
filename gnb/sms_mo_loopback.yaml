@@ -134,11 +134,11 @@ states:
   # separate defect underneath — the EventBus dispatched one UE's messages out
   # of arrival order, which broke the NAS security context's downlink COUNT and
   # left the overtaken message with no decodable identity at all. That one is
-  # FIXED (runner/runner/bus_ordering.go: per-key FIFO delivery), and this file
+  # FIXED (runik/engine/bus_ordering.go: per-key FIFO delivery), and this file
   # was the reason it was found.
   #
   # Fixing it does NOT license removing this mesh — but be precise about why,
-  # because W6-B first got this wrong too. With the runner faithful, the observed
+  # because W6-B first got this wrong too. With Runik faithful, the observed
   # downlink order was CONSTANT across 120 lab samples (CP-ACK, SUBMIT-REPORT,
   # DELIVER). So SUT-side reordering has never actually been observed. What is
   # true is that there is no GUARANTEE: the SUBMIT-REPORT comes back from the
@@ -163,7 +163,7 @@ states:
   #     {B,C}   wait_cp_ack_after_both
   #     {A,B,C} sms_delivered
   #
-  # runner/runner/flows_reorder_test.go drives the real file through all six
+  # runik/engine/flows_reorder_test.go drives the real file through all six
   # permutations and fails if any of them stalls.
   wait_submit_report:
     on_timeout: { duration: 15s, target: failed }

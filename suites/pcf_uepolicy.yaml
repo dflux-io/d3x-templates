@@ -1,7 +1,7 @@
-# runner -> dpf Npcf_UEPolicyControl (URSP) SBI suite — one execution per flow.
+# Runik -> dpf Npcf_UEPolicyControl (URSP) SBI suite — one execution per flow.
 #
 # Drives dpf's PCF UE-policy surface (/npcf-ue-policy-control/v1, TS 29.525)
-# with runner acting as the SBI consumer. Every step is a single deterministic
+# with Runik acting as the SBI consumer. Every step is a single deterministic
 # execution scored on its own spec-correct terminal — a conformance pass.
 #
 # SCOPE (be honest): these validate the Npcf_UEPolicyControl SBI ROUND-TRIPS
@@ -10,7 +10,7 @@
 # N1N2MessageTransfer → UE over N1) needs the docker lab and stays Go-gated.
 #
 # Run (script step 09-pcf-uepolicy in d3x-core scripts/dpf-sanity-run.sh):
-#   d3x-run run-suite -suite pcf-uepolicy \
+#   rk run-suite -suite pcf-uepolicy \
 #       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
 #
 # Empty expected-fail list — every step must pass against the seeded dpf.

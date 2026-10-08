@@ -6,7 +6,7 @@
 # transition (amf.SetStatus).
 #
 # Uses the `rest` protocol (NOT `sbi`): dmf's Namf server is plain HTTP/1.1
-# (dmf/server.go: bare http.Server, no h2c), while runner's sbi client forces
+# (dmf/server.go: bare http.Server, no h2c), while Runik's sbi client forces
 # HTTP/2 → "frame too large / looked like an HTTP/1.1 header". The rest
 # transport's http1 option (config lab-namf-rest.yaml) speaks HTTP/1.1.
 #

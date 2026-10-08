@@ -1,6 +1,6 @@
 # PFCP Session Establishment — unknown DNN negative (TS 29.244 §7.5.2).
 #
-# F-14 of docs/upf/sanity-tests.md (d3x-core). runner (SMF) brings up the
+# F-14 of docs/upf/sanity-tests.md (d3x-core). Runik (SMF) brings up the
 # node-level association, then sends a SessionEstablishmentRequest whose
 # Create PDR carries a PDI NetworkInstance IE naming a DNN the UPF does not
 # serve ("nosuchdnn"). The standalone UPF resolves the DNN against its

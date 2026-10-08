@@ -1,7 +1,7 @@
 # Nnssf_NSSelection — registration-mode slice selection. TS 29.531 §6.1.3.2
 # (GET /network-slice-information, nf-type + slice-info-request-for-registration
 # → 200 AuthorizedNetworkSliceInfo). slice-info-request-for-registration is a
-# JSON object passed as a query value (runner url-encodes it). Asserts the allowed
+# JSON object passed as a query value (Runik url-encodes it). Asserts the allowed
 # list carries the requested+subscribed+configured slice (sd 000001).
 kind: flow
 name: nnssf_registration_ok

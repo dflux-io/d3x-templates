@@ -1,6 +1,6 @@
 # PFCP Heartbeat (3GPP TS 29.244 §6.2.2 / §7.4.3).
 #
-# Node-level liveness probe. runner sends a PFCPHeartbeatRequest (auto-stamped
+# Node-level liveness probe. Runik sends a PFCPHeartbeatRequest (auto-stamped
 # with a RecoveryTimeStamp) and the UPF must answer with a
 # PFCPHeartbeatResponse carrying its own RecoveryTimeStamp IE.
 #

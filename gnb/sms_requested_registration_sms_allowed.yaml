@@ -15,7 +15,7 @@
 #        5GMM context and consider the UE available for SMS over NAS.
 #
 # The bit is TS 24.501 §9.11.3.6 bit 4 of the 5GS registration result — the
-# runner surfaces it as `nas.sms_allowed` off the decoded REGISTRATION ACCEPT.
+# Runik surfaces it as `nas.sms_allowed` off the decoded REGISTRATION ACCEPT.
 #
 # WHERE THE "SMS REQUESTED" BIT TRAVELS, AND WHY IT IS NOT ON THE FIRST WIRE
 # MESSAGE. The 5GS update type IE is NOT one of the cleartext IEs §4.4.6

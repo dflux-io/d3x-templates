@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — unsupported media type (negative/security).
 # 3GPP TS 29.502 §6.1.5; TS 29.500 §5.2 / §6.3.
 #
-# runner (AMF) POSTs a CreateSMContext but advertises a Content-Type the operation
+# Runik (AMF) POSTs a CreateSMContext but advertises a Content-Type the operation
 # does not accept (text/plain instead of application/json or
 # multipart/related). A spec-correct SMF MUST reject with 415 Unsupported Media
 # Type (ProblemDetails) and stay up.

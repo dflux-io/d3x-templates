@@ -28,7 +28,7 @@
 #
 # UEContextReleaseCommand is the NGAP-level form of the same rejection: the AMF
 # tearing the UE context down instead of proceeding to security mode control.
-# It is a bare (non-NAS) event name — see runner/runner/event_resolver.go.
+# It is a bare (non-NAS) event name — see runik/engine/event_resolver.go.
 #
 # on_timeout targets `failed` here, in both wait states: a core that answers a
 # correct RES* with silence has not "proceeded straight to security mode

@@ -5,7 +5,7 @@
 # session-less in a DL NAS TRANSPORT (payload container type UE_POLICY),
 # triggered by a PCF/AF namf-comm N1N2MessageTransfer with N1MessageClass=UPDP.
 #
-# The runner event resolver surfaces the opaque container as
+# Runik event resolver surfaces the opaque container as
 # NASDownlinkTransport.DLNASTransport.UEPolicyContainer and stashes the raw
 # bytes (hex) on ue.Params.ue_policy_container. This flow asserts the URSP
 # rules arrived byte-exact, matching the test vector posted by the e2e step

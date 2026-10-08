@@ -52,10 +52,10 @@
 #
 # REPRODUCIBILITY
 # `seed:` is explicit, so two runs of this file produce byte-identical
-# mutations. Drop the seed line for a fresh random campaign — the runner
+# mutations. Drop the seed line for a fresh random campaign — Runik
 # prints the seed it picked and a one-line repro command either way.
 #
-#   d3x-run run-flow -flow fuzz_pfcp_session_establish \
+#   rk run-flow -flow fuzz_pfcp_session_establish \
 #     -templates . -c <lab-upf.yaml> -gen-subscriber -trace
 #
 # Override the seed without editing this file:  -fuzz-seed 0xdecafbad

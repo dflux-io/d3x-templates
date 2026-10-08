@@ -1,9 +1,9 @@
 # Malformed NAS robustness test.
 #
 # YAML mirror of the built-in `malformed_nas` flow defined in
-# runner/flows/gnb/flow_malformed_nas.go. Run with:
+# runik/flows/gnb/flow_malformed_nas.go. Run with:
 #
-#   ./bin/d3x-run run -flow template/gnb/malformed_nas.yaml \
+#   ./bin/rk run -flow template/gnb/malformed_nas.yaml \
 #       -c config/lab.yaml -s config/subscribers.yaml -trace
 #
 # Sends an InitialUEMessage with a garbage NAS PDU to verify the AMF
@@ -123,7 +123,7 @@ final_checks:
     op: greater_or_equal
     value: 1
   # THE CHECK FLOOR. `checks_total` counts `check` ACTIONS the FSM executed — it is
-  # incremented in exactly one place (execCheck, runner/runner/action_executor.go) — and a
+  # incremented in exactly one place (execCheck, runik/engine/action_executor.go) — and a
   # flow's own `final_checks` never touch it: they are evaluated after the run by
   # Metrics.EvaluateFinalChecks and reported separately. So while this flow declared no
   # `check` action anywhere it reported `checks_total: 0` on every path, and the two

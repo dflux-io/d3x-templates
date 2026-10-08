@@ -1,6 +1,6 @@
 # Nudm_SDM Get AccessAndMobility subscription data — compliance.
 # 3GPP TS 29.503 §6.1.3.2.3 / §5.2.2.2 (GET /nudm-sdm/v2/{supi}/am-data).
-# runner (consumer) drives a real Open5GS UDM; expects 200 + AM subscription data.
+# Runik (consumer) drives a real Open5GS UDM; expects 200 + AM subscription data.
 
 kind: flow
 name: udm_sdm_get_am_data_ok

@@ -1,6 +1,6 @@
 # PFCP Session with URR (F-07) — install a Usage Reporting Rule + query it.
 #
-# runner (SMF) establishes a session whose uplink PDR is bound to a Create URR
+# Runik (SMF) establishes a session whose uplink PDR is bound to a Create URR
 # (volume measurement, volume threshold), then sends a Session Modification
 # carrying a Query URR for that rule, then deletes. The standalone UPF
 # installs the URR into its datapath (upf/n4/session_handlers.go:239) and
@@ -8,7 +8,7 @@
 #
 # Sanity scope: the URR is accepted, queryable, and survives the lifecycle
 # (Cause "Request accepted" at establish / modify / delete). Asserting the
-# returned Usage Report contents needs a pfcp.usage_report resolver path runner
+# returned Usage Report contents needs a pfcp.usage_report resolver path Runik
 # doesn't expose yet (see docs/upf/sanity-tests.md §9 / G-series), so this
 # pins the accept path; volume reporting end-to-end is future work (G1).
 

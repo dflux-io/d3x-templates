@@ -1,6 +1,6 @@
 # Nausf_UEAuthentication — confirmation on an unknown authCtxId (security / negative).
 # 3GPP TS 29.509 §6.1.3.3 / §6.1.7.3 (404 CONTEXT_NOT_FOUND).
-# runner PUTs a 5g-aka-confirmation to a fabricated authCtxId that the AUSF never
+# Runik PUTs a 5g-aka-confirmation to a fabricated authCtxId that the AUSF never
 # created. The AUSF must REJECT with 404 + ProblemDetails and STAY UP. No prior
 # initiate needed — the whole point is that the context does not exist.
 

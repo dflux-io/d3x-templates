@@ -1,7 +1,7 @@
 # Registration + gNB-initiated UE Context Suspend (3GPP TS 38.413 §8.3.5).
 #
 # YAML mirror of the built-in `ue_context_suspend` flow defined in
-# runner/flows/gnb/flow_ue_context_suspend.go. Composed via the
+# runik/flows/gnb/flow_ue_context_suspend.go. Composed via the
 # registrationStates helper (registration → bridge with UEContextSuspendRequest
 # send) + a single trailing wait_suspend_response state.
 

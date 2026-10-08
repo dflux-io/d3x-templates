@@ -1,9 +1,9 @@
 # RAN Configuration Update procedure (3GPP TS 38.413 §8.7.3).
 #
 # YAML mirror of the built-in `ran_config_update` flow defined in
-# runner/flows/gnb/flow_ran_config_update.go. Run with:
+# runik/flows/gnb/flow_ran_config_update.go. Run with:
 #
-#   ./bin/d3x-run run -flow template/gnb/ran_config_update.yaml \
+#   ./bin/rk run -flow template/gnb/ran_config_update.yaml \
 #       -c config/lab.yaml -s config/subscribers.yaml -trace
 #
 # Non-UE-associated procedure. Performs NG Setup first, then sends a
@@ -84,7 +84,7 @@ states:
           # not comprehend and ignored — acknowledged, but not wholly taken
           # into use, which is not REG-820's expected_outcome ("the AMF takes
           # the updated configuration into use"). `equals null` is the
-          # runner's absent-field form: the IE carries `omitempty`, so an
+          # Runik's absent-field form: the IE carries `omitempty`, so an
           # omitted one misses the path and the check passes on absence.
           - { type: check, field: criticality_diagnostics, op: equals, expected: null }
       - event: RANConfigurationUpdateFailure
@@ -133,7 +133,7 @@ final_checks:
     op: greater_or_equal
     value: 1
   # THE CHECK FLOOR. `checks_total` counts `check` ACTIONS the FSM executed — it is
-  # incremented in exactly one place (execCheck, runner/runner/action_executor.go) — and a
+  # incremented in exactly one place (execCheck, runik/engine/action_executor.go) — and a
   # flow's own `final_checks` never touch it: they are evaluated after the run by
   # Metrics.EvaluateFinalChecks and reported separately. So while this flow declared no
   # `check` action anywhere, it reported `checks_total: 0` on every path, `checks_failed: 0`

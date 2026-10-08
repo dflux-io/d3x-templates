@@ -12,7 +12,7 @@
 # envelope's BODY and re-marshals around it. Result: a well-formed envelope
 # carrying a malformed body, i.e. a real HTTP request with corrupt JSON, which
 # is what actually crosses the network. (Mutating the envelope wholesale would
-# only break the runner's own adaptor and never reach the AUSF at all.)
+# only break Runik's own adaptor and never reach the AUSF at all.)
 #
 # CONSEQUENCE FOR EXPECTED YIELD — state it up front rather than discover it
 # The surface a byte-level mutation reaches here is the JSON parser and the
@@ -40,7 +40,7 @@
 # consults dependencies — never /health). On darwin, a 503 from an NF whose
 # N2/SCTP listener matters is the probe being honest, not a finding.
 #
-#   d3x-run run-flow -flow fuzz_ausf_ueauth_body \
+#   rk run-flow -flow fuzz_ausf_ueauth_body \
 #     -templates . -c <dpf-lab.yaml> -gen-subscriber -trace
 
 kind: flow

@@ -13,10 +13,10 @@
 # nea2,nea1,nea3 (null ciphering is opt-in via -nas-ciphering ...,nea0).
 #
 # The subscriber's `ciphering:` MUST match what the core selects — the
-# runner UE keys its NAS context from the subscriber entry, not from this
-# message — NAS ciphering is not negotiated by the runner.
+# Runik UE keys its NAS context from the subscriber entry, not from this
+# message — NAS ciphering is not negotiated by the Runik.
 #
-#   ./bin/d3x-run run-flow -flow registration_ciphering_non_null \
+#   ./bin/rk run-flow -flow registration_ciphering_non_null \
 #       -templates . -c config/lab.yaml \
 #       -s config/lab-subscribers.yaml -trace
 

@@ -25,8 +25,8 @@
 #      message, the NG-RAN node shall pass it to the UE."
 #
 # The UE side's PTI is 2: EnrichPDUSessionReleaseRequest
-# (runner/runner/enrichers.go) sets ProcedureTransactionId: 2 on every
-# PDU SESSION RELEASE REQUEST this runner emits. If that constant ever moves,
+# (runik/engine/enrichers.go) sets ProcedureTransactionId: 2 on every
+# PDU SESSION RELEASE REQUEST this Runik emits. If that constant ever moves,
 # the expected value below must move with it.
 #
 # HARNESS NOTE — where the PTI lives in the assertion namespace.
@@ -36,7 +36,7 @@
 # MarshalJSON exposes as `n1_sm_message`. Hence the paths below.
 #
 # YAML mirror of the built-in `pdu_session_release` flow defined in
-# runner/flows/gnb/flow_pdu_session_release.go. Composes registrationStates +
+# runik/flows/gnb/flow_pdu_session_release.go. Composes registrationStates +
 # pduSessionStates(bridge with PDUSessionReleaseRequest) +
 # pduSessionReleaseStates.
 
@@ -142,7 +142,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than

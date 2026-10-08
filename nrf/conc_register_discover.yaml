@@ -10,7 +10,7 @@
 # result is never empty for this flow. Per-UE checks: register is 201;
 # discover is 200 and its body carries an nfInstances array (the substring
 # guards against a handler that drops the key when the slice is nil). The
-# count==100 cross-UE invariant is the runner's curl step.
+# count==100 cross-UE invariant is Runik's curl step.
 #
 # Layer A counterpart: TestConcurrency_CONC04_RegisterParallelDiscover.
 

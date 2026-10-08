@@ -36,7 +36,7 @@
 # own terminals below.
 #
 # THE PROBE IS SURGICAL, AND IT IS ON THE WIRE. negAppendUnknownIE
-# (runner/runner/enrichers_negative.go) appends `1f 02 de ad` — a syntactically
+# (runik/engine/enrichers_negative.go) appends `1f 02 de ad` — a syntactically
 # valid TLV — to an otherwise intact REGISTRATION REQUEST. 0x1F is assigned to
 # no IE in TS 24.501 Table 8.2.6.1.1 (that table uses 10, 16, 17, 18, 1A, 25,
 # 28, 29, 2A, 2B, 2E, 2F, 30, 32, 35, 3B, 3C, 3F, 40, 41, 42, 48, 50, 51, 52,
@@ -209,7 +209,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-121 (negative, expected_terminal:

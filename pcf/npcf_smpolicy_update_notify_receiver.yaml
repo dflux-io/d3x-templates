@@ -2,7 +2,7 @@
 # 3GPP TS 29.512 §4.2.3.2 (PCF POSTs SmPolicyNotification to the SMF's
 # notificationUri on a decision change).
 #
-# runner binds a rest-listen listener on :39998 and waits for dpf's PolicyNotifier
+# Runik binds a rest-listen listener on :39998 and waits for dpf's PolicyNotifier
 # to POST the SmPolicyNotification to {notificationUri}/update (the notifier
 # appends /update — TS 29.512 §4.2.3.2 / contract §8). The trigger half is
 # pcf/npcf_smpolicy_notify_trigger.yaml, orchestrated by
@@ -16,7 +16,7 @@
 # SECOND — so a single waiting→done state would (wrongly) assert "40 Mbps"
 # against the install delta's "20 Mbps" and fail.
 #
-# runner checks abort the flow on first failure (no non-terminating guards), so a
+# Runik checks abort the flow on first failure (no non-terminating guards), so a
 # self-re-arming guarded transition isn't expressible. Instead two sequential
 # waiting states drain the notifies in order: waiting_install consumes the
 # first POST /update (the install delta, any body) and replies 204;

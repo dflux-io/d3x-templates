@@ -52,7 +52,7 @@
 # conformant roads to the UE: a DOWNLINK NAS TRANSPORT, or the per-item NAS-PDU
 # IE of a PDU SESSION RESOURCE MODIFY REQUEST (TS 38.413 §9.3.3.4).
 #
-# The runner decodes only the first. extractNasPdu() names six NGAP message
+# Runik decodes only the first. extractNasPdu() names six NGAP message
 # types and NGAPPduSessionResourceModifyRequest is not among them, and unlike
 # the SETUP request there is no per-item NAS decode for the MODIFY request — so
 # on that road ue.Params.sm_pti is never written, the COMMAND's PTI is not
@@ -115,7 +115,7 @@ detail: |
 
   A command delivered on the N2 road instead (PDU SESSION RESOURCE MODIFY
   REQUEST carrying the NAS-PDU) is equally conformant and is NOT decodable by
-  this runner; it gets its own terminal so the trace says which road was taken.
+  this Runik; it gets its own terminal so the trace says which road was taken.
 category: functional
 type: client
 protocol: ngap
@@ -196,7 +196,7 @@ states:
     on_timeout: { duration: 20s, target: failed }
     transitions:
       # THE EXPECTED ROAD: the COMMAND as a 5GSM message inside a DL NAS
-      # TRANSPORT, which is the only road this runner can read the PTI on.
+      # TRANSPORT, which is the only road this Runik can read the PTI on.
       - event: NASDownlinkTransport.DLNASTransport.PDUSessionModificationCommand
         target: modified
         actions:
@@ -232,7 +232,7 @@ states:
           - { type: check, field: ue.Params.sm_pti, op: equals, expected: "{{ue.Params.pdu_modify_pti}}" }
           - { type: check, field: ue.Params.pdu_modify_pti, op: greater_than, expected: 0 }
 
-      # THE OTHER CONFORMANT ROAD, which this runner cannot read. See the header:
+      # THE OTHER CONFORMANT ROAD, which this Runik cannot read. See the header:
       # reaching here is OUR gap, not the core's.
       - event: PDUSessionModifyRequest
         target: command_carried_on_n2
@@ -251,7 +251,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-350 (positive, expected_terminal: modified) — A

@@ -4,7 +4,7 @@
 # Asserts the rejection is a well-formed RFC7807 problem: Content-Type
 # application/problem+json, body.status mirrors the HTTP code, body.cause/title
 # present, and the body does NOT leak the SUPI or any auth vector. Best-effort
-# structural fidelity check (runner has no typed RFC7807 op).
+# structural fidelity check (Runik has no typed RFC7807 op).
 
 kind: flow
 name: ausf_ueauth_problem_details_fidelity_check

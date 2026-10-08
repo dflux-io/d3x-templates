@@ -5,12 +5,12 @@
 # ConfirmationData{resStar} to that resource. Now sendable end-to-end via the
 # generic SBI_Request (arbitrary method PUT + templated path).
 #
-# RUNTIME RISK: runner has no 5G-AKA key-derivation, so it cannot compute the
+# RUNTIME RISK: Runik has no 5G-AKA key-derivation, so it cannot compute the
 # correct RES* for the live test vector. The PUT is structurally valid and the
 # AUSF will answer, but the authResult is expected to be AUTHENTICATION_FAILURE
 # (or a 4xx) rather than AUTHENTICATION_SUCCESS against a real core. Terminal is
 # kept to `completed` = the AUSF answered the confirmation request at all; the
-# live run distinguishes a genuine runner/core gap from a flow bug.
+# live run distinguishes a genuine runik/core gap from a flow bug.
 
 kind: flow
 name: ausf_ueauth_5g_aka_confirmation

@@ -44,7 +44,7 @@
 # is not "a REGISTRATION REQUEST received with a protocol error".
 #
 # `mode: empty_mandatory_identity` is surgical instead. negEmptyMandatoryIdentity
-# (runner/runner/enrichers_negative.go) rewrites the 5GS mobile identity's LV-E
+# (runik/engine/enrichers_negative.go) rewrites the 5GS mobile identity's LV-E
 # length to 0x0000 and drops its value, leaving the 5GMM header, the 5GS
 # registration type / ngKSI octet and every following optional IE byte-identical.
 # The message is still a REGISTRATION REQUEST with exactly one thing wrong, and
@@ -132,7 +132,7 @@
 # no reason.
 #
 # THIS FLOW NEEDS 22s OF BUDGET, NOT 10s. `matrix/scripts/run` passes the register
-# row's `timeout_s` to d3x-run as the GLOBAL engine timeout. The total-silence path
+# row's `timeout_s` to rk as the GLOBAL engine timeout. The total-silence path
 # through this flow is wait_error_report (10s) THEN the liveness probe (12s). While
 # REG-120 carried `timeout_s: 10` the engine killed the run at the very instant the
 # first state timer fired, so `ngap_realloc` + InitialUEMessage were never sent and
@@ -268,7 +268,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-120 (negative, expected_terminal:

@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — oversized payload (negative/security).
 # 3GPP TS 29.500 §6.10; TS 29.502 §6.1.
 #
-# runner (AMF) POSTs a CreateSMContext whose body carries a grossly oversized field
+# Runik (AMF) POSTs a CreateSMContext whose body carries a grossly oversized field
 # (a multi-kilobyte junk string in an unexpected attribute). A spec-correct SMF
 # must bound request size / reject the malformed-oversized body (4xx, e.g. 400
 # or 413 Payload Too Large) and stay up — it must not exhaust memory or crash.

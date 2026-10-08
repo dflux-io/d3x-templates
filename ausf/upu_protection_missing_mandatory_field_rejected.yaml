@@ -1,6 +1,6 @@
 # Nausf_UPUProtection — missing mandatory field (security / negative).
 # 3GPP TS 29.509 §6.3.6.2.2; §6.3.7.3 (400 MANDATORY_IE_MISSING).
-# runner POSTs ue-upu with a body that OMITS the mandatory upuDataList (raw_body so
+# Runik POSTs ue-upu with a body that OMITS the mandatory upuDataList (raw_body so
 # it is genuinely absent). The AUSF must REJECT with 400 + ProblemDetails and
 # STAY UP.
 

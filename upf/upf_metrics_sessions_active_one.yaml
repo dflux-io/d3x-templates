@@ -3,7 +3,7 @@
 # Used as the final step of the upf_metrics suite, after exactly one
 # session has been established (and not deleted). Together with the
 # baseline (==0) this proves the session install is externally observable
-# via metrics — the F-20 → F-05 increment, expressed within runner's
+# via metrics — the F-20 → F-05 increment, expressed within Runik's
 # single-protocol flow model by chaining flows in a suite.
 
 kind: flow

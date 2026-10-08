@@ -1,7 +1,7 @@
 # Registration + gNB-initiated NG Reset (3GPP TS 38.413 §8.7.4).
 #
 # YAML mirror of the built-in `ng_reset` flow defined in
-# runner/flows/gnb/flow_ng_reset.go. Composed via the registrationStates
+# runik/flows/gnb/flow_ng_reset.go. Composed via the registrationStates
 # helper (registration → bridge with NGReset send) + a single trailing
 # wait_ng_reset_ack state.
 

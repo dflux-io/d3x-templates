@@ -44,7 +44,7 @@
 # THE REQUEST IS ON THE WIRE, NOT JUST IN THE YAML. `epco_dns: ipv4` makes
 # EnrichPDUSessionEstablishmentRequest attach an Extended PCO IE with one
 # empty-contents container id 0x000D (pduSessionRequestEPCO,
-# runner/runner/enrichers_pdu_session_accept.go); encodeExtendedPCO writes it
+# runik/engine/enrichers_pdu_session_accept.go); encodeExtendedPCO writes it
 # as ext|protocol octet + id(2) + len(1) = 4 octets, carried in the TLV-E IE
 # 0x7B (1 + 2 length octets), i.e. SEVEN octets more than the same request
 # without it. MEASURED against tinycore: the UL NAS TRANSPORT carrying this

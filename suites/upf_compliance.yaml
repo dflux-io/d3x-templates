@@ -1,7 +1,7 @@
 # SMF/CP ↔ UPF PFCP (N4) compliance suite — one session per flow, one execution.
 #
 # Drives the standard node-level and session-level PFCP procedures (TS 29.244)
-# SMF-side against a real 5G user plane (Open5GS UPF). runner plays the
+# SMF-side against a real 5G user plane (Open5GS UPF). Runik plays the
 # SMF/CP-function peer over N4. Every step runs exactly ONE flow for ONE
 # execution (repetitions: 1, no rate) so each PFCP procedure is exercised
 # deterministically and scored on its own — this is a conformance pass, not a
@@ -14,7 +14,7 @@
 # compliance flows here have a single spec-correct terminal, so each pins it.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite upf-compliance \
+#   ./bin/rk run-suite -suite upf-compliance \
 #       -templates <templates-dir> -c config/open5gs-upf.yaml -trace
 #
 # NOTE on independence: unlike the gNB suite (one persistent SCTP association +
@@ -43,7 +43,7 @@
 #   - pfcp_session_establish: the rule-bearing Create PDR/FAR set is not fully
 #     spec-complete vs TS 29.244, so a real Open5GS UPF rejects with Cause
 #     "Mandatory IE incorrect" (UPF log: "One of the IPv4 and IPv6 flags should
-#     be 1 in the local F-TEID"). This is a genuine runner PFCP-enricher FIDELITY
+#     be 1 in the local F-TEID"). This is a genuine Runik PFCP-enricher FIDELITY
 #     finding — the establishment enricher needs richer PDR/FAR/QER IE authoring.
 #   - pfcp_session_modify / pfcp_session_delete: each self-establishes first, so
 #     they inherit the same Create PDR/FAR fidelity gap and draw the same
@@ -61,13 +61,13 @@
 # source port. Driving a real UPF therefore requires advertising NodeID == our
 # own IP and binding it on :8805 — config/open5gs-upf.yaml sets pfcp.local
 # "172.22.0.250:8805" + node_id.value "172.22.0.250", and the harness runs the
-# runner container on --ip 172.22.0.250 so it owns that NodeID. The binding role
-# must be `upf` (the flows declare nf: upf). With that in place runner's PFCP RX
+# Runik container on --ip 172.22.0.250 so it owns that NodeID. The binding role
+# must be `upf` (the flows declare nf: upf). With that in place Runik's PFCP RX
 # path receives and dispatches the AssociationSetupResponse normally — there is
-# NO runner PFCP client-RX correlation bug (an earlier run misdiagnosed the
+# NO Runik PFCP client-RX correlation bug (an earlier run misdiagnosed the
 # addressing issue as one).
 #
-# Results (2026-06-05, Open5GS v2.7.x, runner as SMF/CP function over N4): 2/7.
+# Results (2026-06-05, Open5GS v2.7.x, Runik as SMF/CP function over N4): 2/7.
 # PASS: pfcp_association_setup (Cause=Request accepted, node_id=172.22.0.8) and
 # pfcp_heartbeat (recovery_timestamp). FAIL: pfcp_session_establish / modify /
 # delete (UPF → "Mandatory IE incorrect": Create PDR/FAR not spec-complete) and

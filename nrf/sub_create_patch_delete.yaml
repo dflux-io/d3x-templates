@@ -24,7 +24,7 @@
 # consumer therefore asserts what it is entitled to: a validityTime is present,
 # it is a well-formed date-time, and it is not later than the one it asked for.
 #
-# The last of those three is expressed as two checks because the runner's
+# The last of those three is expressed as two checks because Runik's
 # comparison ops are numeric and cannot order two RFC 3339 strings: the regex
 # pins the year to 20xx, and `not_contains "2099-"` excludes the requested year
 # itself. Year ≤ 2098 is strictly earlier than 2099-12-31T23:59:59Z, so the pair

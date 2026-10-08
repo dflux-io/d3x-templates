@@ -114,7 +114,7 @@ states:
           # FOR bit: uplink NAS pending (TS 24.501 §9.11.3.7), and it is load-bearing here in two
           # ways. §5.5.1.2.2 requires it when the UE will keep sending NAS after REGISTRATION
           # COMPLETE — which this flow now does, for the probe — and §5.5.1.2.4 says the AMF
-          # SHALL NOT immediately release the connection when it is set. runner/runner
+          # SHALL NOT immediately release the connection when it is set. runik/engine
           # fsm_preparse.go validateFollowOnRequest fails the flow at load without it.
           #
           # IT ALSO REMOVES A CONFOUND THAT MADE THE BASELINE UNREADABLE. free5gc sent a
@@ -296,7 +296,7 @@ states:
           - { type: check, field: nas.authentication_param_rand, op: ie_present }
       # Any other downlink NAS answer is the criterion satisfied too — the association still
       # carries this subscriber's signalling to a downlink NAS response. No check: neither an
-      # IDENTITY REQUEST nor a bare 5GMM STATUS carries an IE this runner reads by a name we can
+      # IDENTITY REQUEST nor a bare 5GMM STATUS carries an IE this Runik reads by a name we can
       # justify here, and a gate that cannot be justified is a gate that silently discards
       # observations. The AUTHENTICATION REQUEST branch above and the four registration checks
       # carry the row's assertions.
@@ -314,7 +314,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-856 (negative, expected_terminal: tolerated) —

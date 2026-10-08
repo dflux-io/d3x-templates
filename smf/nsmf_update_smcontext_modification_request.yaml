@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_UpdateSMContext — UE-requested PDU session modification (compliance).
 # 3GPP TS 29.502 §5.2.2.3; TS 23.502 §4.3.3.
 #
-# runner (AMF) creates an SM context, extracts its ref, then POSTs a
+# Runik (AMF) creates an SM context, extracts its ref, then POSTs a
 # SmContextUpdateData to {ref}/modify conveying a UE-originated N1 SM message
 # (PDU Session Modification Request). A spec-correct SMF replies 200 OK.
 #

@@ -3,24 +3,24 @@
 # Rewritten for the gRPC-only SCP admin cutover. This template
 # concentrates on wire behaviour: it sends a PUR and inspects the
 # resulting PUA. The admin plane is driven from a wrapper script that
-# alternates d3x-scpctl rule pokes with `d3x-run run-flow` invocations of
-# this template — see runner/scripts/scp-policy-allow-s6a-lifecycle.sh.
+# alternates d3x-scpctl rule pokes with `rk run-flow` invocations of
+# this template — see runik/scripts/scp-policy-allow-s6a-lifecycle.sh.
 #
 # The wrapper's phases:
 #   1. d3x-scpctl policy-rules delete allow-s6a || true   (pre-clean)
-#   2. d3x-run run-flow -flow scp_diameter_policy_allow_s6a_lifecycle
+#   2. rk run-flow -flow scp_diameter_policy_allow_s6a_lifecycle
 #      -e PUA_RESULT_CODE=5003                           (default-deny)
 #   3. d3x-scpctl policy-rules add @allow-s6a.json        (install)
-#   4. d3x-run ... -e PUA_RESULT_CODE=2001                (allow path)
+#   4. rk ... -e PUA_RESULT_CODE=2001                (allow path)
 #   5. d3x-scpctl policy-rules delete allow-s6a           (cleanup)
-#   6. d3x-run ... -e PUA_RESULT_CODE=5003                (post-clean)
+#   6. rk ... -e PUA_RESULT_CODE=5003                (post-clean)
 #
 # The wire logic here is the same on all three phases; only the
 # Result-Code expectation differs.
 #
 # Topology (see config/lab-scp.yaml + conf/scp-diameter-loopback-deny.yaml):
 #
-#   d3x-run  --SCTP/3868-->  SCP filter chain  --realm "sim.local"-->
+#   rk  --SCTP/3868-->  SCP filter chain  --realm "sim.local"-->
 #                                                                  back to us
 #
 # Allow path: SCP echoes the request; FSM gets a "PUR" event, answers

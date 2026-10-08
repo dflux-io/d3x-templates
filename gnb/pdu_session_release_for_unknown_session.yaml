@@ -74,7 +74,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this
 # flow ran correctly. The claim this FSM can currently state is: registration
 # completed, a release for session id 99 went out, and the AMF reacted
 # (`handled`). Silence is `tolerated` and fails the pin.

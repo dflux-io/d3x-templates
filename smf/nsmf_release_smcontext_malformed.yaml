@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_ReleaseSMContext — malformed JSON body (negative/security).
 # 3GPP TS 29.502 §6.1.6; TS 29.500 §6.3.
 #
-# runner (AMF) POSTs a truncated, non-parseable JSON body to a release endpoint via
+# Runik (AMF) POSTs a truncated, non-parseable JSON body to a release endpoint via
 # raw_body. A spec-correct SMF MUST reject with 400 Bad Request and stay up.
 kind: flow
 name: smf_nsmf_release_smcontext_malformed

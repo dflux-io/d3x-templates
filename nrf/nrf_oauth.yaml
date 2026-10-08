@@ -8,7 +8,7 @@
 #
 # OAUTH-08 (token_expired ~35 s wall-clock) is omitted — cross-listed
 # in nrf_longrun. Full claim-level OAUTH-06 and concurrent-burst
-# OAUTH-07 are partial here pending runner JWT-decode + parallel-send
+# OAUTH-07 are partial here pending Runik JWT-decode + parallel-send
 # features (see flow-level comments).
 #
 # Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.4):

@@ -1,7 +1,7 @@
 # Registration + PDU session request with invalid DNN — expect rejection.
 #
 # YAML mirror of the built-in `pdu_session_reject` flow defined in
-# runner/flows/gnb/flow_pdu_session_reject.go.
+# runik/flows/gnb/flow_pdu_session_reject.go.
 
 kind: flow
 name: pdu_session_reject

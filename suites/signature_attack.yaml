@@ -3,16 +3,16 @@
 # Prerequisites:
 #   - SCP in front of TinyCore, admin.default_action: allow
 #   - No block-forged / flood-limit rules installed
-#   - runner -c deploy/signature-demo/configs/runner-sbi-via-scp.yaml
+#   - Runik -c deploy/signature-demo/configs/runik-sbi-via-scp.yaml
 #
 # Abuse reaches the core (or SCP body gate if max_request_body_size is
 # low). Assertions stay loose (any clean 4xx / response) — Act 4 pins
 # SCP-specific status codes after the policy flip.
 #
 # Run:
-#   d3x-run run-suite -suite signature-attack \
+#   rk run-suite -suite signature-attack \
 #     -templates . \
-#     -c deploy/signature-demo/configs/runner-sbi-via-scp.yaml \
+#     -c deploy/signature-demo/configs/runik-sbi-via-scp.yaml \
 #     -output junit -output-file act2-attack.xml
 
 kind: suite

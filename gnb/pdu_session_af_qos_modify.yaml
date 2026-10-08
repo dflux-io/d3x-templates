@@ -10,7 +10,7 @@
 # that the inbound modify item is non-empty.
 #
 # Cross-protocol orchestration (this NGAP flow + the SBI AF trigger flow) is
-# script-driven, not a single suite step — runner flows are single-protocol (the
+# script-driven, not a single suite step — Runik flows are single-protocol (the
 # multi-protocol-flow gap). The integrator wires
 # scripts/e2e-gnb-run.sh step 03-af-qos-modify (approved OQ9).
 
@@ -104,12 +104,12 @@ states:
               # PDU_SESSION_NOT_AVAILABLE) and the modify below never fires.
               #
               # DO NOT WRITE IT AS HEX OR AS A QUOTED STRING. The enricher reads
-              # this through ParamUint32 (runner/runner/enrichers.go:1452), whose
+              # this through ParamUint32 (runik/engine/enrichers.go:1452), whose
               # string branch is strconv.ParseUint(n, 10, 32) — BASE TEN. So
               # `sd: "010203"` is ten thousand two hundred and three, and an
               # unquoted `010203` is at the mercy of the YAML resolver's
               # leading-zero rules. Either one fails exactly like the original
-              # "no sd override" runner gap did, which is an afternoon lost to a
+              # "no sd override" Runik gap did, which is an afternoon lost to a
               # bug that is not there. Decimal integer, no quotes: 66051.
               sd: 66051
 
@@ -127,7 +127,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than

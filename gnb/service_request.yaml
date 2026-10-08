@@ -47,7 +47,7 @@
 # need different answers and different assertions (see below). The bare `InitialContextSetupRequest`
 # alternative is retained for REG-202 — its pass_criterion explicitly allows
 # "InitialContextSetupRequest or SERVICE ACCEPT" — and because
-# runner/runner/flows_integration_test.go TestE2E_ServiceRequest_Dispatch dispatches exactly that
+# runik/engine/flows_integration_test.go TestE2E_ServiceRequest_Dispatch dispatches exactly that
 # bare event against this FSM.
 #
 # SERVICE TYPE — ENUM VALUE (svcTypeToWire does the -1 since 2026-08-10, xp-253).
@@ -115,7 +115,7 @@ states:
             field: amf_ue_ngap_id
             store: pilot_amf_id
           # The RAN UE NGAP ID of the connection that is about to be released.
-          # Captured here because `d3x-run lint` refuses an extract that follows
+          # Captured here because `rk lint` refuses an extract that follows
           # a send, and every later state's first action is a send.
           - type: extract
             field: ue.RanUeNgapId
@@ -307,13 +307,13 @@ final_checks:
     value: 3
   # STAYS 1 — AND 1 IS NOT WHAT EVERY CORE PRODUCES. Read this before changing it.
   #
-  # Since #364 the runner answers a UE CONTEXT RELEASE COMMAND that no state names
+  # Since #364 Runik answers a UE CONTEXT RELEASE COMMAND that no state names
   # (TS 38.413 §8.3.3, unconditional), so this metric is now "the one Complete this
   # flow declares in wait_release_cmd" PLUS one per unnamed command the core chose
   # to send. That second term is a property of the CORE, not of this FSM.
   #
   # Measured, not inferred — three sweeps agree (5ee60cd 2026-08-13, 8a48fa1 and
-  # f227f12-v1 2026-08-17), REG-202's own runner.json:
+  # f227f12-v1 2026-08-17), REG-202's own runik.json:
   #     tinycore  rx UEContextReleaseCommand 1 -> 1 Complete
   #     open5gs   rx UEContextReleaseCommand 1 -> 1 Complete
   #     free5gc   rx UEContextReleaseCommand 2 -> 2 Completes

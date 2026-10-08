@@ -1,7 +1,7 @@
 # PFCP Session Modification against an unknown SEID
 # (3GPP TS 29.244 §7.2.2.4.2 / §7.6 / §8.2.1).
 #
-# Security/negative: after establishing the association, runner sends a
+# Security/negative: after establishing the association, Runik sends a
 # PFCPSessionModificationRequest whose PFCP header SEID is a bogus value
 # (0xDEADBEEF) that the UPF has never allocated. A spec-correct UPF must REJECT
 # with Cause "Session context not found" (TS 29.244 §8.2.1, value 65) and stay

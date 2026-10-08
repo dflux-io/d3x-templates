@@ -5,7 +5,7 @@
 # notify), and only the subsequent provisioned-data/sm-data write drives the PCF
 # re-evaluation → a single SmPolicyNotification.
 #
-# runner binds a rest-listen listener on :39998 and waits for dpf's PolicyNotifier
+# Runik binds a rest-listen listener on :39998 and waits for dpf's PolicyNotifier
 # to POST the delta SmPolicyNotification {resourceUri, smPolicyDecision} to
 # /sm-policy-notify/update. The trigger half is
 # pcf/npcf_smpolicy_provision_trigger.yaml (which PUTs sessionAmbr→999/1500 Mbps);

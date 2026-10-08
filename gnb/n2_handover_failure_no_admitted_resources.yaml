@@ -9,7 +9,7 @@
 # was supposed to change.
 #
 # THIS FLOW OWNS THE TARGET SIDE. Declaring a `HandoverRequest` transition
-# suppresses the runner's fire-and-forget target auto-reply and hands the
+# suppresses Runik's fire-and-forget target auto-reply and hands the
 # decoded HANDOVER REQUEST to this flow, which then answers as the target
 # NG-RAN node — on the TARGET association (`peer:`), because that is who a
 # HANDOVER REQUEST ACKNOWLEDGE / HANDOVER FAILURE is from (TS 38.413 §8.4.2).
@@ -122,7 +122,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than

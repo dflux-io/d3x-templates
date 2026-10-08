@@ -22,7 +22,7 @@
 #
 # WHAT "INSIDE THE ADVERTISED SET" MEANS FOR THIS UE
 # -------------------------------------------------
-# This flow does NOT pass `null_security_caps`, so the runner's UE advertises the
+# This flow does NOT pass `null_security_caps`, so Runik's UE advertises the
 # complete bitmap — measured TX, both cores, 2026-08-10:
 #     … 2e 04 ff ff ff ff      (IEI 0x2E, len 4, EA0-EA7 / IA0-IA7 / EEA / EIA)
 # Every one of the eight defined 5G-EA values and eight defined 5G-IA values is

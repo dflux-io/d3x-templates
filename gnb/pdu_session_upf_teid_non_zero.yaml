@@ -34,8 +34,8 @@
 # ngap5g's PDU Session Resource Setup Request Transfer decoder read out of the
 # GTP-TEID octets. `ue.UpfTeid` is checked too, but SECOND and for a different
 # reason: it is the copy enrichPduSessionSetupItems stashed on the UE, i.e. the
-# number the runner's own datapath would tunnel to. Both must be non-zero, or
-# the row is asserting about a field the rest of the runner does not use.
+# number Runik's own datapath would tunnel to. Both must be non-zero, or
+# the row is asserting about a field the rest of Runik does not use.
 #
 # VACUITY, ALL FOUR CLASSES, CHECKED.
 #   * `not_contains` — not used here.
@@ -163,10 +163,10 @@ states:
           # the TEID meaningful only together with the peer address, and
           # TS 38.413 §9.3.2.2 carries both in one GTP Tunnel IE.
           - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.upf_ip_addr, op: ie_present }
-          # The same two values as the runner itself took off this message
+          # The same two values as Runik itself took off this message
           # (enrichPduSessionSetupItems). If these disagreed with the wire
           # fields above, the row would be asserting about a field nothing
-          # else in the runner uses. `greater_than 0`, never `not_empty` —
+          # else in Runik uses. `greater_than 0`, never `not_empty` —
           # see the header.
           - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
           - { type: check, field: ue.UpfAddr, op: ie_present }
@@ -177,7 +177,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
           - { type: check, field: ue.PduAddress, op: not_empty }
           - type: send

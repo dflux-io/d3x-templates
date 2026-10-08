@@ -114,7 +114,7 @@ final_checks:
     op: equals
     value: 1
   # THE CHECK FLOOR. `checks_total` counts `check` ACTIONS the FSM executed — it is
-  # incremented in exactly one place (execCheck, runner/runner/action_executor.go) — and a
+  # incremented in exactly one place (execCheck, runik/engine/action_executor.go) — and a
   # flow's own `final_checks` never touch it: they are evaluated after the run by
   # Metrics.EvaluateFinalChecks and reported separately. So while this flow declared no
   # `check` action anywhere it reported `checks_total: 0` on every path, and the two

@@ -9,7 +9,7 @@
 # releases it on the wrong leg has torn down the connection the UE is now on.
 #
 # THIS FLOW OWNS THE TARGET SIDE. Declaring a `HandoverRequest` transition
-# suppresses the runner's fire-and-forget target auto-reply and hands the
+# suppresses Runik's fire-and-forget target auto-reply and hands the
 # decoded HANDOVER REQUEST to this flow, which then answers as the target
 # NG-RAN node — on the TARGET association (`peer:`), because that is who a
 # HANDOVER REQUEST ACKNOWLEDGE / HANDOVER FAILURE is from (TS 38.413 §8.4.2).
@@ -134,7 +134,7 @@ states:
           # `not_empty` is `value != nil && value != "" && value != 0.0`, and in Go
           # `any(uint32(0)) != any(float64(0.0))` — the types differ — so it passed on a
           # ZERO TEID and an UNALLOCATED session id, i.e. on exactly what it existed to
-          # catch. Pinned by runner/runner/uplane_assertion_ops_test.go.
+          # catch. Pinned by runik/engine/uplane_assertion_ops_test.go.
           - type: check
             field: ue.PduSessionId
             op: greater_than
@@ -196,7 +196,7 @@ states:
         actions:
           # The UE-NGAP-ID pair lives inside the UE NGAP IDs IE of the
           # command (TS 38.413 §9.2.2.5), not at the top level — the top-level
-          # ran_ue_ngap_id is the runner's decode convenience.
+          # ran_ue_ngap_id is Runik's decode convenience.
           - type: check
             field: ue_context_release_command_ies.0.ue_ngap_ids
             op: ie_present
@@ -252,7 +252,7 @@ any_state_transitions:
 # END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-530).
 #
 # REG-530 — After HandoverNotify from the target association, a UEContextReleaseCommand
-# for the same AMF-UE-NGAP-ID is received on the SOURCE association; the runner answers
+# for the same AMF-UE-NGAP-ID is received on the SOURCE association; Runik answers
 # UEContextReleaseComplete and the target association remains usable for the UE.
 #
 # `final_states` lists every way this flow can END; only this block says which one it

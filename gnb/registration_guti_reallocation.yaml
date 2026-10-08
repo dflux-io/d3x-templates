@@ -26,7 +26,7 @@
 # ---------------------------------------------------------------------------
 # The criterion is "after REGISTRATION COMPLETE is sent, no retransmitted
 # REGISTRATION ACCEPT arrives". An FSM cannot assert a non-event with a
-# `check`, and the runner has no "absent" operator, so the absence is encoded
+# `check`, and Runik has no "absent" operator, so the absence is encoded
 # as the SHAPE of the wait_no_retransmission state:
 #
 #   * a retransmitted REGISTRATION ACCEPT — on either carriage, a

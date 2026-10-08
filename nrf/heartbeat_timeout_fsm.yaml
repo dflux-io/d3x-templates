@@ -16,7 +16,7 @@
 #   the monitor does not refresh expiry on suspend, so the second miss is
 #   detected on the very next tick).
 #
-# The `on_timeout` blocks are the delay primitive — runner has no sleep
+# The `on_timeout` blocks are the delay primitive — Runik has no sleep
 # action, but a state with on_timeout fires its actions after `duration`
 # with no driving event. We probe at t≈28s (well inside the SUSPENDED
 # window) and again at t≈50s (well past the DELETE tick).

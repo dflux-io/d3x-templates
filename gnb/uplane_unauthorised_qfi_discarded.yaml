@@ -34,7 +34,7 @@
 #      than a number this file asserts about itself.
 #
 #      The other half of the proof — that the octets really carry QFI 63 — is
-#      pinned by runner/runner/uplane_wire_shape_test.go, which marshals the
+#      pinned by runik/engine/uplane_wire_shape_test.go, which marshals the
 #      uplink G-PDU and reads the PDU Session Container back octet by octet.
 #      There is no report field for our OWN uplink marking, so the bytes cannot
 #      be re-read from a trace here; the Go test is the evidence and is named
@@ -64,7 +64,7 @@
 # different reasons and tested its own claim on none of them.
 #
 # Pinning 9 instead would only have moved the accident to the next core. The
-# expansion is fixed instead (runner/runner/uplane_params.go), so the control
+# expansion is fixed instead (runik/engine/uplane_params.go), so the control
 # window now reads the granted QFI out of the Authorized QoS rules IE the core
 # itself sent — the same discipline xp-268 part two established for the
 # register's preconditions: A PREMISE OBSERVABLE IN THE TRACE MUST BE READ FROM

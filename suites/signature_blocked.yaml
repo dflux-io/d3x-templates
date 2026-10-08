@@ -11,9 +11,9 @@
 #   flood probe  → ≥1 × 429 (flood-limit global bucket)
 #
 # Run:
-#   d3x-run run-suite -suite signature-blocked \
+#   rk run-suite -suite signature-blocked \
 #     -templates . \
-#     -c deploy/signature-demo/configs/runner-sbi-via-scp.yaml \
+#     -c deploy/signature-demo/configs/runik-sbi-via-scp.yaml \
 #     -output junit -output-file act4-blocked.xml
 
 kind: suite

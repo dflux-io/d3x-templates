@@ -50,7 +50,7 @@
 # That mapping did not exist until 2026-08-10: encodeServiceRequest wrote the enum RAW, so this
 # flow put `7e 00 4c 01` on the wire — service type 0001 = "DATA". MEASURED on tinycore, not
 # inferred. The flow named _signalling had never once sent a signalling service request, and
-# REG-200 was green for the wrong procedure. Decode was raw too, so runner-to-runner round trips
+# REG-200 was green for the wrong procedure. Decode was raw too, so runik-to-runik round trips
 # agreed with themselves and no unit test could see it. Fixed in proto/nas5g/nas5g.go
 # (svcTypeToWire / svcTypeFromWire) with a byte-level test; see xp-253.
 # ============================================================================================
@@ -108,14 +108,14 @@ states:
           - { type: send, message: UEContextReleaseComplete }
           # CM-IDLE. A new UE-associated logical NG-connection needs a new
           # RAN UE NGAP ID (TS 38.413 §8.6.1.2), so reallocate before the
-          # SERVICE REQUEST carries it. No `extract` snapshot here: `d3x-run
+          # SERVICE REQUEST carries it. No `extract` snapshot here: `rk
           # lint` refuses an extract that follows a send, and the realloc must
           # follow the UE CONTEXT RELEASE COMPLETE (whose own AP IDs are filled
           # from ue.NGAP.RanUeNgapId at TX-enrich time). The assertions below
           # therefore template `{{ue.RanUeNgapId}}` directly — which is still a
           # cross-message comparison, not a field compared with itself:
           # ue.NGAP.RanUeNgapId is written ONLY at UE creation and by
-          # ngap_realloc (runner/runner/action_executor.go), never by the RX
+          # ngap_realloc (runik/engine/action_executor.go), never by the RX
           # path, so its value here is the id WE allocated for the new
           # connection, not one read back off the message under test.
           - { type: ngap_realloc }
@@ -231,13 +231,13 @@ final_checks:
     value: 3
   # STAYS 1 — AND 1 IS NOT WHAT EVERY CORE PRODUCES. Read this before changing it.
   #
-  # Since #364 the runner answers a UE CONTEXT RELEASE COMMAND that no state names
+  # Since #364 Runik answers a UE CONTEXT RELEASE COMMAND that no state names
   # (TS 38.413 §8.3.3, unconditional), so this metric is now "the one Complete this
   # flow declares in wait_release_cmd" PLUS one per unnamed command the core chose
   # to send. That second term is a property of the CORE, not of this FSM.
   #
   # Measured, not inferred — three sweeps agree (5ee60cd 2026-08-13, 8a48fa1 and
-  # f227f12-v1 2026-08-17), REG-200's own runner.json:
+  # f227f12-v1 2026-08-17), REG-200's own runik.json:
   #     tinycore  rx UEContextReleaseCommand 1 -> 1 Complete
   #     open5gs   rx UEContextReleaseCommand 1 -> 1 Complete
   #     free5gc   rx UEContextReleaseCommand 2 -> 2 Completes
@@ -250,7 +250,7 @@ final_checks:
   # redden tinycore and open5gs, which walk exactly the path declared above, and
   # would make a template claim a statement about one core. 1 is what this FSM
   # declares and what the header of this block says these counts are. The free5gc
-  # red cell is the runner reporting a real difference between cores — which is
+  # red cell is Runik reporting a real difference between cores — which is
   # what the comparison is for — and a range would delete that signal permanently.
   - name: one UE CONTEXT RELEASE COMPLETE was sent
     metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE

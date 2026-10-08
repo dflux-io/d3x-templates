@@ -14,7 +14,7 @@
 # 3. POST {smContextRef}/modify as a different consumer: different servingNfId
 #    and a different supi in the body. The path is the stolen ref.
 #
-# This flow does NOT require new runner send-params.
+# This flow does NOT require new Runik send-params.
 #
 # EXPECTED TERMINAL
 # -----------------

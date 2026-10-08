@@ -180,8 +180,8 @@ states:
       # refusing a page, this is the ONE where a page is genuinely expected — and
       # it is still declined, for a different reason from the other two.
       #
-      # No runner-level default for PAGING exists and none may be added
-      # (runner/runner/fsm/events.go, EventPaging): the message carries no
+      # No runik-level default for PAGING exists and none may be added
+      # (runik/engine/fsm/events.go, EventPaging): the message carries no
       # RAN-UE-NGAP-ID and the demux BROADCASTS it to every UE on the gNB, and
       # TS 24.501 §5.6.2.2.1 obliges only the paged UE, only in 5GMM-IDLE.
       # Deciding is the template's job.
@@ -194,7 +194,7 @@ states:
       # WHY THE UE NONETHELESS OWES NO SERVICE REQUEST. The same transition that
       # released the context went straight on to `ngap_realloc` and a mobility
       # REGISTRATION REQUEST — `RegistrationUpdate` is enriched as an NGAP INITIAL
-      # UE MESSAGE (runner/runner/enrichers_gnb_additions.go), not a NAS uplink —
+      # UE MESSAGE (runik/engine/enrichers_gnb_additions.go), not a NAS uplink —
       # so a UE-associated logical NG-connection is ALREADY back up and a
       # registration procedure is in flight the moment this state is entered.
       # The page has in effect already been answered: whatever the AMF had
@@ -266,7 +266,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-404 (positive, expected_terminal:

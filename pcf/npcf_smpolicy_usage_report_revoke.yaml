@@ -4,7 +4,7 @@
 # bytes), so CreateSMPolicy emits a session-level umDec ("um-default"), a
 # monitored PCC rule ("rule-metered") referencing it, and arms US_RE.
 #
-# The SMF role is stubbed here — the runner POSTs the accuUsageReports directly:
+# The SMF role is stubbed here — Runik POSTs the accuUsageReports directly:
 #   1. create (metered) → 201, extract Location
 #   2. update with accuUsageReports volUsage=400 (below 1000) → 200, monitored
 #      rule still present (quota not yet exhausted)

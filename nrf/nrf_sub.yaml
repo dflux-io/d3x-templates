@@ -5,7 +5,7 @@
 # missing 4xx doesn't mask the other; suite-level gating is via
 # flows_failed + checks_failed in final_checks.
 #
-# SUB-05 (notify_roundtrip) is deferred — needs runner rest-listen
+# SUB-05 (notify_roundtrip) is deferred — needs Runik rest-listen
 # background-flow features to observe NRF-initiated POSTs.
 #
 # Coverage map (d3x-core docs/nrf/sanity-tests.md §4.2.5):

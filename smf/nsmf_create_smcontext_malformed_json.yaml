@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_CreateSMContext — malformed JSON body (negative/security).
 # 3GPP TS 29.502 §6.1.6; TS 29.500 §5.2.7 / §6.3.
 #
-# runner (AMF) POSTs a truncated, non-parseable JSON document to the SMF's
+# Runik (AMF) POSTs a truncated, non-parseable JSON document to the SMF's
 # CreateSMContext endpoint via SBI_Request raw_body. A spec-correct SMF MUST
 # reject with 400 Bad Request (ProblemDetails) and stay up — it must not crash
 # or hang. Cross-cutting goal mirrors the gnb security suite: the NF reacts

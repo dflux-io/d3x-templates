@@ -1,6 +1,6 @@
 # Nausf_UEAuthentication — malformed SUCI (security / negative).
 # 3GPP TS 29.509 §6.1.3.2 / §6.1.7.3 (400); TS 23.003 §2.2B (SUCI format).
-# runner sends a structurally-invalid supiOrSuci. The AUSF must REJECT with 400 +
+# Runik sends a structurally-invalid supiOrSuci. The AUSF must REJECT with 400 +
 # ProblemDetails and STAY UP. Sent via the generic SBI_Request so the on-wire
 # value is fully controlled (no typed-model coercion).
 

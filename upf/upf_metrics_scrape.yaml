@@ -7,7 +7,7 @@
 # check actions can't reach directly.
 #
 # protocol: rest, nf: external — a separate flow from the PFCP lifecycle
-# (runner flows are single-protocol; a pfcp flow cannot send a REST message).
+# (Runik flows are single-protocol; a pfcp flow cannot send a REST message).
 # Requires the `http1` REST binding option (the endpoint is HTTP/1.1).
 
 kind: flow

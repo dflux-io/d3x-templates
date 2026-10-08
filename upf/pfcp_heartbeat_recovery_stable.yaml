@@ -2,7 +2,7 @@
 # §6.2.2 / TS 23.007).
 #
 # Security/robustness: per TS 23.007 a UPF's Recovery Time Stamp must stay
-# CONSTANT while the node is up (it only changes on restart). runner issues two
+# CONSTANT while the node is up (it only changes on restart). Runik issues two
 # back-to-back Heartbeats and asserts the UPF returns a RecoveryTimeStamp IE
 # on each, and that the second value equals the first — i.e. no spurious
 # restart signalling that would cause peers to wrongly tear down sessions.

@@ -1,7 +1,7 @@
 # N4/PFCP — Session Modification happy path (compliance).
 # 3GPP TS 29.244 §7.5.4 / §7.5.5.
 #
-# runner (SMF) associates, establishes a session, then sends a
+# Runik (SMF) associates, establishes a session, then sends a
 # PFCPSessionModificationRequest (header + RemoteSEID auto-stamped). The UPF
 # replies with PFCPSessionModificationResponse; with the pfcp.cause resolver we
 # assert the spec-correct success cause (Request accepted).

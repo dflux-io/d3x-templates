@@ -56,7 +56,7 @@
 #
 # THE TWO WINDOWS ARE INDEPENDENT MEASUREMENTS. UspaceExecutor.AddTeid stores a
 # fresh teidEntry with a fresh newTeidStats() on each uplane_start
-# (runner/runner/uplane_uspace.go) and ReportForTeid prefers the live entry over
+# (runik/engine/uplane_uspace.go) and ReportForTeid prefers the live entry over
 # the retired one, so the second UplaneComplete carries the second window's
 # counters alone rather than a running total. The second window also tunnels to
 # the UPF TEID taken off the SECOND setup request — enrichPduSessionSetupItems
@@ -64,7 +64,7 @@
 # driven, not the pre-release one.
 #
 # WHAT THIS ROW DOES *NOT* CLAIM. The gNB DL TEID is unchanged across the idle
-# period: allocN3Teid is a no-op once ue.NGAP.LocalTeid is set, so the runner
+# period: allocN3Teid is a no-op once ue.NGAP.LocalTeid is set, so Runik
 # re-signals the same downlink TEID it used before. Re-using it is legal — the
 # gNB is free to choose — but it means this flow cannot say anything about a
 # core that keeps sending to a STALE downlink TEID. That is REG-909's claim and
@@ -179,13 +179,13 @@
 #
 # WHERE THE FIX LIVES, and why not here. The N2 half of every response this
 # flow sends is built by the send-path enricher, not by this template:
-# EnrichInitialContextSetupResponse (runner/runner/enrichers.go) now answers
+# EnrichInitialContextSetupResponse (runik/engine/enrichers.go) now answers
 # with the tunnel whenever the context setup it is answering named a session,
 # reusing the same gnbDlTunnel() the phase-one PDU SESSION RESOURCE SETUP
 # RESPONSE uses — one downlink endpoint, one allocator, whichever N2 message
 # carries it. So `send: InitialContextSetupResponse` below is unchanged and now
 # emits IE 72; there is no template knob and inventing one would have given the
-# runner a second, divergent way to name the same tunnel.
+# Runik a second, divergent way to name the same tunnel.
 #
 # NOT the same IE as phase one, though the item is the same bits: phase one's
 # list rides a PDU SESSION RESOURCE SETUP RESPONSE as IE 75 (SURes). CxtRes is
@@ -489,7 +489,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-201 (positive, expected_terminal:

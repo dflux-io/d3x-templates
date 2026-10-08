@@ -16,7 +16,7 @@
 #
 # WHAT IS ON THE WIRE. The update this flow sends carries RAN Node Name and Default Paging DRX
 # and NO Supported TA List IE (the `RANConfigurationUpdate` enricher fills exactly those two
-# fields; runner/runner/enrichers_ngap_ifmgmt_test.go
+# fields; runik/engine/enrichers_ngap_ifmgmt_test.go
 # TestRANConfigurationUpdateAdvertisedTAs_NoParamsOmitsTAList pins the omission, and the frame
 # is 19 bytes on the wire against tinycore — RAN Node Name IE + Paging DRX IE only). The
 # tracking-area and slice configuration is therefore the one item the AMF was told nothing
@@ -36,8 +36,8 @@
 # measured the same way as the S-NSSAI: extract before, compare after. It is not, because
 # tinycore's REGISTRATION ACCEPT carries NO TAI list IE at all
 # (tinycore/dmf/amf/registration.go:989 builds the message with RegistrationResult, GUTI and
-# Allowed NSSAI and nothing else), and the runner FAILS A UE OUTRIGHT on an `extract` whose
-# field does not resolve (runner/runner/action_executor.go:execExtract). An extract of the TAI
+# Allowed NSSAI and nothing else), and Runik FAILS A UE OUTRIGHT on an `extract` whose
+# field does not resolve (runik/engine/action_executor.go:execExtract). An extract of the TAI
 # in measurement 1 would therefore abort this flow on that core before the RAN CONFIGURATION
 # UPDATE was ever sent — the row would test nothing at all, which is worse than testing half of
 # it. The decoder is not the missing piece: proto/nas5g decodes TAI list IE 0x54 on
@@ -46,7 +46,7 @@
 # So the TAI is asserted as "a registration area is still assigned after the update", placed
 # LAST among the checks so that every other assertion is measured and logged before it can fail
 # the run. Restoring the full "same TAI" comparison needs a soft/optional extract in the
-# harness (store-if-present), which is a runner change and is reported with this batch rather
+# harness (store-if-present), which is a Runik change and is reported with this batch rather
 # than faked here.
 #
 # WHY REGISTRATION IS THE OBSERVABLE. §8.7.2 gives no read-back of the AMF's stored
@@ -148,7 +148,7 @@ states:
           # measurement 2 would be <missing> == <missing> and would pass on a
           # core that assigns no slice to anybody.
           - { type: check, field: nas.allowed_nssai.snssai_list.0.sst, op: not_empty }
-          # Captured BEFORE any send in this action list — `d3x-run lint`
+          # Captured BEFORE any send in this action list — `rk lint`
           # refuses an extract that follows a send.
           - { type: extract, field: nas.allowed_nssai.snssai_list.0.sst, store: pre_update_sst }
           - { type: extract, field: ue.RanUeNgapId, store: pre_update_ran_ue_ngap_id }

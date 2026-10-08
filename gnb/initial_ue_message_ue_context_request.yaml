@@ -32,7 +32,7 @@
 #   4. The Initial Context Setup Request must actually be an Initial Context Setup: the Security
 #      Key IE (TS 38.413 §9.2.2.1, mandatory) must be present, not merely the message type.
 #
-# Known limit, stated rather than hidden: the runner demultiplexes inbound NGAP by RAN UE NGAP ID
+# Known limit, stated rather than hidden: Runik demultiplexes inbound NGAP by RAN UE NGAP ID
 # (ngap.rx.demux → GnbContext.LookupCtxID), so a message quoting the WRONG id is dropped as
 # "unknown UE" and this flow ends in `failed` by timeout instead of by a failed check. Both are
 # red; the check exists so the id that DID arrive is recorded in the evidence as an asserted

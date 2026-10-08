@@ -1,6 +1,6 @@
 # Nausf_UEAuthentication — unsupported media type (security / negative).
 # 3GPP TS 29.509 §6.1.7.3 (415); TS 29.500 §5.2.2.
-# runner sends a valid-looking initiate body but with Content-Type: text/plain.
+# Runik sends a valid-looking initiate body but with Content-Type: text/plain.
 # The AUSF must REJECT with 415 Unsupported Media Type and STAY UP.
 
 kind: flow

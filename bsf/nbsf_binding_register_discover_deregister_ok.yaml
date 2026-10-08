@@ -3,7 +3,7 @@
 # Location), §5.3.3.3.3 (GET /pcfBindings?ipv4Addr= → 200), §5.3.3.2.2 (DELETE
 # /pcfBindings/{bindingId} → 204). Uses a UE IP outside the seeded SM-policy
 # set so the discover matches exactly the binding registered here. Query params
-# go in the structured `query` field (runner url-encodes them).
+# go in the structured `query` field (Runik url-encodes them).
 kind: flow
 name: nbsf_binding_register_discover_deregister_ok
 description: POST /pcfBindings (201) -> GET ?ipv4Addr (200) -> DELETE (204)

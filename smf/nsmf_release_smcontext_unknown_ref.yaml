@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_ReleaseSMContext — unknown smContextRef (negative/security).
 # 3GPP TS 29.502 §6.1.6.3.x.
 #
-# runner (AMF) POSTs a release to a fabricated /sm-contexts/{ref}/release path. A
+# Runik (AMF) POSTs a release to a fabricated /sm-contexts/{ref}/release path. A
 # spec-correct SMF MUST reject with 404 Not Found (or another 4xx) and stay up.
 kind: flow
 name: smf_nsmf_release_smcontext_unknown_ref

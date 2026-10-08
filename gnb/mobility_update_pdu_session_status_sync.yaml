@@ -6,7 +6,7 @@
 # below are the ones already retrieved and recorded in this tree — see
 # gnb/service_request_nas_container_uplink_data_status.yaml,
 # which quotes §4.4.6 b)1) verbatim from the pinned corpus, and
-# runner/runner/enrichers_ngap_connmgmt.go for the IE semantics of §9.11.3.44.
+# runik/engine/enrichers_ngap_connmgmt.go for the IE semantics of §9.11.3.44.
 # The spec corpus is gitignored and was NOT present in this worktree, so nothing
 # here is quoted as new: every clause reference is one this repo had already
 # retrieved with matrix/scripts/spec-clause.py, and where a sentence could not be
@@ -20,7 +20,7 @@
 # §4.4.6 lets such a message carry, in the clear, only the CLEARTEXT IEs — for a
 # REGISTRATION REQUEST: the registration type, the ngKSI, the 5GS mobile identity
 # and the UE security capability (the list recorded in
-# runner/runner/enrichers_gnb_additions.go, which is why the plain
+# runik/engine/enrichers_gnb_additions.go, which is why the plain
 # RegistrationUpdate sendable needs no container and cites case b)3)).
 #
 # THE PDU SESSION STATUS IE IS NOT ON THAT LIST. It is the same class of IE as
@@ -268,7 +268,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-158 (positive, expected_terminal: reconciled) —

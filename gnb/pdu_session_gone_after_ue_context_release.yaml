@@ -122,11 +122,11 @@ final_states:
 # pinning `old_session_gone equals 1` reported a core the register calls undecided as
 # having FAILED, and pinning nothing reported it as having PASSED.
 #
-# Declaring it here makes the runner answer `unsupported` (exit 3, a JUnit skip) on that
+# Declaring it here makes Runik answer `unsupported` (exit 3, a JUnit skip) on that
 # branch and nothing else. It cannot excuse anything: the verdict is computed as before,
 # and only if EVERY leg of it holds is this declaration consulted at all — so the reject
 # arriving with a cause other than #54, or an undecodable one, or no answer at all, is
-# still `fail`. See runner/runner/verdict.go.
+# still `fail`. See runik/engine/verdict.go.
 #
 # NOTE WHAT THIS DOES NOT SAY. It is not "the session survived, and that is fine". The
 # file's own MEASURED AGAINST note above records why: tinycore does not read the Request
@@ -306,8 +306,8 @@ states:
       # PAGING — DECLINED, DELIBERATELY, and CONSUMED so the decision is on the
       # record instead of on the floor.
       #
-      # No runner-level default for PAGING exists and none may be added
-      # (runner/runner/fsm/events.go, EventPaging): with no RAN-UE-NGAP-ID in the
+      # No runik-level default for PAGING exists and none may be added
+      # (runik/engine/fsm/events.go, EventPaging): with no RAN-UE-NGAP-ID in the
       # message the demux BROADCASTS it to every UE on the gNB, and TS 24.501
       # §5.6.2.2.1 obliges only the UE named by the UE Paging Identity IE, and
       # only in 5GMM-IDLE. Which UE that is, and whether it answers, is a
@@ -344,7 +344,7 @@ any_state_transitions:
   - event: Error
     target: failed
 
-# END-OF-FLOW ASSERTIONS — the runner is the only thing that decides whether this flow
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
 # THE REGISTER'S CLAIM, VERBATIM: REG-374 (positive, expected_terminal:

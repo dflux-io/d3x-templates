@@ -13,7 +13,7 @@
 # requirement.
 #
 # Run:
-#   ./bin/d3x-run run-suite -suite upf_smoke \
+#   ./bin/rk run-suite -suite upf_smoke \
 #       -templates . -c config/lab-upf.yaml \
 #       -gen-subscriber
 #
@@ -24,10 +24,10 @@
 # result. Pass condition for the gate is `checks_failed == 0` with every
 # step reaching its spec-correct terminal pinned in success_when.
 #
-# NOTE: requires an runner binary built from current source — the PFCP
+# NOTE: requires a Runik binary built from current source — the PFCP
 # read-side field resolver (pfcp.cause / node_id / recovery_timestamp)
 # must be present, else every check resolves <missing>. Build with
-# `go build -o bin/d3x-run ./cmd/d3x-run` before running.
+# `go build -o bin/rk ./cmd/rk` before running.
 
 kind: suite
 name: upf_smoke

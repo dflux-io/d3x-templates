@@ -6,7 +6,7 @@
 #
 # The notification body is multipart/related (an N1MessageNotification JSON
 # root referencing a vnd.3gpp.5gnas part by ContentId — dmf
-# notify_hooks.go:buildN1MessageNotify). runner's REST listener surfaces the raw
+# notify_hooks.go:buildN1MessageNotify). Runik's REST listener surfaces the raw
 # body as rest.body; JSON-path resolution misses on a multipart body, so assert
 # via `contains` over the stringified body (the multipart boundary, the JSON
 # N1 message container, the vnd.3gpp.5gnas content-type, the subscription id

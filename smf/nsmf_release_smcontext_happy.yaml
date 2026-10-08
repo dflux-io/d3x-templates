@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_ReleaseSMContext — happy path (compliance).
 # 3GPP TS 29.502 §5.2.2.4 / §6.1.3.4.
 #
-# runner (AMF) creates an SM context, extracts its ref, then POSTs
+# Runik (AMF) creates an SM context, extracts its ref, then POSTs
 # SmContextReleaseData to {ref}/release. A spec-correct SMF replies 204 No
 # Content (or 200 with a release response body) and tears down the session.
 #

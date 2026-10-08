@@ -46,7 +46,7 @@
 # This block used to be a single `op: length, expected: 32` against the IE.
 # That worked only as an accident of the JSON projection: every capability bool
 # carried `,omitempty`, a FALSE flag was dropped from the decoded object, and
-# the runner's `.length` terminal returns a map's KEY COUNT — so key count
+# Runik's `.length` terminal returns a map's KEY COUNT — so key count
 # happened to equal the number of TRUE flags.
 #
 # xp-255 removed `,omitempty` from the non-pointer fields of the decoded-message

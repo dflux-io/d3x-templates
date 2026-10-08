@@ -25,7 +25,7 @@
 # ---------------------------------------------------------------------------
 # How "no EAP message IE" is asserted — read before editing
 # ---------------------------------------------------------------------------
-# The runner has no "absent" operator. Absence is `equals: null`, which also
+# Runik has no "absent" operator. Absence is `equals: null`, which also
 # passes when the FIELD NAME is wrong (an unresolvable path is treated as
 # vacuously satisfied). So the eap_message check below is paired with
 # `ie_present` assertions on THREE sibling IEs of the same decoded message

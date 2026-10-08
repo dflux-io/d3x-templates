@@ -1,7 +1,7 @@
 # N4/PFCP — Session Deletion happy path (compliance).
 # 3GPP TS 29.244 §7.5.6 / §7.5.7.
 #
-# runner (SMF) associates, establishes a session, then sends a
+# Runik (SMF) associates, establishes a session, then sends a
 # PFCPSessionDeletionRequest (header + RemoteSEID auto-stamped). The UPF replies
 # with PFCPSessionDeletionResponse; with the pfcp.cause resolver we assert the
 # spec-correct success cause (Request accepted).

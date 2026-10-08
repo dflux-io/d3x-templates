@@ -1,7 +1,7 @@
 # Nsmf_PDUSession_UpdateSMContext — empty / missing-IE body (negative/security).
 # 3GPP TS 29.502 §6.1.6.2.x / §6.1.6.3.5.
 #
-# runner (AMF) POSTs an empty SmContextUpdateData ({}) to a modify endpoint — no
+# Runik (AMF) POSTs an empty SmContextUpdateData ({}) to a modify endpoint — no
 # meaningful update IEs. A spec-correct SMF MUST reject with a 4xx
 # ProblemDetails (cause MANDATORY_IE_MISSING / no action requested) and stay up.
 kind: flow

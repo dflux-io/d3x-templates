@@ -1,7 +1,7 @@
 # Nudm_UEAU GenerateAuthData — compliance.
 # 3GPP TS 29.503 §6.3.3.2 / §5.4.2.2
 #   (POST /nudm-ueau/v1/{supi}/security-information/generate-auth-data).
-# runner drives a real UDM; expects 200 with an AuthenticationVector / authType.
+# Runik drives a real UDM; expects 200 with an AuthenticationVector / authType.
 
 kind: flow
 name: udm_ueau_generate_auth_data_ok

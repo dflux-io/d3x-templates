@@ -6,7 +6,7 @@
 # session_establish step installs a QER-less session, so qers stay 0 here.
 #
 # upf_qers_active is unlabelled → exposition line `upf_qers_active 0`; assert
-# via substring `contains`. Requires the runner http1 REST option (#309).
+# via substring `contains`. Requires Runik http1 REST option (#309).
 
 kind: flow
 name: upf_metrics_qers_active_zero
