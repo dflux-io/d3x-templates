@@ -1,13 +1,17 @@
-# N4/PFCP — Association Release (compliance).
-# 3GPP TS 29.244 §6.2.8 / §7.4.6.
+# PFCP Association Release (3GPP TS 29.244 §6.2.6.5 / §7.4.6).
 #
-# Runik (SMF) sets up a PFCP association, then tears it down with a
-# PFCPAssociationReleaseRequest (NodeID auto-filled). The UPF replies with
-# PFCPAssociationReleaseResponse carrying Cause=Request accepted, asserted via
-# the pfcp.cause resolver. Exercises the new AssociationRelease send.
+# Runik (CP function) establishes a node-level association with the real UPF
+# then tears it down with a PFCPAssociationReleaseRequest. The release enricher
+# stamps our NodeID and a fresh sequence number; the UPF must release all
+# associated PFCP sessions and answer with PFCPAssociationReleaseResponse
+# carrying Cause "Request accepted".
+#
+# Spec-correct success = an AssociationReleaseResponse with Cause
+# "Request accepted" (TS 29.244 §8.2.1).
+
 kind: flow
 name: smf_pfcp_association_release
-description: SMF releases a PFCP association — expect Cause Request accepted
+description: SMF establishes then releases a PFCP association against a real UPF (N4)
 category: functional
 type: client
 protocol: pfcp
@@ -26,7 +30,7 @@ states:
         actions:
           - type: send
             message: PFCPAssociationSetupRequest
-            peer: smf
+            peer: upf
 
   wait_assoc:
     on_timeout:

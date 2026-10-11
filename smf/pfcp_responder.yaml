@@ -1,0 +1,64 @@
+# N4/PFCP — generic SMF responder.
+# 3GPP TS 29.244 §6.2.6.3 (association set up by the UP function), §6.2.7.3
+# (association update by the UP function), §6.2.9 (node report), §7.4.6
+# (session set deletion), §6.3.5 (session report).
+#
+# Runik is the SMF, on a LISTENING socket: the UPF dials. It answers every
+# request a UPF may send with Cause "Request accepted" and its own Node ID, and
+# never sends a request of its own.
+#
+# Use it as the far end for a UPF flow that only needs "an SMF that says yes":
+# list it under `background_flows:` of the step.
+#
+# It never leaves `serving` (`stopped` is never reached; a flow must name a
+# final state) and runs until the suite step that started it ends.
+#
+# Env: the UPF dials, the SMF listens (runik/config/lab-pfcp-upf-dials.yaml).
+#
+kind: flow
+name: smf_pfcp_responder
+description: Runik is the SMF and accepts every request a UPF can send on N4
+category: functional
+type: server
+protocol: pfcp
+nf: smf
+
+initial_state: serving
+final_states:
+  - stopped
+
+states:
+  serving:
+    transitions:
+      - event: pfcp.PFCPHeartbeatRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPHeartbeatResponse
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "cp_function_features": {"flags": 1} }
+      - event: pfcp.PFCPAssociationUpdateRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPAssociationUpdateResponse
+      - event: pfcp.PFCPNodeReportRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPNodeReportResponse
+      - event: pfcp.PFCPSessionSetDeletionRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionSetDeletionResponse
+      - event: pfcp.PFCPSessionReportRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionReportResponse

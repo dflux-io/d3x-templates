@@ -82,7 +82,7 @@ description: One-session-per-flow PFCP (N4) conformance pass for an SMF/CP again
 steps:
   # --- gate: node-level association must come up first ---------------------
   - name: pfcp_association_setup
-    flow: upf_pfcp_association_setup
+    flow: smf_pfcp_association_setup
     repetitions: 1
     timeout: 20s
     stop_on_failure: true
@@ -91,7 +91,7 @@ steps:
 
   # --- node-level procedures ---------------------------------------------
   - name: pfcp_heartbeat
-    flow: upf_pfcp_heartbeat
+    flow: smf_pfcp_heartbeat
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
@@ -99,7 +99,7 @@ steps:
       at_least_one_final_state: completed
 
   - name: pfcp_association_update
-    flow: upf_pfcp_association_update
+    flow: smf_pfcp_association_update
     repetitions: 1
     timeout: 25s
     stop_on_failure: false
@@ -108,7 +108,7 @@ steps:
 
   # --- session-level procedures (each self-associates first) -------------
   - name: pfcp_session_establish
-    flow: upf_pfcp_session_establish
+    flow: smf_pfcp_session_establish
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -116,7 +116,7 @@ steps:
       at_least_one_final_state: established
 
   - name: pfcp_session_modify
-    flow: upf_pfcp_session_modify
+    flow: smf_pfcp_session_modify
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -124,7 +124,7 @@ steps:
       at_least_one_final_state: modified
 
   - name: pfcp_session_delete
-    flow: upf_pfcp_session_delete
+    flow: smf_pfcp_session_delete
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -135,7 +135,7 @@ steps:
   # Node-level Association Release: clears the association table on the UPF so
   # the lab is left clean. Runs last and always.
   - name: cleanup
-    flow: upf_pfcp_association_release
+    flow: smf_pfcp_association_release
     repetitions: 1
     timeout: 25s
     always_run: true

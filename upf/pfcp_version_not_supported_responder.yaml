@@ -1,0 +1,40 @@
+# N4/PFCP — a UPF that does not speak the sender's PFCP version.
+# 3GPP TS 29.244 §7.2.2.1 (version), §7.4.4.7.
+#
+# Runik is the UPF. Whatever node request arrives, it answers with a PFCP
+# Version Not Supported Response: a header only, echoing the request's
+# sequence number, whose Version field says the highest version this node
+# supports. That is how a PFCP node refuses a peer whose header carries a
+# version it does not know.
+#
+# It never leaves `serving` (`stopped` is never reached; a flow must name a
+# final state) and runs until the suite step that started it ends.
+#
+# Pair: smf_pfcp_version_not_supported. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: upf_pfcp_version_not_supported_responder
+description: UPF answers every node request with Version Not Supported Response
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: serving
+final_states:
+  - stopped
+
+states:
+  serving:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPVersionNotSupportedResponse
+      - event: pfcp.PFCPHeartbeatRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPVersionNotSupportedResponse

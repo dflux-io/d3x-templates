@@ -1,0 +1,58 @@
+# N4/PFCP — a UPF under load.
+# 3GPP TS 29.244 §6.2.3, §6.2.4, §7.5.3.3 / §7.5.3.4.
+#
+# Runik is the UPF. It accepts everything, and puts on every Session
+# Establishment Response what a loaded UPF would: Load Control Information
+# (sequence 1, metric 80 %) and Overload Control Information (sequence 1,
+# metric 50 % — "throttle half of what you send me" — valid for 5 x 2 s).
+#
+# It never leaves `serving` (`stopped` is never reached; a flow must name a
+# final state) and runs until the suite step that started it ends.
+#
+# Pair: smf_pfcp_load_control_info. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: upf_pfcp_overload_responder
+description: UPF accepts sessions and attaches load and overload control information to the answer
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: serving
+final_states:
+  - stopped
+
+states:
+  serving:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+      - event: pfcp.PFCPSessionEstablishmentRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentResponse
+            message_body: |
+              { "created_pdr": [
+                  { "pdr_id": {"value": 1},
+                    "local_f_teid": {"v4": true, "teid": "{{$b64_u32 4660}}", "ipv4_address": "{{$b64_ipv4 \"192.0.2.1\"}}"} } ],
+                "load_control_information": { "sequence_number": {"value": 1}, "metric": {"value": 80} },
+                "overload_control_information": { "sequence_number": {"value": 1}, "metric": {"value": 50},
+                                                  "timer": {"timer_unit": 1, "timer_value": 5} } }
+      - event: pfcp.PFCPSessionModificationRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionModificationResponse
+      - event: pfcp.PFCPSessionDeletionRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionDeletionResponse

@@ -1,0 +1,34 @@
+# N4/PFCP — an SMF that refuses a UPF.
+# 3GPP TS 29.244 §6.2.6.3, §7.4.4.2, §8.2.1.
+#
+# Runik is the SMF, listening. It does not want the UPF that dials it and
+# answers every Association Setup Request with Cause 64, "Request rejected".
+#
+# It never leaves `serving` (`stopped` is never reached; a flow must name a
+# final state) and runs until the suite step that started it ends.
+#
+# Pair: upf_pfcp_association_setup_rejected. Env: the UPF dials, the SMF
+# listens (runik/config/lab-pfcp-upf-dials.yaml).
+#
+kind: flow
+name: smf_pfcp_reject_association_responder
+description: SMF refuses a UPF's Association Setup with Request rejected
+category: functional
+type: server
+protocol: pfcp
+nf: smf
+
+initial_state: serving
+final_states:
+  - stopped
+
+states:
+  serving:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "cause": {"value": 64} }

@@ -1,0 +1,128 @@
+# N4/PFCP — PFD Management.
+# 3GPP TS 29.244 §6.2.5, §7.4.3.1 / §7.4.3.2.
+#
+# Runik is the SMF. A PFD tells the UPF how to recognise an application's
+# traffic, so that a PDR can then name the application instead of an address.
+# The first request provisions one PFD (a flow description) for Application ID
+# "app1"; the second carries no Application ID's PFDs at all, which by
+# §7.4.3.1 removes every PFD the UPF holds.
+#
+# PFD Management is a node message: no SEID, and unlike the association
+# messages it carries no Node ID.
+#
+# Pair: upf_pfcp_responder. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: smf_pfcp_pfd_provision
+description: SMF provisions packet flow descriptions for an application, then removes them all
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_provision
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPPFDManagementRequest
+            message_body: |
+              { "application_ids_pfds": [
+                  { "application_id": {"value": "YXBwMQ=="},
+                    "pfd_context": [ { "pfd_contents": [
+                      { "fd": true, "flow_description": "permit out ip from 198.51.100.0/24 to assigned" } ] } ] } ] }
+
+  wait_provision:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPPFDManagementResponse
+        target: wait_removal
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPPFDManagementRequest
+
+  # No Application ID's PFDs IE: remove all PFDs.
+  wait_removal:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPPFDManagementResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: PFCPPFDManagementRequest sent 2x
+    metric: msg_types.tx.pfcp.PFCPPFDManagementRequest
+    op: equals
+    value: 2
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPPFDManagementResponse arrived
+    metric: rx_events.pfcp.PFCPPFDManagementResponse
+    op: greater_or_equal
+    value: 2
+  - name: all 3 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 3
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

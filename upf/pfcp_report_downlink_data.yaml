@@ -1,0 +1,250 @@
+# N4/PFCP — Session Report, Downlink Data Report, sent by the UPF.
+# 3GPP TS 29.244 §6.3.5, §7.5.8.2 (Downlink Data Report), §5.2.4 (buffering);
+# TS 23.502 (network triggered service request).
+#
+# Runik is the UPF. The scenario is the idle-mode one: the SMF has told the UPF
+# to buffer downlink packets and notify it (Apply Action BUFF + NOCP on the
+# downlink FAR). When the first downlink packet for that PDR arrives the UPF
+# sends a PFCP Session Report Request with Report Type DLDR and the PDR ID.
+# There is no user plane here, so the "packet" is simply 200 ms after the
+# buffering instruction was accepted.
+#
+#   SMF -> Association Setup Request       UPF -> Response
+#   SMF -> Session Establishment Request   UPF -> Response, Created PDR 1
+#   SMF -> Session Modification Request    UPF -> Response       (FAR 2: BUFF+NOCP)
+#                          200 ms later    UPF -> Session Report Request (DLDR, PDR 2)
+#   SMF -> Session Report Response
+#   SMF -> Session Modification Request    UPF -> Response       (FAR 2: FORW)
+#   SMF -> Session Deletion Request        UPF -> Response
+#
+# The report's header carries the SMF's SEID, which the UPF learned from the CP
+# F-SEID of the establishment; the engine fills it.
+#
+# Pair: smf_pfcp_report_downlink_data_responder is the SMF. Env: the SMF dials,
+# the UPF listens (runik/config/lab-pfcp.yaml). This flow is the listener: in a
+# suite it goes under `background_flows:`.
+#
+kind: flow
+name: upf_pfcp_report_downlink_data
+description: UPF reports buffered downlink data to the SMF (Session Report, DLDR) after being told to buffer and notify
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: associated
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+
+  associated:
+    transitions:
+      # What a UPF needs before it can accept: the SMF's F-SEID, an uplink PDR
+      # asking it to choose the N3 F-TEID, a downlink PDR keyed on the UE
+      # address,
+      # and a FAR for each.
+      - event: pfcp.PFCPSessionEstablishmentRequest
+        target: forwarding
+        actions:
+          - type: check
+            field: pfcp.cp_f_seid.seid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: pfcp.create_pdr.length
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[0].pdi.source_interface
+            op: equals
+            expected: 1
+          - type: check
+            field: pfcp.create_pdr[0].pdi.local_f_teid.ch
+            op: equals
+            expected: true
+          - type: check
+            field: pfcp.create_pdr[1].pdi.source_interface
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[1].pdi.ue_ip_address.ipv4_address
+            op: equals
+            expected: "10.45.0.2"
+          - type: check
+            field: pfcp.create_far.length
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionEstablishmentResponse
+            message_body: |
+              { "created_pdr": [
+                  { "pdr_id": {"value": 1},
+                    "local_f_teid": {"v4": true, "teid": "{{$b64_u32 4660}}", "ipv4_address": "{{$b64_ipv4 \"192.0.2.1\"}}"} } ] }
+
+  forwarding:
+    transitions:
+      # BUFF (4) + NOCP (8) on the downlink FAR is the instruction this report
+      # answers to; without it a UPF has no business reporting.
+      - event: pfcp.PFCPSessionModificationRequest
+        target: buffering
+        actions:
+          - type: check
+            field: pfcp.update_far[0].far_id.value
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.update_far[0].apply_action.flags
+            op: equals
+            expected: 12
+          - type: send
+            message: PFCPSessionModificationResponse
+
+  # The downlink packet arrives 200 ms after buffering was accepted.
+  buffering:
+    on_timeout:
+      duration: 200ms
+      target: wait_report_ack
+      actions:
+        - type: send
+          message: PFCPSessionReportRequest
+          message_body: |
+            { "report_type": {"flags": 1},
+              "downlink_data_report": [ { "pdr_id": {"value": 2} } ] }
+
+  wait_report_ack:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionReportResponse
+        target: reported
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+      # Out of order: this arrived before the SessionReportResponse.
+      - event: pfcp.PFCPSessionDeletionRequest
+        target: wait_report_ack_second
+        actions:
+          - type: send
+            message: PFCPSessionDeletionResponse
+      - event: pfcp.PFCPSessionModificationRequest
+        target: wait_report_ack
+        actions:
+          - type: check
+            field: pfcp.update_far[0].apply_action.flags
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionModificationResponse
+
+  wait_report_ack_second:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionReportResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+
+  # The SMF's reaction to the report is to forward again (FORW 2); then it
+  # deletes the session.
+  reported:
+    transitions:
+      - event: pfcp.PFCPSessionDeletionRequest
+        target: settle
+        actions:
+          - type: send
+            message: PFCPSessionDeletionResponse
+      - event: pfcp.PFCPSessionModificationRequest
+        target: reported
+        actions:
+          - type: check
+            field: pfcp.update_far[0].apply_action.flags
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionModificationResponse
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionEstablishmentResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionReportRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionReportRequest
+    op: equals
+    value: 1
+  - name: PFCPSessionDeletionResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionDeletionResponse
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupRequest arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionEstablishmentRequest arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionModificationRequest arrived
+    metric: rx_events.pfcp.PFCPSessionModificationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionReportResponse arrived
+    metric: rx_events.pfcp.PFCPSessionReportResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionDeletionRequest arrived
+    metric: rx_events.pfcp.PFCPSessionDeletionRequest
+    op: greater_or_equal
+    value: 1
+  - name: the SMF resumed forwarding
+    metric: rx_events.pfcp.PFCPSessionModificationRequest
+    op: greater_or_equal
+    value: 2
+  - name: all 10 declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 10
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

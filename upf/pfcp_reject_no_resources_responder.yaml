@@ -1,0 +1,46 @@
+# N4/PFCP — a UPF that refuses.
+# 3GPP TS 29.244 §7.5.3.1, §8.2.1 (Cause).
+#
+# Runik is the UPF. It is full: every Session Establishment Request is answered
+# with Cause 75, "No resources available".
+#
+# It refuses unconditionally — it does not look at whether the request
+# deserves it. Its job is to give an SMF flow that exact answer to react
+# to; the cause values in the bodies are the spec's (the Cause enumeration
+# is not shifted like the others).
+#
+# It never leaves `serving` (`stopped` is never reached; a flow must name a
+# final state) and runs until the suite step that started it ends.
+#
+# Pair: smf_pfcp_session_establish_unknown_dnn. Env: the SMF dials, the UPF
+# listens (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: upf_pfcp_reject_no_resources_responder
+description: UPF answers a Session Establishment with No resources available
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: serving
+final_states:
+  - stopped
+
+states:
+  serving:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+      - event: pfcp.PFCPSessionEstablishmentRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionEstablishmentResponse
+            message_body: |
+              { "cause": {"value": 75} }

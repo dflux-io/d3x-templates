@@ -1,0 +1,104 @@
+# N4/PFCP — a UPF that restarts between two heartbeats.
+# 3GPP TS 29.244 §6.2.2; TS 23.527.
+#
+# Runik is the UPF. It answers the association setup and the first heartbeat
+# with its real start time. From the second heartbeat on it reports a later
+# Recovery Time Stamp — the largest value the field holds, so it is later than
+# any real one — which is all an SMF ever sees of a UPF restart. It then
+# expects the SMF to set the association up again.
+#
+# Pair: smf_pfcp_peer_restart_detected. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml). This flow is the listener: in a suite it goes
+# under `background_flows:`.
+#
+kind: flow
+name: upf_pfcp_restart_responder
+description: UPF that reports a newer Recovery Time Stamp from its second heartbeat answer on, as after a restart
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - reassociated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: up
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+
+  up:
+    transitions:
+      - event: pfcp.PFCPHeartbeatRequest
+        target: up_again
+        actions:
+          - type: send
+            message: PFCPHeartbeatResponse
+
+  up_again:
+    transitions:
+      - event: pfcp.PFCPHeartbeatRequest
+        target: wait_reassoc
+        actions:
+          - type: send
+            message: PFCPHeartbeatResponse
+            message_body: |
+              { "recovery_time_stamp": {"value": 4294967295} }
+
+  wait_reassoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: settle
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "recovery_time_stamp": {"value": 4294967295} }
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: reassociated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `reassociated`
+    metric: final_state_counts.reassociated
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupResponse sent 2x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupResponse
+    op: equals
+    value: 2
+  - name: PFCPHeartbeatResponse sent 2x
+    metric: msg_types.tx.pfcp.PFCPHeartbeatResponse
+    op: equals
+    value: 2
+  - name: a PFCPAssociationSetupRequest arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupRequest
+    op: greater_or_equal
+    value: 2
+  - name: a PFCPHeartbeatRequest arrived
+    metric: rx_events.pfcp.PFCPHeartbeatRequest
+    op: greater_or_equal
+    value: 2
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

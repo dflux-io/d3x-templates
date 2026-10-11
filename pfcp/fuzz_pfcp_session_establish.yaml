@@ -48,7 +48,7 @@
 #   3. This flow's survived_* / failed states: the liveness floor.
 #   4. A known-good flow replayed after the campaign (the state-corruption
 #      oracle). W2-F2 owns automating it; the pilot driver runs
-#      upf_pfcp_session_establish once at the end.
+#      smf_pfcp_session_establish once at the end.
 #
 # REPRODUCIBILITY
 # `seed:` is explicit, so two runs of this file produce byte-identical

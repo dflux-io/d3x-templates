@@ -1,19 +1,20 @@
-# PFCP Heartbeat (3GPP TS 29.244 §6.2.2 / §7.4.3).
+# N4/PFCP — Heartbeat sent by the UPF.
+# 3GPP TS 29.244 §6.2.2, §7.4.2.1 / §7.4.2.2.
 #
-# Node-level liveness probe. Runik sends a PFCPHeartbeatRequest (auto-stamped
-# with a RecoveryTimeStamp) and the UPF must answer with a
-# PFCPHeartbeatResponse carrying its own RecoveryTimeStamp IE.
+# Either side of an association may probe the other. Runik is the UPF: it sets
+# the association up, sends a Heartbeat Request, and expects a Heartbeat
+# Response carrying the SMF's Recovery Time Stamp.
 #
-# Spec-correct success = a HeartbeatResponse arrives carrying a
-# RecoveryTimeStamp IE (TS 29.244 §8.2.10).
-
+# Pair: smf_pfcp_responder. Env: the UPF dials, the SMF listens
+# (runik/config/lab-pfcp-upf-dials.yaml).
+#
 kind: flow
 name: upf_pfcp_heartbeat
-description: SMF liveness-probes a real UPF via PFCP Heartbeat (N4)
+description: UPF probes the SMF with a PFCP Heartbeat
 category: functional
 type: client
 protocol: pfcp
-nf: smf
+nf: upf
 
 initial_state: idle
 final_states:
@@ -24,11 +25,27 @@ states:
   idle:
     transitions:
       - event: Start
-        target: wait_heartbeat
+        target: wait_assoc
         actions:
           - type: send
+            message: PFCPAssociationSetupRequest
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_heartbeat
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
             message: PFCPHeartbeatRequest
-            peer: upf
 
   wait_heartbeat:
     on_timeout:
@@ -36,8 +53,52 @@ states:
       target: failed
     transitions:
       - event: pfcp.PFCPHeartbeatResponse
-        target: completed
+        target: settle
         actions:
           - type: check
             field: pfcp.recovery_timestamp
-            op: not_empty
+            op: greater_than
+            expected: 0
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: PFCPHeartbeatRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPHeartbeatRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPHeartbeatResponse arrived
+    metric: rx_events.pfcp.PFCPHeartbeatResponse
+    op: greater_or_equal
+    value: 1
+  - name: all 2 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 2
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

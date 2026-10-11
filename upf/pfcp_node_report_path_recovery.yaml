@@ -1,0 +1,126 @@
+# N4/PFCP — Node Report, User Plane Path Recovery.
+# 3GPP TS 29.244 §6.2.9, §7.4.5.1 / §7.4.5.2; TS 23.527.
+#
+# Runik is the UPF. It first reports the gNB at 192.0.2.10 as failed (Node
+# Report Type UPFR), then that the same peer answers again (UPRR, with a User
+# Plane Path Recovery Report). A recovery report only makes sense after a
+# failure report for the same peer, so the flow sends both.
+#
+# Pair: smf_pfcp_responder. Env: the UPF dials, the SMF listens
+# (runik/config/lab-pfcp-upf-dials.yaml).
+#
+kind: flow
+name: upf_pfcp_node_report_path_recovery
+description: UPF reports a GTP-U peer lost and then back (Node Report, path failure then path recovery)
+category: functional
+type: client
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_failure_ack
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPNodeReportRequest
+            message_body: |
+              { "node_report_type": {"flags": 1},
+                "user_plane_path_failure_report": { "remote_gtp_u_peer": [ { "v4": true, "ipv4_address": "{{$b64_ipv4 \"192.0.2.10\"}}" } ] } }
+
+  wait_failure_ack:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPNodeReportResponse
+        target: wait_recovery_ack
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPNodeReportRequest
+            message_body: |
+              { "node_report_type": {"flags": 2},
+                "user_plane_path_recovery_report": { "remote_gtp_u_peer": [ { "v4": true, "ipv4_address": "{{$b64_ipv4 \"192.0.2.10\"}}" } ] } }
+
+  wait_recovery_ack:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPNodeReportResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: PFCPNodeReportRequest sent 2x
+    metric: msg_types.tx.pfcp.PFCPNodeReportRequest
+    op: equals
+    value: 2
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPNodeReportResponse arrived
+    metric: rx_events.pfcp.PFCPNodeReportResponse
+    op: greater_or_equal
+    value: 2
+  - name: all 3 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 3
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

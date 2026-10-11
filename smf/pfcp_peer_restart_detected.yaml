@@ -1,0 +1,147 @@
+# N4/PFCP — UPF restart detected through the heartbeat.
+# 3GPP TS 29.244 §6.2.2, §7.4.2; TS 23.527 (restoration
+# procedures).
+#
+# Every heartbeat answer carries the time the sender last started. A value
+# that is NEWER than the one the SMF holds means the UPF restarted and lost
+# every session; the SMF must treat them as gone and set the association up
+# again.
+#
+# Runik is the SMF. It remembers the time stamp from the association setup,
+# checks that the first heartbeat still reports the same one, that the second
+# reports a later one, and then re-associates.
+#
+# Pair: upf_pfcp_restart_responder is the UPF that "restarts" between the two
+# heartbeats. Env: the SMF dials, the UPF listens (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: smf_pfcp_peer_restart_detected
+description: SMF sees the UPF's Recovery Time Stamp change in a heartbeat and sets the association up again
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - reassociated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_heartbeat
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: greater_than
+            expected: 0
+          - type: extract
+            extracts:
+              - { field: "pfcp.recovery_timestamp", store: upf_started }
+          - type: send
+            message: PFCPHeartbeatRequest
+
+  wait_heartbeat:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      # Same time stamp as at setup: the UPF has been up all along.
+      - event: pfcp.PFCPHeartbeatResponse
+        target: wait_heartbeat_after_restart
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: equals
+            expected: "{{vars.upf_started}}"
+          - type: send
+            message: PFCPHeartbeatRequest
+
+  wait_heartbeat_after_restart:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      # A later time stamp: the UPF restarted. Its sessions are gone.
+      - event: pfcp.PFCPHeartbeatResponse
+        target: wait_reassoc
+        actions:
+          - type: check
+            field: pfcp.recovery_timestamp
+            op: greater_than
+            expected: "{{vars.upf_started}}"
+          - type: send
+            message: PFCPAssociationSetupRequest
+
+  wait_reassoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: reassociated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `reassociated`
+    metric: final_state_counts.reassociated
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 2x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 2
+  - name: PFCPHeartbeatRequest sent 2x
+    metric: msg_types.tx.pfcp.PFCPHeartbeatRequest
+    op: equals
+    value: 2
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 2
+  - name: a PFCPHeartbeatResponse arrived
+    metric: rx_events.pfcp.PFCPHeartbeatResponse
+    op: greater_or_equal
+    value: 2
+  - name: all 5 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 5
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0
