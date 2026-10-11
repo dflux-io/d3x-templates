@@ -1,0 +1,51 @@
+# UPF-as-device-under-test suite — N4 AND N3, with the UPF the only real NF.
+#
+# Where upf_smoke / upf_n4 stop at "the UPF answers PFCP correctly", this suite
+# asks the question a UPF exists to answer: does a session it accepted actually
+# FORWARD. Runik is the SMF on N4 and the gNB user plane on N3, from one flow
+# (upf/dut_session_and_traffic.yaml — read its header for the claim and for
+# what the env must provide).
+#
+# NEEDS A UPF WITH A USER PLANE. Against tinycore that is `-datapath userspace`
+# (a TUN on N6 => CAP_NET_ADMIN, or a user+network namespace) — NOT the `stub`
+# datapath the other upf_* suites target: the stub accepts the session and
+# forwards nothing, so step 2 fails there on pkt_rx. That is the correct result.
+#
+# Env: an SMF on a pfcp client transport plus a gNB on a `gtpu` transport —
+# runik/config/lab-upf-dut.yaml in the d3x repo, with its addresses and
+# gnb.uplane.target_addr set for the lab. NOT config/lab-upf.yaml (no gNB, so
+# uplane_start has no N3 to start).
+#
+# Run:
+#   ./bin/rk run-suite -suite upf_dut \
+#       -templates . -c config/lab-upf-dut.yaml \
+#       -gen-subscriber
+#
+# GATE: association setup (stop_on_failure: true) — with no node-level
+# association there is nothing to learn from the traffic step.
+#
+# THE TRAFFIC STEP DECLARES NO success_when, deliberately. A step's
+# success_when overrides the flow's verdict in both directions, and this flow
+# states its whole claim itself (its checks and its final_checks). Left alone,
+# the step is graded by that verdict: a declared final state reached, every
+# check green, every final_check green. Do not add one.
+
+kind: suite
+name: upf_dut
+description: UPF as the only real NF — N4 association gate, then a PFCP session with ICMP forwarded both ways through it (N4 + N3).
+steps:
+  # --- gate: node-level association must come up first --------------------
+  - name: association_setup
+    flow: upf_pfcp_association_setup
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: associated
+
+  # --- the claim: a session the UPF accepted forwards, both directions ----
+  - name: session_and_traffic
+    flow: upf_dut_session_and_traffic
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
