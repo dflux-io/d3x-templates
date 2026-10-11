@@ -30,6 +30,17 @@ finding:
   class: session-hijack
   attacker: rogue-smf
   clause: "TS 29.244 §7.2.2.4.2 — Session Modification with a SEID the UPF did not allocate"
+  # The foreign-SEID Session Modification (the probe) is only on the wire once
+  # the UE enters wait_modify, which it does after the association and a real
+  # establish succeeded. The finding fires on `failed` — the UPF answered the
+  # foreign SEID with an unexpected cause (the rejected Cause-65 and tolerated
+  # silent-drop terminals are both passes: the UPF did not act on it). A failure
+  # before the probe — wait_assoc or wait_session timing out to `failed` — is
+  # setup trouble, not session hijack, and must read inconclusive. fires_on is
+  # what draws that line: without it a wait_session timeout would fire, because
+  # the association response was already received so the PFCP no_response
+  # heuristic does not catch it either.
+  fires_on: [wait_modify]
 type: client
 protocol: pfcp
 nf: upf

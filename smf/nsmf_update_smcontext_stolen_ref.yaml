@@ -36,6 +36,16 @@ finding:
   class: idor
   attacker: rogue-sbi
   clause: "TS 29.502 §5.2.2.3 — UpdateSMContext is bound to the consumer that created the context"
+  # The stolen-ref UpdateSMContext (the probe) is only on the wire once the UE
+  # enters wait_steal, which it does after CreateSMContext returned 201. The
+  # finding fires on `failed`, which here means the SMF answered the stolen
+  # modify 2xx (a 2xx fails the 4xx check and lands in `failed`) — the IDOR
+  # (rejected = 4xx refusal and tolerated = silent drop are both passes). A
+  # failure in wait_create — the create not answering, or not returning 201
+  # (the common 4xx on a single-part JSON create) → `failed` — is setup
+  # trouble and must read inconclusive; without fires_on it would fire, since
+  # SBI is connection-oriented and the default fires on any delivered message.
+  fires_on: [wait_steal]
 type: client
 protocol: sbi
 nf: smf
