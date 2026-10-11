@@ -16,7 +16,7 @@ description: SMF installs and modifies a QER (MBR) on a session; UPF accepts the
 category: functional
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

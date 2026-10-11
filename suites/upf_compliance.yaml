@@ -62,8 +62,10 @@
 # own IP and binding it on :8805 — config/open5gs-upf.yaml sets pfcp.local
 # "172.22.0.250:8805" + node_id.value "172.22.0.250", and the harness runs the
 # Runik container on --ip 172.22.0.250 so it owns that NodeID. The binding role
-# must be `upf` (the flows declare nf: upf). With that in place Runik's PFCP RX
-# path receives and dispatches the AssociationSetupResponse normally — there is
+# must be `smf` (the flows declare nf: smf — `nf:` names the NF Runik simulates,
+# and here Runik is the SMF; the UPF is the device under test). With that in
+# place Runik's PFCP RX path receives and dispatches the
+# AssociationSetupResponse normally — there is
 # NO Runik PFCP client-RX correlation bug (an earlier run misdiagnosed the
 # addressing issue as one).
 #

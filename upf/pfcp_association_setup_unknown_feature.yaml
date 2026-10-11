@@ -19,7 +19,7 @@ description: Association Setup with reserved CP feature bits; UPF tolerates and 
 category: negative
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

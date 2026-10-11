@@ -21,7 +21,7 @@ description: UPF Recovery Time Stamp stays stable across heartbeats (no spurious
 category: negative
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

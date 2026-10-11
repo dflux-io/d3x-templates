@@ -17,7 +17,7 @@ description: Session Modification with an unknown SEID; UPF must reject (Cause 6
 category: negative
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

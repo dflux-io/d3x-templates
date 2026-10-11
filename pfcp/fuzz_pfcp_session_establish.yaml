@@ -66,7 +66,7 @@ description: Wire-level fuzz of PFCPSessionEstablishmentRequest against a live U
 category: robustness
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

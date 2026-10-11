@@ -35,7 +35,7 @@ description: Rogue SMF Session Modification redirecting a FAR to a tester GTP-U 
 category: negative
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

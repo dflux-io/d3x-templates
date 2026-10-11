@@ -20,7 +20,7 @@ description: SMF establishes a PFCP session (uplink PDR+FAR) against a real UPF 
 category: functional
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:
