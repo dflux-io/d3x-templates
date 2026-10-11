@@ -111,7 +111,8 @@ description: UPF as the only real NF — Runik is the SMF on N4 and the gNB on N
 category: functional
 type: client
 protocol: pfcp
-nf: smf
+nfs: [smf, gnb]   # the NFs Runik simulates; the first is the primary
+dut: upf          # the real one
 
 initial_state: idle
 final_states:
