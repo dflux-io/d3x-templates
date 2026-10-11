@@ -42,6 +42,14 @@ finding:
   class: bidding-down
   attacker: rogue-gnb
   clause: "TS 24.501 §4.4.6 — SECURITY MODE COMPLETE must replay the full initial NAS message"
+  # The forged SecurityModeComplete (omit_nas_container) is only on the wire
+  # once the UE enters wait_reject. An earlier failure — the AMF never answers
+  # the authentication request, or never sends SECURITY MODE COMMAND — also
+  # ends in `failed`, but it is setup trouble, not a bidding-down accept, so it
+  # must read inconclusive. Firing on wait_reject fires exactly when the forged
+  # message was delivered: on a RegistrationAccept (the AMF accepted it) and on
+  # a silent AMF that then times out (which is still an answer about the probe).
+  fires_on: [wait_reject]
 type: client
 protocol: ngap
 nf: gnb

@@ -24,15 +24,17 @@
 # means minutes of traffic and 2-3 runs on record; see
 # `scp/test/load/suites/` for what that shape looks like.
 #
-# WHY THE BURST FLOW IS NOT A SECOND STEP. `load_nudm_sdm_get_burst` needs a
-# target that answers concurrent requests independently, and Runik's own
-# server-mode responder does not — every copy in a `parallel_send` burst carries
-# the correlation header the request was enriched with once, and a Runik
-# listener keys its pending-answer map on that header, so simultaneous arrivals
-# collide and all but one get a 504. That file's LIMITATION 2 has the measured
-# numbers. Adding it here would produce a suite that fails on every host for a
-# reason that is nothing to do with the target, so it stays a
-# point-it-at-a-real-UDM template.
+# THE BURST FLOW IS THE SECOND STEP. `load_nudm_sdm_get_burst` fires a fixed
+# burst from one UE via `parallel_send`, the concurrency half of the load
+# vocabulary to the first step's sustained rate. It used to be excluded: every
+# copy in a burst carried one correlation id, and a Runik listener keyed its
+# pending-answer map on that id, so simultaneous arrivals collided and all but
+# one got a 504 — a self-contained burst would have been asserting against that
+# defect, not the target. Runik fixed both ends (each round-trip restamps its
+# own id; the listener falls back to a fresh pending key on a held value), so
+# the loopback responder now answers all 100 concurrent requests. Measured on
+# this host: concurrency 20 / count 100 -> 100x200, 0x504, p95 ~4.5ms. See that
+# flow file's header for the mechanism.
 #
 # EVERY THRESHOLD IN THIS FILE IS A TRIPWIRE. The derivation lives in the flow —
 # read the comment blocks in sbi/load_nudm_sdm_get.yaml before
@@ -41,10 +43,11 @@
 kind: suite
 name: sbi_load_baseline
 description: |
-  Sustained-rate SBI load baseline against the loopback UDM responder. The
-  flow's own `final_checks` carry the per-run thresholds; the step `checks:` and
-  the suite `final_checks:` below assert what is only visible at the workload
-  level — that the scheduler actually started the flows it was asked for.
+  SBI load baseline against the loopback UDM responder, both shapes of the load
+  vocabulary: a sustained-rate step and a concurrent-burst step. Each flow's own
+  `final_checks` carry the per-run thresholds; the step `checks:` and the suite
+  `final_checks:` below assert what is only visible at the workload level — that
+  the scheduler actually started the flows it was asked for.
 
 steps:
   # 200 starts/s for 10s = ~2,000 flows, each one a request and its answer. The
@@ -82,6 +85,18 @@ steps:
         metric: flows_failed
         op: equals
         value: 0
+
+  # One UE, one step, 100 Nudm_SDM_GetSubscriptionData with 20 in flight — the
+  # concurrency half of the baseline. The burst flow's own `final_checks` grade
+  # the step (all 100 sent, all 100 answered 200, p95 RTT bounded); the only
+  # thing to add here is the responder it dials, the same background listener
+  # the sustained step uses. Same 30s timeout headroom for the tail to drain.
+  - name: concurrent_burst
+    flow: load_nudm_sdm_get_burst
+    timeout: 30s
+    gen_subscriber: true
+    background_flows:
+      - sbi_nudm_sdm_get_server
 
 final_checks:
   # Merged across the cycle. Percentiles here come from the MERGED HDR

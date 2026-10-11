@@ -49,6 +49,13 @@ finding:
   class: isolation
   attacker: uplane
   clause: "TS 23.501 §5.8.2.4.2 — uplink packets matching no PDR are not forwarded"
+  # The foreign-TEID window (the probe) only starts when the UE enters
+  # uplane_foreign_teid. Registration, the PDU session and the granted-TEID
+  # window all time out to the same `failed`, and a failure in any of them is
+  # setup trouble that says nothing about n6 isolation — inconclusive. Once in
+  # uplane_foreign_teid the 0xDEADBEEF packets are on the wire, so a forwarded
+  # packet (check fail) or a dead window (timeout → failed) is real evidence.
+  fires_on: [uplane_foreign_teid]
 detail: |
   Registration, one PDU session establishment, then two user-plane windows.
 

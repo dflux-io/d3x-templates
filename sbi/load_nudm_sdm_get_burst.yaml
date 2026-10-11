@@ -27,26 +27,25 @@
 # the normal bus. Recorded, not worked around: see runik/README.md, "Load and
 # performance", for the same statement in the capability documentation.
 #
-# LIMITATION 2 — DO NOT AIM THIS AT A RUNIK SERVER-MODE FLOW. It needs a target
-# that answers concurrent requests independently. A real UDM does. Runik's
-# own server-mode responder does NOT, and the reason is in the burst path:
-# `buildBurstRequest` enriches ONCE, so all N copies carry the same
-# `3gpp-Sbi-Correlation-Info` header, and a Runik listener keys its pending-
-# answer map on exactly that header
-# (runik/engine/transport_sbi.go:BuildInboundRequestEnvelope →
-# transport_http.go:makeServerHandler). N simultaneous arrivals collide on one
-# key, one is answered, and the rest sit until `answer_timeout` and get a 504.
+# CONCURRENT BURSTS AGAINST A RUNIK LISTENER — once a defect, now fixed. A
+# burst needs a target that answers concurrent requests independently. A real
+# UDM does, and so does Runik's own server-mode responder: a burst can be aimed
+# at the loopback responder in runik/config/lab-sbi.yaml. It could not always.
+# The burst path enriches ONCE, so every copy left carrying the same correlation
+# id, and a Runik listener keyed its pending-answer map on exactly that value —
+# N simultaneous arrivals collided on one key, one was answered, and the rest
+# sat until `answer_timeout` and got a 504 (concurrency 20 / count 100 read
+# 81x200 + 19x504: the losses were exactly `concurrency - 1`, the collision, not
+# a capacity limit). Two Runik changes removed it: each round-trip now restamps
+# its own correlation id before it goes out (transport_http.go:restampCorrelation)
+# and, independently, the listener falls back to a fresh pending key whenever the
+# header value it got is already held (transport_http.go:reservePending), so even
+# identical ids no longer collide. MEASURED here against that loopback responder,
+# count 100: concurrency 20 -> 100x200, 0x504.
 #
-# MEASURED 2026-08-19 against runik/config/lab-sbi.yaml's loopback responder,
-# count 100: concurrency 20 -> 81x200 + 19x504; concurrency 4 -> 97x200 + 3x504;
-# concurrency 1 -> 100x200. Losses are exactly `concurrency - 1` — the requests
-# in flight at any instant — which is the collision, not a capacity limit. A
-# warm-up request before the burst does not change it.
-#
-# This is why suites/sbi_load_baseline.yaml runs only the
-# sustained-rate flow: that suite is self-contained by design, and a
-# self-contained burst would be asserting against the defect above. Run this one
-# against a real UDM, or against SCP with a real upstream.
+# So suites/sbi_load_baseline.yaml now runs this burst as its second step,
+# self-contained against the loopback responder. Aim it at a real UDM, or at SCP
+# with a real upstream, when the subject is a production target.
 # ---------------------------------------------------------------------------
 #
 #   ./bin/rk run-flow -flow load_nudm_sdm_get_burst \
@@ -116,20 +115,20 @@ final_checks:
     # parallel_send records the response STATUS as the rx message type, so this
     # is the only assertion that separates "answered" from "answered correctly".
     # Exact, not a floor: a burst is a fixed count, and 99 is a defect. It is
-    # also the check that caught LIMITATION 2 above — it read 81 against the
-    # loopback responder.
+    # the check that used to read 81 against the loopback responder, when the
+    # correlation-key collision above still lost `concurrency - 1` requests to
+    # 504; against that same responder today it reads 100.
     metric: msg_types.rx.sbi.status_200
     op: equals
     value: 100
 
   # ---- then the concurrency claim ----
   #
-  # NOT BASELINED, and better said than dressed up. The only measurement
-  # available when this file was written is the loopback one in LIMITATION 2,
-  # and that path is broken for concurrent bursts — its p95 is either
-  # sub-millisecond or 5,003ms (the answer_timeout) depending on how many
-  # requests collided, and neither number characterises anything. So 50ms here
-  # is NOT derived from an observation of this flow working.
+  # A LOOSE HEAD-ROOM BOUND, not a characterisation. Now that the burst runs
+  # clean against the loopback responder, there is a loopback measurement — p95
+  # ~4.5ms at concurrency 20 / count 100 (the sbi_load_baseline cycle on this
+  # host) — but that is Runik talking to itself, not a target under test. 50ms
+  # is deliberately well above it.
   #
   # What it IS: the same head-room bound `load_nudm_sdm_get` carries, brought
   # across on the argument that one request's round-trip cannot reasonably be
