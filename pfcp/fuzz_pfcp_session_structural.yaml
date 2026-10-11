@@ -36,7 +36,7 @@ description: Structure-aware fuzz of PFCPSessionEstablishmentRequest against a l
 category: robustness
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

@@ -17,7 +17,7 @@ description: Session Establishment with a dangling FAR reference; UPF must rejec
 category: negative
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

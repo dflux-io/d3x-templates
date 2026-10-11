@@ -16,7 +16,7 @@ description: SMF updates an established PFCP association against a real UPF (N4)
 category: functional
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

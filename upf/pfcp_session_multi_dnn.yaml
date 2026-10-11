@@ -23,7 +23,7 @@ description: SMF establishes a session on a secondary DNN with a UE-IP CHOOSE; U
 category: functional
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:

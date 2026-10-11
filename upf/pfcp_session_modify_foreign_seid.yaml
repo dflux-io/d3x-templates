@@ -43,7 +43,7 @@ finding:
   fires_on: [wait_modify]
 type: client
 protocol: pfcp
-nf: upf
+nf: smf
 
 initial_state: idle
 final_states:
