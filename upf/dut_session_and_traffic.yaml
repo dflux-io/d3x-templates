@@ -1,0 +1,367 @@
+# UPF AS THE DEVICE UNDER TEST — one PFCP session, then traffic through it.
+#
+# The UPF is the only real network function. There is no AMF, no SMF, no core.
+# From this ONE flow Runik simulates both things a UPF talks to:
+#
+#     SMF  ── N4 / PFCP ──►  UPF      association, session establish, session delete, heartbeat
+#     gNB  ── N3 / GTP-U ─►  UPF      ICMP echo from the UE address, inside the tunnel
+#
+# 3GPP TS 29.244 §6.2.6 / §7.4.4 (association), §7.5.2 / §7.5.3 (session
+# establishment), §7.5.6 / §7.5.7 (deletion), §8.2.56 (Outer Header Creation);
+# TS 29.281 §5.1 (G-PDU).
+#
+# WHAT IT CLAIMS
+# --------------
+# A UPF that accepts this session FORWARDS on it, in both directions, on the
+# tunnel endpoints the two sides exchanged over N4:
+#
+#   uplink    a G-PDU sent to the F-TEID the UPF chose (Created PDR 1) is
+#             decapsulated and its inner packet leaves on N6;
+#   downlink  the answer, addressed to the UE address the UPF allocated
+#             (Created PDR 2), is encapsulated to the gNB F-TEID this flow put
+#             in FAR 2's Outer Header Creation.
+#
+# The gate is `ue.UplaneReport.pkt_rx > 0`. The reader counts a packet only when
+# an inbound G-PDU carries the gNB's own downlink TEID on the gNB's N3 socket,
+# so a non-zero count needs every link of that chain. `pkt_tx > 0` is liveness
+# of Runik's own generator and proves nothing about the UPF — it is counted
+# after a send on an unconnected UDP socket (see gnb/uplane_traffic.yaml).
+#
+# A UPF with no user plane (tinycore `-datapath stub`) accepts the session and
+# forwards nothing: this flow FAILS against it, on pkt_rx. That is the answer,
+# not a template fault.
+#
+# HOW THE TUNNEL IS WIRED
+# -----------------------
+#   idle          {{$n3_teid}} / {{gnb.n3_addr}} -> gnb_teid, gnb_addr: the gNB's
+#                 downlink F-TEID, allocated before anything is on the wire.
+#   wait_assoc    Session Establishment Request:
+#                   PDR 1  source ACCESS, F-TEID CHOOSE, outer header removal -> FAR 1 forward to CORE
+#                   PDR 2  source CORE, UE IP CHOOSE (chv4)                   -> FAR 2 forward to ACCESS
+#                          with Outer Header Creation GTP-U/UDP/IPv4 = (gnb_teid, gnb_addr)
+#   wait_session  Created PDR 1 -> upf_teid, upf_addr; Created PDR 2 -> ue_ip;
+#                 uplane_start on exactly those four values plus gnb_teid.
+#   traffic       UplaneComplete: Session Deletion Request (asserting nothing yet,
+#                 so a failing run still cleans up after itself).
+#   wait_delete   Session Deletion Response accepted; pkt_tx > 0; pkt_rx > 0;
+#                 Heartbeat Request.
+#   wait_heartbeat  Heartbeat Response -> completed (why this hop exists is
+#                 said at the state).
+#
+# The UE address is requested on the DOWNLINK PDR only. tinycore allocates one
+# address per PDR that carries CHOOSE, so asking on both would yield two
+# addresses and a downlink PDR keyed on the wrong one.
+#
+# Source/Destination Interface values are the proto enum's (ACCESS=1, CORE=2),
+# Apply Action FORW is flags=2, Outer Header Creation description 256 = 0x0100
+# GTP-U/UDP/IPv4. `teid` / `ipv4_address` are raw octets on the wire and base64
+# in JSON, hence $b64_u32 / $b64_ipv4.
+#
+# ENV — what this flow needs from it
+# ----------------------------------
+# An SMF on a pfcp client transport AND a gNB on a `gtpu` transport (N3 with no
+# N2); the engine attaches that gNB to the UE, the flow does not name it. The
+# sample is runik/config/lab-upf-dut.yaml in the d3x repo. Three things there
+# are load-bearing:
+#
+#   * gtpu.local — the gNB's N3 address. GTP-U is always UDP/2152, so it must
+#     differ from the UPF's N3 address, and the UPF must be able to route to it.
+#   * gnb.uplane.target_addr — the inner destination. This flow deliberately
+#     does not set `target_addr`: what answers an echo on N6 is a property of
+#     the lab, not of the procedure. It must be an address reachable through
+#     the UPF's N6 that answers ICMP echo and routes the reply for the UE pool
+#     back into the UPF. It must NOT be an address of the UE pool: tinycore
+#     hands out the pool's first host (10.45.0.1 of 10.45.0.0/16) to the first
+#     session, which is the sample env's own default target.
+#   * gnb.uplane.protocol: 1 (ICMP).
+#
+# Licence: proto.pfcp and proto.gtpu.
+#
+# NEEDS A RUNIK THAT HAS: paths into the received PFCP message
+# (pfcp.created_pdr[n]...), `vars.` and $b64_u32 / $b64_ipv4, the `gtpu`
+# transport with uplane_start's remote_addr / local_teid / ue_ip, $n3_teid and
+# gnb.n3_addr. An older rk refuses the file at load (unknown function) rather
+# than running it wrong.
+#
+# RUN
+# ---
+#   rk run-flow -flow upf_dut_session_and_traffic \
+#       -templates . -c config/lab-upf-dut.yaml -gen-subscriber -trace
+#
+# or the suite, suites/upf_dut.yaml.
+#
+# PROVEN AGAINST (2026-10-11, see the PR that added this file for the output)
+# -------------------------------------------------------------------------
+# tinycore UPF `-datapath userspace`, UPF and rk in one unprivileged network
+# namespace (`unshare -Urn`), UPF N3 127.0.0.3, gNB N3 127.0.0.2, the N6 TUN
+# given 10.99.0.1/32 plus a route for the UE pool, target_addr 10.99.0.1. The
+# echo is answered by that namespace's kernel. PASS; and shown to FAIL — on
+# pkt_rx, with every N4 check still green — with the uplink TEID corrupted,
+# with the downlink TEID in Outer Header Creation corrupted, and against
+# `-datapath stub`.
+#
+# NOT COVERED: more than one session per run (the TEIDs happened to be 1 and 1
+# on a fresh UPF, so a UPF that swapped the two directions' TEIDs would not be
+# caught by a single-session run), IPv6, QER/URR on the forwarding path, and
+# any UPF other than tinycore.
+
+kind: flow
+name: upf_dut_session_and_traffic
+description: UPF as the only real NF — Runik is the SMF on N4 and the gNB on N3; a PFCP session, then ICMP through the tunnel and back
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: extract
+            extracts:
+              - { value: "{{$n3_teid}}", store: gnb_teid }
+              - { value: "{{gnb.n3_addr}}", store: gnb_addr }
+          - type: send
+            message: PFCPAssociationSetupRequest
+            peer: upf
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  {
+                    "pdr_id": {"value": 1},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 1,
+                      "local_f_teid": {"ch": true}
+                    },
+                    "outer_header_removal": {"description": 0},
+                    "far_id": {"value": 1}
+                  },
+                  {
+                    "pdr_id": {"value": 2},
+                    "precedence": {"value": 255},
+                    "pdi": {
+                      "source_interface": 2,
+                      "ue_ip_address": {"chv4": true}
+                    },
+                    "far_id": {"value": 2}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
+                  },
+                  {
+                    "far_id": {"value": 2},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 1,
+                      "outer_header_creation": {
+                        "description": 256,
+                        "teid": "{{$b64_u32 vars.gnb_teid}}",
+                        "ipv4_address": "{{$b64_ipv4 vars.gnb_addr}}"
+                      }
+                    }
+                  }
+                ]
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: traffic
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          # Created PDRs come back in request order: [0] answers PDR 1 (the
+          # F-TEID), [1] answers PDR 2 (the UE address). Pinned, because the
+          # extracts below read by index.
+          - type: check
+            field: pfcp.created_pdr[0].pdr_id.value
+            op: equals
+            expected: 1
+          - type: check
+            field: pfcp.created_pdr[1].pdr_id.value
+            op: equals
+            expected: 2
+          # `greater_than 0`, not `not_empty`: the TEID resolves to a raw
+          # uint32 and `not_empty` passes on a zero one.
+          - type: check
+            field: pfcp.created_pdr[0].local_f_teid.teid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: pfcp.created_pdr[0].local_f_teid.ipv4_address
+            op: not_empty
+          - type: check
+            field: pfcp.created_pdr[1].ue_ip_address.ipv4_address
+            op: not_empty
+          - type: extract
+            extracts:
+              - { field: "pfcp.created_pdr[0].local_f_teid.teid", store: upf_teid }
+              - { field: "pfcp.created_pdr[0].local_f_teid.ipv4_address", store: upf_addr }
+              - { field: "pfcp.created_pdr[1].ue_ip_address.ipv4_address", store: ue_ip }
+          - type: uplane_start
+            params:
+              remote_teid: "{{vars.upf_teid}}"
+              remote_addr: "{{vars.upf_addr}}"
+              local_teid: "{{vars.gnb_teid}}"
+              ue_ip: "{{vars.ue_ip}}"
+              # No target_addr: the env's gnb.uplane.target_addr (see header).
+              duration: 3s
+
+  traffic:
+    on_timeout:
+      duration: 20s
+      target: failed
+    transitions:
+      # The window is over. Nothing is asserted here: a failed check ends the
+      # UE where it stands, and the schema (rightly) allows no check after a
+      # send, so a gate in this state would mean the deletion is never sent on
+      # exactly the runs that fail — every red run would leave a session, a
+      # TEID and a UE address behind on the UPF. Delete first; the report the
+      # window produced stays on the UE and is asserted in wait_delete.
+      - event: UplaneComplete
+        target: wait_delete
+        actions:
+          - type: send
+            message: PFCPSessionDeletionRequest
+
+  wait_delete:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionDeletionResponse
+        target: wait_heartbeat
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          # Liveness of OUR generator only — proves nothing about the UPF.
+          - type: check
+            field: ue.UplaneReport.pkt_tx
+            op: greater_than
+            expected: 0
+          # The gate. See WHAT IT CLAIMS.
+          - type: check
+            field: ue.UplaneReport.pkt_rx
+            op: greater_than
+            expected: 0
+          - type: send
+            message: PFCPHeartbeatRequest
+
+  # ONE MORE HOP, AND NO CHECK ON IT — both on purpose.
+  #
+  # A UE whose check fails stops, but in the transition's TARGET state. With the
+  # gate on the transition into `completed`, a run with pkt_rx = 0 still counted
+  # `final_state_counts.completed = 1`, and a suite step written
+  # `success_when: { at_least_one_final_state: completed }` graded it PASS
+  # (success_when overrides the verdict). Measured 2026-10-11: run-flow FAIL,
+  # run-suite PASS, same run. So the gate sits one transition before the
+  # terminal, where failing it leaves the UE in a state that is not final, and
+  # the last transition asserts nothing. The heartbeat is the cheapest exchange
+  # that makes that hop real: the UPF still answers N4 after the session it
+  # forwarded for is gone.
+  wait_heartbeat:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPHeartbeatResponse
+        target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow.
+#
+# `final_states` lists every way this flow can END; only this block says which
+# one it claims. Ours are asserted exactly (every send is one this flow
+# declares); the UPF's with a floor, because a retransmission the spec permits
+# must not fail a run that otherwise did what it claimed.
+#
+# The user-plane counters are not report metrics, so the forwarding claim is
+# carried by the two `check` actions in `wait_delete` and reaches this block
+# as `checks_failed equals 0` + `checks_total equals 10`: a run that never got
+# that far executes fewer than ten checks and fails here even with none red.
+# A run that fails the gate never sends the heartbeat and never reaches
+# `completed`, so it is red on several of these lines, not one.
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: one PFCP ASSOCIATION SETUP REQUEST was sent
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: one PFCP SESSION ESTABLISHMENT REQUEST was sent
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentRequest
+    op: equals
+    value: 1
+  - name: one PFCP SESSION DELETION REQUEST was sent
+    metric: msg_types.tx.pfcp.PFCPSessionDeletionRequest
+    op: equals
+    value: 1
+  - name: one PFCP HEARTBEAT REQUEST was sent
+    metric: msg_types.tx.pfcp.PFCPHeartbeatRequest
+    op: equals
+    value: 1
+  - name: a PFCP ASSOCIATION SETUP RESPONSE arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCP SESSION ESTABLISHMENT RESPONSE arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCP SESSION DELETION RESPONSE arrived
+    metric: rx_events.pfcp.PFCPSessionDeletionResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCP HEARTBEAT RESPONSE arrived
+    metric: rx_events.pfcp.PFCPHeartbeatResponse
+    op: greater_or_equal
+    value: 1
+  - name: all ten declared checks ran (three N4 causes, five on the Created PDRs, pkt_tx, pkt_rx)
+    metric: checks_total
+    op: equals
+    value: 10
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0
