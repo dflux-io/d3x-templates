@@ -12,14 +12,13 @@
 #     SPECIFIC cause; success = the reject Cause is observed (a malformed
 #     request answered "Request accepted" is itself a sanity failure). Each
 #     negative cause was verified against the UPF source:
+#       - F-10 assoc setup, no Node ID  → "Mandatory IE missing"      (observed 2026-10-12)
 #       - F-11 missing CP F-SEID        → "Mandatory IE missing"      (session_handlers.go:66)
 #       - F-12 modify on bogus SEID     → "Session context not found" (session_handlers.go:343)
 #       - F-13 delete on bogus SEID     → "Session context not found" (session_handlers.go:533)
 #       - F-14 establish on unknown DNN → "No resources available"    (session_handlers.go:127)
 #
 # NOT included (and why):
-#   - F-10 assoc setup without NodeID — Runik has no suppress_node_id, so the
-#     no-NodeID stimulus can't be authored yet (driver gap, cf. G2).
 #   - F-15 pool exhaustion — needs the UPF launched with a tiny (/30) pool;
 #     lives in a separate mini-suite with its own launch line.
 #   - F-16 association-restart session wipe — the wipe is only observable via
@@ -105,6 +104,14 @@ steps:
       at_least_one_final_state: deleted
 
   # --- negatives (assert the spec-correct reject cause) -------------------
+  # No `success_when:` — this flow carries its own final_checks, and
+  # success_when would override the verdict they produce.
+  - name: neg_association_no_node_id        # F-10
+    flow: smf_pfcp_association_setup_no_node_id
+    repetitions: 1
+    timeout: 10s
+    stop_on_failure: false
+
   - name: neg_establish_missing_fseid       # F-11
     flow: smf_pfcp_session_establish_missing_fseid
     repetitions: 1

@@ -212,6 +212,13 @@ steps:
       - upf_pfcp_report_rejected
 
   # --- refusals ----------------------------------------------------------
+  - name: reject_missing_node_id
+    flow: smf_pfcp_association_setup_no_node_id
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_reject_missing_node_id_responder
+
   - name: reject_no_association
     flow: smf_pfcp_session_establish_no_association
     timeout: 15s
