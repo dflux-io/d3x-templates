@@ -45,8 +45,8 @@ rk run-suite \
 | `nrf/` | Nnrf NFManagement, Discovery, AccessToken, Bootstrapping, subscriptions |
 | `ausf/` | Nausf UE authentication, SoR/UPU protection |
 | `udm/` | Nudm SDM / UECM / UEAU |
-| `smf/` | Nsmf PDU session + SMF-side PFCP |
-| `upf/` | N4 PFCP association, session, QER/URR, metrics |
+| `smf/` | Nsmf PDU session; N4/PFCP with Runik as the SMF — association, session lifecycle, and the SMF's answers to a UPF's reports |
+| `upf/` | N4/PFCP with Runik as the UPF — responders, UPF-initiated association, node and session reports; UPF metrics scrapes; UPF as device under test |
 | `pcf/` | Npcf SM/UE/AM policy, policy authorization |
 | `nssf/` | Nnssf NS Selection / NSSAI availability |
 | `bsf/` | Nbsf management |
@@ -58,7 +58,16 @@ rk run-suite \
 | `rest/` | SCP-admin REST |
 | `scp/` | SCP policy (Diameter lifecycle) |
 | `multinf/` | Multi-protocol (NGAP + Diameter on one UE) |
-| `suites/` | Multi-flow packs (compliance, security, smoke, load) |
+| `suites/` | Multi-flow packs (compliance, security, smoke, load, PFCP loopback) |
+
+A PFCP flow lives in the directory of the NF Runik plays in it, and its `nf:` says the same: `smf/pfcp_*` flows have Runik as the SMF, `upf/pfcp_*` flows have Runik as the UPF. Most come in pairs — the side that sends a request and the side that answers it — and the two `suites/pfcp_loopback_*` suites run every pair with Runik on both ends of N4, no core needed:
+
+```bash
+rk run-suite -suite pfcp_loopback_smf_dials -templates . -c <d3x>/runik/config/lab-pfcp.yaml
+rk run-suite -suite pfcp_loopback_upf_dials -templates . -c <d3x>/runik/config/lab-pfcp-upf-dials.yaml
+```
+
+To test a real UPF, run the `smf/pfcp_*` side against it; to test a real SMF, the `upf/pfcp_*` side.
 
 `nrf/README.md` is the operational manual for the NRF suites (bring-up, JWT key, persistence / mTLS / concurrency workers).
 

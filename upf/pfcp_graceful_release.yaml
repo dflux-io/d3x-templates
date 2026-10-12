@@ -1,0 +1,148 @@
+# N4/PFCP — release requested by the UPF.
+# 3GPP TS 29.244 §5.18, §6.2.7.3, §7.4.4.3 / §7.4.4.4.
+#
+# Runik is the UPF. Once associated it wants to go away, which it cannot do on
+# its own: it sends an Association Update Request with SARR = 1 and a Graceful
+# Release Period of 5 x 2 s, expects the SMF to accept, and then expects the
+# SMF's Association Release Request, which it answers.
+#
+# Graceful Release Period timer_unit 1 is "multiples of 2 seconds".
+#
+# Pair: smf_pfcp_graceful_release_responder is the SMF. Env: the SMF dials, the
+# UPF listens (runik/config/lab-pfcp.yaml). This flow is the listener: in a
+# suite it goes under `background_flows:`.
+#
+kind: flow
+name: upf_pfcp_graceful_release
+description: UPF asks the SMF to release the association, with a graceful release period
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - released
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: in_service
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+
+  in_service:
+    on_timeout:
+      duration: 200ms
+      target: wait_update
+      actions:
+        - type: send
+          message: PFCPAssociationUpdateRequest
+          message_body: |
+            { "pfcp_association_release_request": {"sarr": true},
+              "graceful_release_period": {"timer_unit": 1, "timer_value": 5} }
+
+  wait_update:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationUpdateResponse
+        target: wait_release
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.node_id
+            op: not_empty
+      # Out of order: this arrived before the AssociationUpdateResponse.
+      - event: pfcp.PFCPAssociationReleaseRequest
+        target: wait_update_second
+        actions:
+          - type: send
+            message: PFCPAssociationReleaseResponse
+
+  wait_update_second:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationUpdateResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.node_id
+            op: not_empty
+
+  wait_release:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationReleaseRequest
+        target: settle
+        actions:
+          - type: send
+            message: PFCPAssociationReleaseResponse
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: released
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `released`
+    metric: final_state_counts.released
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupResponse
+    op: equals
+    value: 1
+  - name: PFCPAssociationUpdateRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationUpdateRequest
+    op: equals
+    value: 1
+  - name: PFCPAssociationReleaseResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationReleaseResponse
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupRequest arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPAssociationUpdateResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationUpdateResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPAssociationReleaseRequest arrived
+    metric: rx_events.pfcp.PFCPAssociationReleaseRequest
+    op: greater_or_equal
+    value: 1
+  - name: all 2 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 2
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

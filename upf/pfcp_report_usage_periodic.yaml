@@ -1,0 +1,224 @@
+# N4/PFCP — Session Report, periodic Usage Reports.
+# 3GPP TS 29.244 §6.3.5, §7.5.8.3, §5.2.2.
+#
+# Runik is the UPF. With periodic reporting a URR produces a report every
+# measurement period, and each report for a URR carries the next UR-SEQN so
+# the SMF can tell a lost report from a duplicate. The UPF sends two reports
+# for URR 1, 200 ms apart: trigger PERIO, UR-SEQN 0 with 0.3 MB, then UR-SEQN
+# 1 with 0.5 MB. Each is a report of that period only; volumes are not
+# cumulative.
+#
+# Pair: smf_pfcp_session_report_responder is the SMF. Env: the SMF dials, the
+# UPF listens (runik/config/lab-pfcp.yaml). This flow is the listener: in a
+# suite it goes under `background_flows:`.
+#
+kind: flow
+name: upf_pfcp_report_usage_periodic
+description: UPF sends two periodic usage reports with rising sequence numbers
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: associated
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+
+  associated:
+    transitions:
+      # What a UPF needs before it can accept: the SMF's F-SEID, an uplink PDR
+      # asking it to choose the N3 F-TEID, a downlink PDR keyed on the UE
+      # address,
+      # and a FAR for each.
+      - event: pfcp.PFCPSessionEstablishmentRequest
+        target: measuring
+        actions:
+          - type: check
+            field: pfcp.cp_f_seid.seid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: pfcp.create_pdr.length
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[0].pdi.source_interface
+            op: equals
+            expected: 1
+          - type: check
+            field: pfcp.create_pdr[0].pdi.local_f_teid.ch
+            op: equals
+            expected: true
+          - type: check
+            field: pfcp.create_pdr[1].pdi.source_interface
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[1].pdi.ue_ip_address.ipv4_address
+            op: equals
+            expected: "10.45.0.2"
+          - type: check
+            field: pfcp.create_far.length
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionEstablishmentResponse
+            message_body: |
+              { "created_pdr": [
+                  { "pdr_id": {"value": 1},
+                    "local_f_teid": {"v4": true, "teid": "{{$b64_u32 4660}}", "ipv4_address": "{{$b64_ipv4 \"192.0.2.1\"}}"} } ] }
+
+  # Traffic flows for 200 ms; then there is something to report.
+  measuring:
+    on_timeout:
+      duration: 200ms
+      target: wait_first_ack
+      actions:
+        - type: send
+          message: PFCPSessionReportRequest
+          message_body: |
+            { "report_type": {"flags": 2},
+              "usage_report": [
+                { "urr_id": {"value": 1}, "ur_seqn": {"value": 0},
+                  "usage_report_trigger": {"flags": 1},
+                  "volume_measurement": { "tovol": true, "ulvol": true, "dlvol": true,
+                                          "total_volume": 300000, "uplink_volume": 120000, "downlink_volume": 180000 } } ] }
+
+  wait_first_ack:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionReportResponse
+        target: measuring_again
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+
+  measuring_again:
+    on_timeout:
+      duration: 200ms
+      target: wait_second_ack
+      actions:
+        - type: send
+          message: PFCPSessionReportRequest
+          message_body: |
+            { "report_type": {"flags": 2},
+              "usage_report": [
+                { "urr_id": {"value": 1}, "ur_seqn": {"value": 1},
+                  "usage_report_trigger": {"flags": 1},
+                  "volume_measurement": { "tovol": true, "ulvol": true, "dlvol": true,
+                                          "total_volume": 500000, "uplink_volume": 200000, "downlink_volume": 300000 } } ] }
+
+  wait_second_ack:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionReportResponse
+        target: reported
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+      # Out of order: this arrived before the SessionReportResponse.
+      - event: pfcp.PFCPSessionDeletionRequest
+        target: wait_second_ack_second
+        actions:
+          - type: send
+            message: PFCPSessionDeletionResponse
+
+  wait_second_ack_second:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionReportResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+
+  reported:
+    transitions:
+      - event: pfcp.PFCPSessionDeletionRequest
+        target: settle
+        actions:
+          - type: send
+            message: PFCPSessionDeletionResponse
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionEstablishmentResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionReportRequest sent 2x
+    metric: msg_types.tx.pfcp.PFCPSessionReportRequest
+    op: equals
+    value: 2
+  - name: PFCPSessionDeletionResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionDeletionResponse
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupRequest arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionEstablishmentRequest arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionReportResponse arrived
+    metric: rx_events.pfcp.PFCPSessionReportResponse
+    op: greater_or_equal
+    value: 2
+  - name: a PFCPSessionDeletionRequest arrived
+    metric: rx_events.pfcp.PFCPSessionDeletionRequest
+    op: greater_or_equal
+    value: 1
+  - name: all 9 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 9
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

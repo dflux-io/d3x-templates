@@ -51,7 +51,7 @@ fuzz:
   rate: 1.0
   budget: 300
   known_good:
-    flow: upf_pfcp_session_establish
+    flow: smf_pfcp_session_establish
     every_seconds: 0
 
 states:

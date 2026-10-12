@@ -1,0 +1,75 @@
+# N4/PFCP — Version Not Supported.
+# 3GPP TS 29.244 §7.2.2.1, §7.4.4.7.
+#
+# Runik is the SMF. It sends an Association Setup Request and the UPF answers
+# with a PFCP Version Not Supported Response instead of an Association Setup
+# Response. The flow claims exactly that message arrived; an Association Setup
+# Response — of any cause — is a different outcome and leaves the flow to time
+# out.
+#
+# The response is routed to this flow by the sequence number it echoes, which
+# is the only thing that ties it to the request.
+#
+# Pair: upf_pfcp_version_not_supported_responder. Env: the SMF dials, the UPF
+# listens (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: smf_pfcp_version_not_supported
+description: SMF is refused by a UPF that does not support its PFCP version
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - refused
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPVersionNotSupportedResponse
+        target: settle
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: refused
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `refused`
+    metric: final_state_counts.refused
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: a PFCPVersionNotSupportedResponse arrived
+    metric: rx_events.pfcp.PFCPVersionNotSupportedResponse
+    op: greater_or_equal
+    value: 1
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

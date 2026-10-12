@@ -36,7 +36,7 @@ description: UPF as the only real NF — N4 association gate, then a PFCP sessio
 steps:
   # --- gate: node-level association must come up first --------------------
   - name: association_setup
-    flow: upf_pfcp_association_setup
+    flow: smf_pfcp_association_setup
     repetitions: 1
     timeout: 10s
     stop_on_failure: true

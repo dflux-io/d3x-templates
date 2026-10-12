@@ -1,0 +1,255 @@
+# N4/PFCP loopback, SMF dials — Runik is the SMF AND the UPF.
+#
+# No real network function is involved. Each step runs one pair of flows in one
+# rk process: the step's `flow:` is the side that starts, the flow under
+# `background_flows:` is the listener it talks to. What is under test is the
+# pair of templates and Runik's own PFCP stack — this is how the smf/pfcp_* and
+# upf/pfcp_* flows are developed and kept working, and where to look for how a
+# procedure is meant to go before pointing one side at a real SMF or UPF.
+#
+# Every step: SMF dials, UPF listens. That is true of the reports too — the UPF
+# sends those requests, but back down the association the SMF opened. The steps
+# where the UPF opens the association are in pfcp_loopback_upf_dials.
+#
+# A step passes when BOTH flows pass: the starting flow's verdict, and the
+# listener's checks and final_checks (a failing listener fails the step as
+# "a check or a background flow failed").
+#
+# Run:
+#   rk run-suite -suite pfcp_loopback_smf_dials \
+#       -templates . -c <d3x>/runik/config/lab-pfcp.yaml
+#
+# No `success_when:` on any step, on purpose: it overrides the verdict, and a
+# step that reached its terminal with a failed check would then pass.
+
+kind: suite
+name: pfcp_loopback_smf_dials
+description: Runik on both ends of N4, SMF dials — every SMF/UPF flow pair that runs with the SMF as the PFCP client.
+steps:
+  # --- node level --------------------------------------------------------
+  - name: association_setup_features
+    flow: smf_pfcp_association_setup_features
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_responder
+
+  - name: pfd_provision
+    flow: smf_pfcp_pfd_provision
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_responder
+
+  - name: session_set_deletion
+    flow: smf_pfcp_session_set_deletion
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_responder
+
+  - name: graceful_release
+    flow: smf_pfcp_graceful_release_responder
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_graceful_release
+
+  - name: peer_restart_detected
+    flow: smf_pfcp_peer_restart_detected
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_restart_responder
+
+  - name: version_not_supported
+    flow: smf_pfcp_version_not_supported
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_version_not_supported_responder
+
+  # --- session lifecycle, SMF sends --------------------------------------
+  - name: pdu_session_establish
+    flow: smf_pfcp_pdu_session_establish
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: dl_tunnel_activate
+    flow: smf_pfcp_dl_tunnel_activate
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: an_release
+    flow: smf_pfcp_an_release
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: service_request
+    flow: smf_pfcp_service_request
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: qos_flow_add
+    flow: smf_pfcp_qos_flow_add
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: qos_flow_remove
+    flow: smf_pfcp_qos_flow_remove
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: qer_update
+    flow: smf_pfcp_qer_update
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: path_switch
+    flow: smf_pfcp_path_switch
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: predefined_rules
+    flow: smf_pfcp_predefined_rules
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: session_full_lifecycle
+    flow: smf_pfcp_session_full_lifecycle
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_establish_responder
+
+  - name: urr_query
+    flow: smf_pfcp_urr_query
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_urr_query_responder
+
+  - name: session_delete_usage
+    flow: smf_pfcp_session_delete_usage
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_session_delete_usage_responder
+
+  - name: load_control_info
+    flow: smf_pfcp_load_control_info
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_overload_responder
+
+  - name: retransmit
+    flow: smf_pfcp_retransmit
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_responder
+
+  # --- session reports, UPF sends ----------------------------------------
+  - name: report_downlink_data
+    flow: smf_pfcp_report_downlink_data_responder
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_report_downlink_data
+
+  - name: report_usage_volume
+    flow: smf_pfcp_session_report_responder
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_report_usage_volume
+
+  - name: report_usage_periodic
+    flow: smf_pfcp_session_report_responder
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_report_usage_periodic
+
+  - name: report_error_indication
+    flow: smf_pfcp_session_report_responder
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_report_error_indication
+
+  - name: report_inactivity
+    flow: smf_pfcp_session_report_responder
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_report_inactivity
+
+  - name: report_unknown_session
+    flow: smf_pfcp_report_unknown_session_responder
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_report_rejected
+
+  # --- refusals ----------------------------------------------------------
+  - name: reject_no_association
+    flow: smf_pfcp_session_establish_no_association
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_reject_no_association_responder
+
+  - name: reject_mandatory_ie
+    flow: smf_pfcp_session_establish_missing_fseid
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_reject_mandatory_ie_responder
+
+  - name: reject_rule_failure
+    flow: smf_pfcp_session_establish_invalid_pdr
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_reject_rule_failure_responder
+
+  - name: reject_unknown_session_modify
+    flow: smf_pfcp_session_modify_unknown_fseid
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_reject_unknown_session_responder
+
+  - name: reject_unknown_session_delete
+    flow: smf_pfcp_session_delete_unknown_fseid
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_reject_unknown_session_responder
+
+  - name: reject_no_resources
+    flow: smf_pfcp_session_establish_unknown_dnn
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - upf_pfcp_reject_no_resources_responder

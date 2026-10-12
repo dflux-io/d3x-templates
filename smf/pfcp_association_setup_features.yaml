@@ -1,0 +1,93 @@
+# N4/PFCP — Association Setup with function features, started by the SMF.
+# 3GPP TS 29.244 §6.2.6.2, §7.4.4.1 / §7.4.4.2.
+#
+# Runik is the SMF. It advertises CP Function Features LOAD (0x01: it supports
+# load control) and expects the UPF to answer with its Node ID and its UP
+# Function Features. The feature exchange is what both sides later rely on —
+# an SMF may only ask the UPF to allocate the F-TEID if the UPF said FTUP.
+#
+# The value expected back, 0x11010000, is BUCP + FTUP + EMPU: what
+# upf_pfcp_responder advertises. Against a real UPF, change the expected value
+# to that UPF's feature set.
+#
+# Pair: upf_pfcp_responder. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: smf_pfcp_association_setup_features
+description: SMF sets up the association advertising its CP features and reads the UPF's UP features
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - associated
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            message_body: |
+              { "cp_function_features": {"flags": 1} }
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.node_id
+            op: not_empty
+          - type: check
+            field: pfcp.up_function_features
+            op: equals
+            expected: 285278208
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: associated
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `associated`
+    metric: final_state_counts.associated
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: all 3 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 3
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

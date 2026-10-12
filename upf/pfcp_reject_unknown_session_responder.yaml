@@ -1,0 +1,55 @@
+# N4/PFCP — a UPF that refuses.
+# 3GPP TS 29.244 §7.5.5.1, §7.5.7.1, §8.2.1 (Cause).
+#
+# Runik is the UPF. It holds no sessions: every Session Modification Request
+# and Session Deletion Request is answered with Cause 65, "Session context not
+# found".
+#
+# It refuses unconditionally — it does not look at whether the request
+# deserves it. Its job is to give an SMF flow that exact answer to react
+# to; the cause values in the bodies are the spec's (the Cause enumeration
+# is not shifted like the others).
+#
+# It never leaves `serving` (`stopped` is never reached; a flow must name a
+# final state) and runs until the suite step that started it ends.
+#
+# Pair: smf_pfcp_session_modify_unknown_fseid,
+# smf_pfcp_session_delete_unknown_fseid. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: upf_pfcp_reject_unknown_session_responder
+description: UPF answers a Session Modification or Deletion with Session context not found
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: serving
+final_states:
+  - stopped
+
+states:
+  serving:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+      - event: pfcp.PFCPSessionModificationRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionModificationResponse
+            message_body: |
+              { "cause": {"value": 65} }
+      - event: pfcp.PFCPSessionDeletionRequest
+        target: serving
+        actions:
+          - type: send
+            message: PFCPSessionDeletionResponse
+            message_body: |
+              { "cause": {"value": 65} }

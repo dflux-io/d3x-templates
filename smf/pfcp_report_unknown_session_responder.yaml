@@ -1,0 +1,220 @@
+# N4/PFCP — an SMF that does not know the reported session.
+# 3GPP TS 29.244 §7.5.9.1, §8.2.1; TS 23.527.
+#
+# Runik is the SMF. To have the UPF report at all, a session must exist on the
+# UPF, so this flow sets one up — and then plays an SMF that has since lost it:
+# it answers the UPF's Session Report Request with Cause 65, "Session context
+# not found", and never deletes the session.
+#
+# The cause in the body is the spec value (the Cause enumeration is not
+# shifted like the others).
+#
+# Pair: upf_pfcp_report_rejected. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: smf_pfcp_report_unknown_session_responder
+description: SMF answers a Session Report with Session context not found
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - report_refused
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  { "pdr_id": {"value": 1}, "precedence": {"value": 255},
+                    "pdi": { "source_interface": 1, "local_f_teid": {"ch": true},
+                             "network_instance": {"value": "internet"}, "qfi": [{"value": 1}] },
+                    "outer_header_removal": {"description": 1},
+                    "far_id": {"value": 1}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] },
+                  { "pdr_id": {"value": 2}, "precedence": {"value": 255},
+                    "pdi": { "source_interface": 2, "network_instance": {"value": "internet"},
+                             "ue_ip_address": {"v4": true, "sd": true, "ipv4_address": "{{$b64_ipv4 \"10.45.0.2\"}}"} },
+                    "far_id": {"value": 2}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] }
+                ],
+                "create_far": [
+                  { "far_id": {"value": 1}, "apply_action": {"flags": 2},
+                    "forwarding_parameters": { "destination_interface": 2,
+                                               "network_instance": {"value": "internet"} } },
+                  { "far_id": {"value": 2}, "apply_action": {"flags": 4} }
+                ],
+                "create_qer": [
+                  { "qer_id": {"value": 1}, "gate_status": {"ul_gate": 1, "dl_gate": 1},
+                    "maximum_bitrate": {"ul_mbr": 100000, "dl_mbr": 100000}, "qfi": {"value": 1} }
+                ],
+                "create_urr": [
+                  { "urr_id": {"value": 1}, "measurement_method": {"flags": 2},
+                    "reporting_triggers": {"flags": 2},
+                    "volume_threshold": {"tovol": true, "total_volume": 1000000} }
+                ],
+                "pdn_type": {"value": 1}
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      # The UPF's answer names the N3 tunnel endpoint it chose for PDR 1 and
+      # its own F-SEID; without both the SMF cannot hand a tunnel to the gNB.
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_report
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.created_pdr[0].pdr_id.value
+            op: equals
+            expected: 1
+          - type: check
+            field: pfcp.created_pdr[0].local_f_teid.teid
+            op: equals
+            expected: 4660
+          - type: check
+            field: pfcp.created_pdr[0].local_f_teid.ipv4_address
+            op: equals
+            expected: "192.0.2.1"
+          - type: check
+            field: pfcp.up_f_seid.seid
+            op: greater_than
+            expected: 0
+      # Out of order: this arrived before the SessionEstablishmentResponse.
+      - event: pfcp.PFCPSessionReportRequest
+        target: wait_session_second
+        actions:
+          - type: check
+            field: pfcp.report_type.flags
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionReportResponse
+            message_body: |
+              { "cause": {"value": 65} }
+
+  wait_session_second:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.created_pdr[0].pdr_id.value
+            op: equals
+            expected: 1
+          - type: check
+            field: pfcp.created_pdr[0].local_f_teid.teid
+            op: equals
+            expected: 4660
+          - type: check
+            field: pfcp.created_pdr[0].local_f_teid.ipv4_address
+            op: equals
+            expected: "192.0.2.1"
+          - type: check
+            field: pfcp.up_f_seid.seid
+            op: greater_than
+            expected: 0
+
+  wait_report:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionReportRequest
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.report_type.flags
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionReportResponse
+            message_body: |
+              { "cause": {"value": 65} }
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: report_refused
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `report_refused`
+    metric: final_state_counts.report_refused
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: PFCPSessionEstablishmentRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentRequest
+    op: equals
+    value: 1
+  - name: PFCPSessionReportResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionReportResponse
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionEstablishmentResponse arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionReportRequest arrived
+    metric: rx_events.pfcp.PFCPSessionReportRequest
+    op: greater_or_equal
+    value: 1
+  - name: all 7 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 7
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

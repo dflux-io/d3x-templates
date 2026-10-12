@@ -37,7 +37,7 @@ steps:
       at_least_one_final_state: completed
 
   - name: session_establish
-    flow: upf_pfcp_session_establish
+    flow: smf_pfcp_session_establish
     repetitions: 1
     timeout: 10s
     stop_on_failure: true
@@ -64,7 +64,7 @@ steps:
       at_least_one_final_state: completed
 
   - name: session_establish_qer
-    flow: upf_pfcp_session_establish_qer
+    flow: smf_pfcp_session_establish_qer
     repetitions: 1
     timeout: 10s
     stop_on_failure: true

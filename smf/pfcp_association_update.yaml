@@ -1,13 +1,18 @@
-# N4/PFCP — Association Update (compliance).
-# 3GPP TS 29.244 §6.2.7 / §7.4.5.
+# PFCP Association Update (3GPP TS 29.244 §6.2.6.3 / §7.4.5).
 #
-# Runik (SMF) sets up a PFCP association, then sends a
-# PFCPAssociationUpdateRequest (NodeID auto-filled). The UPF replies with
-# PFCPAssociationUpdateResponse carrying Cause=Request accepted, asserted via
-# the pfcp.cause resolver. Exercises the new AssociationUpdate send.
+# After establishing the node-level association, Runik (CP function) issues a
+# PFCPAssociationUpdateRequest to the real UPF. The Association Update enricher
+# stamps our NodeID and a fresh sequence number; the request may carry updated
+# CP Function Features (here we advertise a feature flag via message_body to
+# exercise feature renegotiation). The UPF replies with
+# PFCPAssociationUpdateResponse carrying Cause "Request accepted".
+#
+# Spec-correct success = an AssociationUpdateResponse with Cause
+# "Request accepted" (TS 29.244 §8.2.1).
+
 kind: flow
 name: smf_pfcp_association_update
-description: SMF updates an existing PFCP association — expect Cause Request accepted
+description: SMF updates an established PFCP association against a real UPF (N4)
 category: functional
 type: client
 protocol: pfcp
@@ -26,7 +31,7 @@ states:
         actions:
           - type: send
             message: PFCPAssociationSetupRequest
-            peer: smf
+            peer: upf
 
   wait_assoc:
     on_timeout:

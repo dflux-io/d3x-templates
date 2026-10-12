@@ -1,0 +1,160 @@
+# N4/PFCP — Session Report refused: the SMF has no such session.
+# 3GPP TS 29.244 §6.3.5, §7.5.9.1, §8.2.1 (Cause "Session context not
+# found"); TS 23.527.
+#
+# Runik is the UPF. It reports usage for a session and the SMF answers Cause
+# "Session context not found" — the SMF lost the session (it restarted, or
+# released it while the release never reached the UPF). The UPF's part is to
+# accept that answer and drop the session locally; the flow claims the cause
+# and ends without waiting for a deletion that will not come.
+#
+# Pair: smf_pfcp_report_unknown_session_responder. Env: the SMF dials, the UPF
+# listens (runik/config/lab-pfcp.yaml). This flow is the listener: in a suite
+# it goes under `background_flows:`.
+#
+kind: flow
+name: upf_pfcp_report_rejected
+description: UPF sends a usage report for a session the SMF no longer knows and is told so
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - session_dropped
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: associated
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+
+  associated:
+    transitions:
+      # What a UPF needs before it can accept: the SMF's F-SEID, an uplink PDR
+      # asking it to choose the N3 F-TEID, a downlink PDR keyed on the UE
+      # address,
+      # and a FAR for each.
+      - event: pfcp.PFCPSessionEstablishmentRequest
+        target: measuring
+        actions:
+          - type: check
+            field: pfcp.cp_f_seid.seid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: pfcp.create_pdr.length
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[0].pdi.source_interface
+            op: equals
+            expected: 1
+          - type: check
+            field: pfcp.create_pdr[0].pdi.local_f_teid.ch
+            op: equals
+            expected: true
+          - type: check
+            field: pfcp.create_pdr[1].pdi.source_interface
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[1].pdi.ue_ip_address.ipv4_address
+            op: equals
+            expected: "10.45.0.2"
+          - type: check
+            field: pfcp.create_far.length
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionEstablishmentResponse
+            message_body: |
+              { "created_pdr": [
+                  { "pdr_id": {"value": 1},
+                    "local_f_teid": {"v4": true, "teid": "{{$b64_u32 4660}}", "ipv4_address": "{{$b64_ipv4 \"192.0.2.1\"}}"} } ] }
+
+  measuring:
+    on_timeout:
+      duration: 200ms
+      target: wait_report_ack
+      actions:
+        - type: send
+          message: PFCPSessionReportRequest
+          message_body: |
+            { "report_type": {"flags": 2},
+              "usage_report": [
+                { "urr_id": {"value": 1}, "ur_seqn": {"value": 0},
+                  "usage_report_trigger": {"flags": 2},
+                  "volume_measurement": { "tovol": true, "ulvol": true, "dlvol": true,
+                                          "total_volume": 1000000, "uplink_volume": 400000, "downlink_volume": 600000 } } ] }
+
+  wait_report_ack:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionReportResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Session context not found"
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: session_dropped
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `session_dropped`
+    metric: final_state_counts.session_dropped
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionEstablishmentResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionReportRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionReportRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupRequest arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionEstablishmentRequest arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionReportResponse arrived
+    metric: rx_events.pfcp.PFCPSessionReportResponse
+    op: greater_or_equal
+    value: 1
+  - name: all 8 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 8
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

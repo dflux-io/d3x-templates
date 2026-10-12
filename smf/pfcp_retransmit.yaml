@@ -1,0 +1,226 @@
+# N4/PFCP — retransmitted request.
+# 3GPP TS 29.244 §6.4 (reliable delivery), §7.2.2.2 (sequence number).
+#
+# PFCP runs on UDP, so a request whose answer is lost is sent again, unchanged
+# and with the same sequence number. The receiver must recognise it and answer
+# as it did the first time — for a Session Establishment that means the SAME UP
+# F-SEID, not a second session.
+#
+# Runik is the SMF. It sends the establishment with a fixed sequence number
+# (4242; the header is given in the body, so the engine does not assign one),
+# remembers the UP F-SEID, sends the identical request again 200 ms later, and
+# checks the UP F-SEID in the second answer is the first one.
+#
+# Pair: upf_pfcp_responder. Env: the SMF dials, the UPF listens
+# (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: smf_pfcp_retransmit
+description: SMF sends the same Session Establishment Request twice and expects the same session back, not a second one
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: wait_session
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: send
+            message: PFCPSessionEstablishmentRequest
+            message_body: |
+              {
+                "create_pdr": [
+                  { "pdr_id": {"value": 1}, "precedence": {"value": 255},
+                    "pdi": { "source_interface": 1, "local_f_teid": {"ch": true},
+                             "network_instance": {"value": "internet"}, "qfi": [{"value": 1}] },
+                    "outer_header_removal": {"description": 1},
+                    "far_id": {"value": 1}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] },
+                  { "pdr_id": {"value": 2}, "precedence": {"value": 255},
+                    "pdi": { "source_interface": 2, "network_instance": {"value": "internet"},
+                             "ue_ip_address": {"v4": true, "sd": true, "ipv4_address": "{{$b64_ipv4 \"10.45.0.2\"}}"} },
+                    "far_id": {"value": 2}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] }
+                ],
+                "create_far": [
+                  { "far_id": {"value": 1}, "apply_action": {"flags": 2},
+                    "forwarding_parameters": { "destination_interface": 2,
+                                               "network_instance": {"value": "internet"} } },
+                  { "far_id": {"value": 2}, "apply_action": {"flags": 4} }
+                ],
+                "create_qer": [
+                  { "qer_id": {"value": 1}, "gate_status": {"ul_gate": 1, "dl_gate": 1},
+                    "maximum_bitrate": {"ul_mbr": 100000, "dl_mbr": 100000}, "qfi": {"value": 1} }
+                ],
+                "create_urr": [
+                  { "urr_id": {"value": 1}, "measurement_method": {"flags": 2},
+                    "reporting_triggers": {"flags": 2},
+                    "volume_threshold": {"tovol": true, "total_volume": 1000000} }
+                ],
+                "pdn_type": {"value": 1},
+                "header": {"seid_flag": true, "sequence_number": 4242}
+              }
+
+  wait_session:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: t1_running
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.up_f_seid.seid
+            op: greater_than
+            expected: 0
+          - type: extract
+            extracts:
+              - { field: "pfcp.up_f_seid.seid", store: up_seid }
+
+  # The retransmission timer (T1), shortened.
+  t1_running:
+    on_timeout:
+      duration: 200ms
+      target: wait_session_again
+      actions:
+        - type: send
+          message: PFCPSessionEstablishmentRequest
+          message_body: |
+            {
+              "create_pdr": [
+                { "pdr_id": {"value": 1}, "precedence": {"value": 255},
+                  "pdi": { "source_interface": 1, "local_f_teid": {"ch": true},
+                           "network_instance": {"value": "internet"}, "qfi": [{"value": 1}] },
+                  "outer_header_removal": {"description": 1},
+                  "far_id": {"value": 1}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] },
+                { "pdr_id": {"value": 2}, "precedence": {"value": 255},
+                  "pdi": { "source_interface": 2, "network_instance": {"value": "internet"},
+                           "ue_ip_address": {"v4": true, "sd": true, "ipv4_address": "{{$b64_ipv4 \"10.45.0.2\"}}"} },
+                  "far_id": {"value": 2}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] }
+              ],
+              "create_far": [
+                { "far_id": {"value": 1}, "apply_action": {"flags": 2},
+                  "forwarding_parameters": { "destination_interface": 2,
+                                             "network_instance": {"value": "internet"} } },
+                { "far_id": {"value": 2}, "apply_action": {"flags": 4} }
+              ],
+              "create_qer": [
+                { "qer_id": {"value": 1}, "gate_status": {"ul_gate": 1, "dl_gate": 1},
+                  "maximum_bitrate": {"ul_mbr": 100000, "dl_mbr": 100000}, "qfi": {"value": 1} }
+              ],
+              "create_urr": [
+                { "urr_id": {"value": 1}, "measurement_method": {"flags": 2},
+                  "reporting_triggers": {"flags": 2},
+                  "volume_threshold": {"tovol": true, "total_volume": 1000000} }
+              ],
+              "pdn_type": {"value": 1},
+              "header": {"seid_flag": true, "sequence_number": 4242}
+            }
+
+  wait_session_again:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionEstablishmentResponse
+        target: wait_delete
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+          - type: check
+            field: pfcp.up_f_seid.seid
+            op: equals
+            expected: "{{vars.up_seid}}"
+          - type: send
+            message: PFCPSessionDeletionRequest
+
+  wait_delete:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPSessionDeletionResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: PFCPSessionEstablishmentRequest sent 2x
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentRequest
+    op: equals
+    value: 2
+  - name: PFCPSessionDeletionRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionDeletionRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionEstablishmentResponse arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentResponse
+    op: greater_or_equal
+    value: 2
+  - name: a PFCPSessionDeletionResponse arrived
+    metric: rx_events.pfcp.PFCPSessionDeletionResponse
+    op: greater_or_equal
+    value: 1
+  - name: all 6 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -35,7 +35,7 @@ description: Portable N4 smoke gate for the standalone UPF (heartbeat, associati
 steps:
   # --- gate: node-level association must come up first --------------------
   - name: association_setup
-    flow: upf_pfcp_association_setup
+    flow: smf_pfcp_association_setup
     repetitions: 1
     timeout: 10s
     stop_on_failure: true
@@ -44,7 +44,7 @@ steps:
 
   # --- node-level liveness -----------------------------------------------
   - name: heartbeat
-    flow: upf_pfcp_heartbeat
+    flow: smf_pfcp_heartbeat
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -53,7 +53,7 @@ steps:
 
   # --- session lifecycle (F-03): establish → modify → delete -------------
   - name: session_establish
-    flow: upf_pfcp_session_establish
+    flow: smf_pfcp_session_establish
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -61,7 +61,7 @@ steps:
       at_least_one_final_state: established
 
   - name: session_modify
-    flow: upf_pfcp_session_modify
+    flow: smf_pfcp_session_modify
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -69,7 +69,7 @@ steps:
       at_least_one_final_state: modified
 
   - name: session_delete
-    flow: upf_pfcp_session_delete
+    flow: smf_pfcp_session_delete
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -78,7 +78,7 @@ steps:
 
   # --- negative (F-12): modify on a bogus SEID must be rejected ----------
   - name: session_modify_unknown_seid
-    flow: upf_pfcp_session_modify_unknown_fseid
+    flow: smf_pfcp_session_modify_unknown_fseid
     repetitions: 1
     timeout: 10s
     stop_on_failure: false

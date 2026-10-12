@@ -1,0 +1,150 @@
+# N4/PFCP — a UPF for one PDU session's lifetime.
+# 3GPP TS 29.244 §6.3.2–§6.3.4, §7.5.2–§7.5.7, §5.5 (F-TEID allocation in the
+# UP function).
+#
+# Runik is the UPF. It answers the association setup (advertising BUCP, FTUP,
+# EMPU), then holds the SMF's Session Establishment Request to what a UPF needs
+# before it can forward: the CP F-SEID, an uplink PDR asking the UPF to choose
+# the F-TEID, a downlink PDR keyed on the UE address, a FAR for each. It
+# answers with the tunnel endpoint it "chose" for PDR 1 — TEID 0x1234 at
+# 192.0.2.1 — and its own UP F-SEID. Every Session Modification after that is
+# accepted as it comes; the Session Deletion ends the flow.
+#
+# This is the far end for the smf_pfcp_* session flows that share the standard
+# two-PDR establishment (smf_pfcp_pdu_session_establish and the ones built on
+# it).
+#
+# Env: the SMF dials, the UPF listens (runik/config/lab-pfcp.yaml). This flow
+# is the listener: in a suite it goes under `background_flows:`.
+#
+kind: flow
+name: upf_pfcp_session_establish_responder
+description: UPF accepts one PFCP session, returns the N3 F-TEID it chose, takes any modifications, and deletes it
+category: functional
+type: server
+protocol: pfcp
+nf: upf
+
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: pfcp.PFCPAssociationSetupRequest
+        target: associated
+        actions:
+          - type: send
+            message: PFCPAssociationSetupResponse
+            message_body: |
+              { "up_function_features": {"flags": 285278208} }
+
+  associated:
+    transitions:
+      # What a UPF needs before it can accept: the SMF's F-SEID, an uplink PDR
+      # asking it to choose the N3 F-TEID, a downlink PDR keyed on the UE
+      # address,
+      # and a FAR for each.
+      - event: pfcp.PFCPSessionEstablishmentRequest
+        target: established
+        actions:
+          - type: check
+            field: pfcp.cp_f_seid.seid
+            op: greater_than
+            expected: 0
+          - type: check
+            field: pfcp.create_pdr.length
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[0].pdi.source_interface
+            op: equals
+            expected: 1
+          - type: check
+            field: pfcp.create_pdr[0].pdi.local_f_teid.ch
+            op: equals
+            expected: true
+          - type: check
+            field: pfcp.create_pdr[1].pdi.source_interface
+            op: equals
+            expected: 2
+          - type: check
+            field: pfcp.create_pdr[1].pdi.ue_ip_address.ipv4_address
+            op: equals
+            expected: "10.45.0.2"
+          - type: check
+            field: pfcp.create_far.length
+            op: equals
+            expected: 2
+          - type: send
+            message: PFCPSessionEstablishmentResponse
+            message_body: |
+              { "created_pdr": [
+                  { "pdr_id": {"value": 1},
+                    "local_f_teid": {"v4": true, "teid": "{{$b64_u32 4660}}", "ipv4_address": "{{$b64_ipv4 \"192.0.2.1\"}}"} } ] }
+
+  established:
+    transitions:
+      - event: pfcp.PFCPSessionDeletionRequest
+        target: settle
+        actions:
+          - type: send
+            message: PFCPSessionDeletionResponse
+      - event: pfcp.PFCPSessionModificationRequest
+        target: established
+        actions:
+          - type: send
+            message: PFCPSessionModificationResponse
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionEstablishmentResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentResponse
+    op: equals
+    value: 1
+  - name: PFCPSessionDeletionResponse sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionDeletionResponse
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupRequest arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionEstablishmentRequest arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentRequest
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionDeletionRequest arrived
+    metric: rx_events.pfcp.PFCPSessionDeletionRequest
+    op: greater_or_equal
+    value: 1
+  - name: all 7 declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 7
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

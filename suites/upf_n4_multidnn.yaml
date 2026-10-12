@@ -21,7 +21,7 @@ name: upf_n4_multidnn
 description: Establish on a secondary DNN (UE-IP CHOOSE from the second pool); requires -dnn-pool sanity2.
 steps:
   - name: multi_dnn_establish
-    flow: upf_pfcp_session_multi_dnn
+    flow: smf_pfcp_session_multi_dnn
     repetitions: 1
     timeout: 10s
     stop_on_failure: true

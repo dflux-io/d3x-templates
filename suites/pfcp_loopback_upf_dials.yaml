@@ -1,0 +1,65 @@
+# N4/PFCP loopback, UPF dials — Runik is the UPF AND the SMF.
+#
+# The mirror of pfcp_loopback_smf_dials (read its header for how a step is put
+# together and what makes it pass). Here the UPF opens the association — TS
+# 29.244 §6.2.6.3 — so the UPF flow is the PFCP client and the SMF flow is the
+# listener under `background_flows:`.
+#
+# Run:
+#   rk run-suite -suite pfcp_loopback_upf_dials \
+#       -templates . -c <d3x>/runik/config/lab-pfcp-upf-dials.yaml
+
+kind: suite
+name: pfcp_loopback_upf_dials
+description: Runik on both ends of N4, UPF dials — the procedures a UPF starts on an association it opened itself.
+steps:
+  # --- node level, UPF starts --------------------------------------------
+  - name: association_setup
+    flow: upf_pfcp_association_setup
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - smf_pfcp_responder
+
+  - name: heartbeat
+    flow: upf_pfcp_heartbeat
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - smf_pfcp_responder
+
+  - name: association_update
+    flow: upf_pfcp_association_update
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - smf_pfcp_responder
+
+  - name: node_report_path_failure
+    flow: upf_pfcp_node_report_path_failure
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - smf_pfcp_responder
+
+  - name: node_report_path_recovery
+    flow: upf_pfcp_node_report_path_recovery
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - smf_pfcp_responder
+
+  - name: session_set_deletion
+    flow: upf_pfcp_session_set_deletion
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - smf_pfcp_responder
+
+  # --- refusals ----------------------------------------------------------
+  - name: association_setup_rejected
+    flow: upf_pfcp_association_setup_rejected
+    timeout: 15s
+    gen_subscriber: true
+    background_flows:
+      - smf_pfcp_reject_association_responder

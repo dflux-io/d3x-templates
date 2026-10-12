@@ -88,7 +88,7 @@ description: One-flow-per-probe abnormal/malformed PFCP probes; assert correct C
 steps:
   # --- node-level / tolerant probes: confirm UPF is alive and answers -----
   - name: pfcp_heartbeat_no_association
-    flow: upf_pfcp_heartbeat_no_association
+    flow: smf_pfcp_heartbeat_no_association
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
@@ -96,7 +96,7 @@ steps:
       at_least_one_final_state: tolerated
 
   - name: pfcp_heartbeat_recovery_stable
-    flow: upf_pfcp_heartbeat_recovery_stable
+    flow: smf_pfcp_heartbeat_recovery_stable
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
@@ -104,7 +104,7 @@ steps:
       at_least_one_final_state: tolerated
 
   - name: pfcp_association_setup_unknown_feature
-    flow: upf_pfcp_association_setup_unknown_feature
+    flow: smf_pfcp_association_setup_unknown_feature
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
@@ -113,7 +113,7 @@ steps:
 
   # --- session-level reject probes: assert the spec-correct Cause --------
   - name: pfcp_session_establish_missing_fseid
-    flow: upf_pfcp_session_establish_missing_fseid
+    flow: smf_pfcp_session_establish_missing_fseid
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -121,7 +121,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: pfcp_session_establish_no_association
-    flow: upf_pfcp_session_establish_no_association
+    flow: smf_pfcp_session_establish_no_association
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -129,7 +129,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: pfcp_session_establish_invalid_pdr
-    flow: upf_pfcp_session_establish_invalid_pdr
+    flow: smf_pfcp_session_establish_invalid_pdr
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -137,7 +137,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: pfcp_session_modify_unknown_fseid
-    flow: upf_pfcp_session_modify_unknown_fseid
+    flow: smf_pfcp_session_modify_unknown_fseid
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -145,7 +145,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: pfcp_session_modify_remove_nonexistent_rule
-    flow: upf_pfcp_session_modify_remove_nonexistent_rule
+    flow: smf_pfcp_session_modify_remove_nonexistent_rule
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -153,7 +153,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: pfcp_session_delete_unknown_fseid
-    flow: upf_pfcp_session_delete_unknown_fseid
+    flow: smf_pfcp_session_delete_unknown_fseid
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
@@ -164,7 +164,7 @@ steps:
   # Node-level Association Release: clears any association the probes opened so
   # the UPF is left clean. Runs last and always.
   - name: cleanup
-    flow: upf_pfcp_association_release
+    flow: smf_pfcp_association_release
     repetitions: 1
     timeout: 25s
     always_run: true

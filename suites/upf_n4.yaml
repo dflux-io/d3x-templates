@@ -47,7 +47,7 @@ description: Full N4 control-plane pass for the standalone UPF — lifecycle pos
 steps:
   # --- gate ---------------------------------------------------------------
   - name: association_setup
-    flow: upf_pfcp_association_setup
+    flow: smf_pfcp_association_setup
     repetitions: 1
     timeout: 10s
     stop_on_failure: true
@@ -56,7 +56,7 @@ steps:
 
   # --- positives ----------------------------------------------------------
   - name: heartbeat
-    flow: upf_pfcp_heartbeat
+    flow: smf_pfcp_heartbeat
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -64,7 +64,7 @@ steps:
       at_least_one_final_state: completed
 
   - name: session_establish
-    flow: upf_pfcp_session_establish
+    flow: smf_pfcp_session_establish
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -72,7 +72,7 @@ steps:
       at_least_one_final_state: established
 
   - name: session_modify
-    flow: upf_pfcp_session_modify
+    flow: smf_pfcp_session_modify
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -80,7 +80,7 @@ steps:
       at_least_one_final_state: modified
 
   - name: session_delete
-    flow: upf_pfcp_session_delete
+    flow: smf_pfcp_session_delete
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -89,7 +89,7 @@ steps:
 
   # --- rule lifecycles (QER / URR install + modify) ----------------------
   - name: session_qer                       # F-08
-    flow: upf_pfcp_session_qer
+    flow: smf_pfcp_session_qer
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -97,7 +97,7 @@ steps:
       at_least_one_final_state: modified
 
   - name: session_urr                       # F-07
-    flow: upf_pfcp_session_urr
+    flow: smf_pfcp_session_urr
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -106,7 +106,7 @@ steps:
 
   # --- negatives (assert the spec-correct reject cause) -------------------
   - name: neg_establish_missing_fseid       # F-11
-    flow: upf_pfcp_session_establish_missing_fseid
+    flow: smf_pfcp_session_establish_missing_fseid
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -114,7 +114,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: neg_modify_unknown_seid           # F-12
-    flow: upf_pfcp_session_modify_unknown_fseid
+    flow: smf_pfcp_session_modify_unknown_fseid
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -122,7 +122,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: neg_delete_unknown_seid           # F-13
-    flow: upf_pfcp_session_delete_unknown_fseid
+    flow: smf_pfcp_session_delete_unknown_fseid
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
@@ -130,7 +130,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: neg_establish_unknown_dnn         # F-14
-    flow: upf_pfcp_session_establish_unknown_dnn
+    flow: smf_pfcp_session_establish_unknown_dnn
     repetitions: 1
     timeout: 10s
     stop_on_failure: false
