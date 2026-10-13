@@ -3,7 +3,7 @@
 # Where upf_smoke / upf_n4 stop at "the UPF answers PFCP correctly", this suite
 # asks the question a UPF exists to answer: does a session it accepted actually
 # FORWARD. Runik is the SMF on N4 and the gNB user plane on N3, from one flow
-# (upf/dut_session_and_traffic.yaml — read its header for the claim and for
+# (smf/dut_session_and_traffic.yaml — read its header for the claim and for
 # what the env must provide).
 #
 # NEEDS A UPF WITH A USER PLANE. Against tinycore that is `-datapath userspace`

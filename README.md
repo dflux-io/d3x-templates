@@ -45,8 +45,8 @@ rk run-suite \
 | `nrf/` | Nnrf NFManagement, Discovery, AccessToken, Bootstrapping, subscriptions |
 | `ausf/` | Nausf UE authentication, SoR/UPU protection |
 | `udm/` | Nudm SDM / UECM / UEAU |
-| `smf/` | Nsmf PDU session; N4/PFCP with Runik as the SMF — association, session lifecycle, and the SMF's answers to a UPF's reports |
-| `upf/` | N4/PFCP with Runik as the UPF — responders, UPF-initiated association, node and session reports; UPF metrics scrapes; UPF as device under test |
+| `smf/` | Nsmf PDU session; N4/PFCP with Runik as the SMF — association, session lifecycle, the SMF's answers to a UPF's reports, and the UPF-under-test flow (SMF on N4 + gNB on N3) |
+| `upf/` | N4/PFCP with Runik as the UPF — responders, UPF-initiated association, node and session reports; UPF metrics scrapes |
 | `pcf/` | Npcf SM/UE/AM policy, policy authorization |
 | `nssf/` | Nnssf NS Selection / NSSAI availability |
 | `bsf/` | Nbsf management |
