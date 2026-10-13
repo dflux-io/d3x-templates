@@ -1,0 +1,90 @@
+# N4/PFCP — Association Setup Request without its Node ID.
+# 3GPP TS 29.244 §7.4.4.1 (Node ID is mandatory), §7.4.4.2, §8.2.1 (Cause).
+#
+# Runik is the SMF. The Node ID is the one IE an Association Setup Request
+# cannot do without: it is the identity the association is made with. This
+# flow leaves it out (`suppress_node_id`) and claims the UPF refuses with Cause
+# "Mandatory IE missing". The Association Setup Response has no Offending IE
+# (unlike the session answers), so the cause is all there is to assert.
+#
+# A UPF that answers "Request accepted" has set up an association with a peer
+# that has no identity; that is the failure this flow exists to show. One that
+# refuses with another cause, or does not answer, also fails it.
+#
+# Needs an rk that knows `suppress_node_id`; an older one refuses the file at
+# load (unknown send parameter) rather than sending a complete request.
+#
+# Pair: upf_pfcp_reject_missing_node_id_responder. Env: the SMF dials, the UPF
+# listens (runik/config/lab-pfcp.yaml).
+#
+kind: flow
+name: smf_pfcp_association_setup_no_node_id
+description: SMF sends an Association Setup Request without the mandatory Node ID — expects Mandatory IE missing
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_assoc
+        actions:
+          - type: send
+            message: PFCPAssociationSetupRequest
+            params:
+              suppress_node_id: true
+
+  wait_assoc:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationSetupResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Mandatory IE missing"
+
+  # Every check above sits at least one transition before the terminal. A UE
+  # whose check fails stops in the transition's TARGET state, so a check on
+  # the way into the terminal would leave a failed run counted as having
+  # ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: rejected
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `rejected`
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: the declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0
