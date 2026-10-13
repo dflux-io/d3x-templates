@@ -44,8 +44,29 @@ states:
       target: tolerated
     transitions:
       - event: pfcp.PFCPHeartbeatResponse
-        target: tolerated
+        target: settle
         actions:
           - type: check
             field: pfcp.recovery_timestamp
             op: not_empty
+
+  # The checks above sit one transition before the terminal. A UE whose check
+  # fails stops in the transition's TARGET state, so with the check on the way
+  # into `tolerated` a failed run would still count as having ended there — and a
+  # suite step that asks only for that final state would pass it.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: tolerated
+
+# END-OF-FLOW ASSERTIONS — what this flow claims, said by the flow.
+# `final_states` lists every way it can end; it claims `tolerated`.
+final_checks:
+  - name: the flow reached `tolerated`
+    metric: final_state_counts.tolerated
+    op: equals
+    value: 1
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

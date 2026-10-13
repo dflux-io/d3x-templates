@@ -75,6 +75,17 @@
 # establishment rather than emitting the spec reject, so the strict pin scores
 # FAIL. That is a UPF Cause-fidelity observation, NOT a core gap or a Runik RX bug.
 # pfcp_session_mod_unknown_seid passes (Cause "Session context not found").
+#
+# PFCP STEPS, 2026-10-13 (Open5GS 2.8.0 UPF, each flow alone): the three PFCP
+# probes now run the rule-bearing flows (smf_pfcp_session_establish_missing_fseid,
+# ..._establish_no_association, ..._modify_unknown_fseid); the bare ones they
+# replace are gone. What the paragraph above reads as the UPF "accepting our
+# bare establishment" was this corpus: the old missing-IE flow wrote
+# `suppress_cp_fseid` into message_body, where it is ignored, so it never sent
+# a request with the IE missing. Sent properly, Open5GS answers "Mandatory IE
+# missing" and the step passes; unknown SEID passes ("Session context not
+# found"); no-association FAILS — Open5GS does not answer a peer it has no
+# association with, so there is no cause to read.
 
 kind: suite
 name: smf-security
@@ -204,7 +215,7 @@ steps:
 
   # --- N4/PFCP reject probes (stateless) ---------------------------------
   - name: pfcp_session_est_missing_mandatory_ie
-    flow: smf_pfcp_session_est_missing_mandatory_ie
+    flow: smf_pfcp_session_establish_missing_fseid
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
@@ -212,7 +223,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: pfcp_session_est_no_association
-    flow: smf_pfcp_session_est_no_association
+    flow: smf_pfcp_session_establish_no_association
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
@@ -220,7 +231,7 @@ steps:
       at_least_one_final_state: rejected
 
   - name: pfcp_session_mod_unknown_seid
-    flow: smf_pfcp_session_mod_unknown_seid
+    flow: smf_pfcp_session_modify_unknown_fseid
     repetitions: 1
     timeout: 20s
     stop_on_failure: false

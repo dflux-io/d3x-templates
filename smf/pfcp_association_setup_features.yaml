@@ -6,9 +6,10 @@
 # Function Features. The feature exchange is what both sides later rely on —
 # an SMF may only ask the UPF to allocate the F-TEID if the UPF said FTUP.
 #
-# The value expected back, 0x11010000, is BUCP + FTUP + EMPU: what
-# upf_pfcp_responder advertises. Against a real UPF, change the expected value
-# to that UPF's feature set.
+# Which features come back is the UPF's business, so the flow asserts only
+# that it advertises some: a UPF that will allocate F-TEIDs or UE addresses
+# has to say so here. (upf_pfcp_responder advertises 0x11010000 — BUCP, FTUP,
+# EMPU; the Open5GS 2.8 UPF 0x10210004.)
 #
 # Pair: upf_pfcp_responder. Env: the SMF dials, the UPF listens
 # (runik/config/lab-pfcp.yaml).
@@ -54,8 +55,8 @@ states:
             op: not_empty
           - type: check
             field: pfcp.up_function_features
-            op: equals
-            expected: 285278208
+            op: greater_than
+            expected: 0
 
   # Every check above sits at least one transition before the terminal. A UE
   # whose check fails stops in the transition's TARGET state, so a check on

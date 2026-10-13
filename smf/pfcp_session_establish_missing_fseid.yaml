@@ -58,7 +58,7 @@ states:
                     "precedence": {"value": 255},
                     "pdi": {
                       "source_interface": 1,
-                      "local_f_teid": {"ch": true}
+                      "local_f_teid": {"ch": true, "v4": true}
                     },
                     "outer_header_removal": {"description": 0},
                     "far_id": {"value": 1}
@@ -81,9 +81,50 @@ states:
       target: failed
     transitions:
       - event: pfcp.PFCPSessionEstablishmentResponse
-        target: rejected
+        target: settle
         actions:
           - type: check
             field: pfcp.cause
             op: equals
             expected: "Mandatory IE missing"
+
+  # The checks above sit one transition before the terminal. A UE whose check
+  # fails stops in the transition's TARGET state, so with the check on the way
+  # into `rejected` a failed run would still count as having ended there — and a
+  # suite step that asks only for that final state would pass it.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: rejected
+
+# END-OF-FLOW ASSERTIONS — what this flow claims, said by the flow.
+# `final_states` lists every way it can end; it claims `rejected`.
+final_checks:
+  - name: the flow reached `rejected`
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: PFCPSessionEstablishmentRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPSessionEstablishmentRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: a PFCPSessionEstablishmentResponse arrived
+    metric: rx_events.pfcp.PFCPSessionEstablishmentResponse
+    op: greater_or_equal
+    value: 1
+  - name: all 2 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 2
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

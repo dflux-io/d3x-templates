@@ -85,6 +85,17 @@
 # pfcp_association_update and cleanup_pfcp_association_release (no UPF response —
 # enricher-fidelity gap). SBI connectivity to the SMF on 172.22.0.7:7777 is
 # independently proven by smf-security (18/20).
+#
+# PFCP STEPS, 2026-10-13 (Open5GS 2.8.0 UPF, each flow alone): the PFCP steps
+# now run the rule-bearing flows (smf_pfcp_association_setup, _heartbeat,
+# _session_establish, _session_modify, _session_delete); the bare "happy" ones
+# are gone. With the codec sending a two-octet Apply Action and a label-encoded
+# Network Instance, and F-TEID CHOOSE carrying V4, Open5GS accepts them:
+# association setup, session establish / modify / delete PASS. Heartbeat FAILS
+# as a standalone step — Open5GS does not answer a Heartbeat from a peer it has
+# no association with. Association update and release FAIL — Open5GS logs
+# "Not implemented PFCP message type[7]" / "[9]"; that is the answer to the
+# "no UPF response" recorded above, and it is not an enricher gap.
 
 kind: suite
 name: smf-compliance
@@ -95,7 +106,7 @@ steps:
   # session step sets up its own association, so if this can't succeed they
   # all fail. Run it first and abort on failure.
   - name: pfcp_association_setup
-    flow: smf_pfcp_association_setup_happy
+    flow: smf_pfcp_association_setup
     repetitions: 1
     timeout: 20s
     stop_on_failure: true
@@ -119,7 +130,7 @@ steps:
 
   # --- PFCP liveness + session procedures --------------------------------
   - name: pfcp_heartbeat_liveness
-    flow: smf_pfcp_heartbeat_liveness
+    flow: smf_pfcp_heartbeat
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
@@ -127,7 +138,7 @@ steps:
       at_least_one_final_state: completed
 
   - name: pfcp_session_establishment
-    flow: smf_pfcp_session_establishment_happy
+    flow: smf_pfcp_session_establish
     repetitions: 1
     timeout: 25s
     stop_on_failure: false
@@ -135,7 +146,7 @@ steps:
       at_least_one_final_state: established
 
   - name: pfcp_session_modification
-    flow: smf_pfcp_session_modification_happy
+    flow: smf_pfcp_session_modify
     repetitions: 1
     timeout: 25s
     stop_on_failure: false
@@ -143,12 +154,12 @@ steps:
       at_least_one_final_state: modified
 
   - name: pfcp_session_deletion
-    flow: smf_pfcp_session_deletion_happy
+    flow: smf_pfcp_session_delete
     repetitions: 1
     timeout: 25s
     stop_on_failure: false
     success_when:
-      at_least_one_final_state: released
+      at_least_one_final_state: deleted
 
   - name: pfcp_association_update
     flow: smf_pfcp_association_update

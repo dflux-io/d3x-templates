@@ -51,9 +51,11 @@ states:
   associated:
     transitions:
       # What a UPF needs before it can accept: the SMF's F-SEID, an uplink PDR
-      # asking it to choose the N3 F-TEID, a downlink PDR keyed on the UE
-      # address,
-      # and a FAR for each.
+      # asking it to choose an IPv4 N3 F-TEID (CH with V4: CHOOSE alone does
+      # not
+      # say which address family), a downlink PDR keyed on the UE address, and
+      # a
+      # FAR for each.
       - event: pfcp.PFCPSessionEstablishmentRequest
         target: forwarding
         actions:
@@ -71,6 +73,10 @@ states:
             expected: 1
           - type: check
             field: pfcp.create_pdr[0].pdi.local_f_teid.ch
+            op: equals
+            expected: true
+          - type: check
+            field: pfcp.create_pdr[0].pdi.local_f_teid.v4
             op: equals
             expected: true
           - type: check
@@ -240,10 +246,10 @@ final_checks:
     metric: rx_events.pfcp.PFCPSessionModificationRequest
     op: greater_or_equal
     value: 2
-  - name: all 10 declared checks ran
+  - name: all 11 declared checks ran
     metric: checks_total
     op: greater_or_equal
-    value: 10
+    value: 11
   - name: no check failed
     metric: checks_failed
     op: equals
