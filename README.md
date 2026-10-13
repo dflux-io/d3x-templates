@@ -55,7 +55,7 @@ rk run-suite \
 | `sbi/` | Generic SBI client/server and load |
 | `pfcp/` | PFCP client/server setup and fuzz |
 | `diameter/` | S6a / Gx / Rx |
-| `rest/` | SCP-admin REST |
+| `rest/` | SCP-admin REST; scrapes of a UPF's Prometheus endpoint (`upf_metrics_*`) |
 | `scp/` | SCP policy (Diameter lifecycle) |
 | `multinf/` | Multi-protocol (NGAP + Diameter on one UE) |
 | `suites/` | Multi-flow packs (compliance, security, smoke, load, PFCP loopback) |

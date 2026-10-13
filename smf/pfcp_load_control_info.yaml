@@ -51,7 +51,7 @@ states:
               {
                 "create_pdr": [
                   { "pdr_id": {"value": 1}, "precedence": {"value": 255},
-                    "pdi": { "source_interface": 1, "local_f_teid": {"ch": true},
+                    "pdi": { "source_interface": 1, "local_f_teid": {"ch": true, "v4": true},
                              "network_instance": {"value": "internet"}, "qfi": [{"value": 1}] },
                     "outer_header_removal": {"description": 1},
                     "far_id": {"value": 1}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] },

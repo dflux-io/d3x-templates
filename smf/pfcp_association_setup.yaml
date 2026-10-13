@@ -37,7 +37,7 @@ states:
       target: failed
     transitions:
       - event: pfcp.PFCPAssociationSetupResponse
-        target: associated
+        target: settle
         actions:
           - type: check
             field: pfcp.cause
@@ -46,3 +46,36 @@ states:
           - type: check
             field: pfcp.node_id
             op: not_empty
+
+  # The checks above sit one transition before the terminal. A UE whose check
+  # fails stops in the transition's TARGET state, so with the check on the way
+  # into `associated` a failed run would still count as having ended there — and a
+  # suite step that asks only for that final state would pass it.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: associated
+
+# END-OF-FLOW ASSERTIONS — what this flow claims, said by the flow.
+# `final_states` lists every way it can end; it claims `associated`.
+final_checks:
+  - name: the flow reached `associated`
+    metric: final_state_counts.associated
+    op: equals
+    value: 1
+  - name: PFCPAssociationSetupRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationSetupResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationSetupResponse
+    op: greater_or_equal
+    value: 1
+  - name: all 2 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 2
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0

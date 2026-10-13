@@ -54,7 +54,7 @@ states:
               {
                 "create_pdr": [
                   { "pdr_id": {"value": 1}, "precedence": {"value": 255},
-                    "pdi": { "source_interface": 1, "local_f_teid": {"ch": true},
+                    "pdi": { "source_interface": 1, "local_f_teid": {"ch": true, "v4": true},
                              "network_instance": {"value": "internet"}, "qfi": [{"value": 1}] },
                     "outer_header_removal": {"description": 1},
                     "far_id": {"value": 1}, "qer_id": [{"value": 1}], "urr_id": [{"value": 1}] },
@@ -88,6 +88,9 @@ states:
     transitions:
       # The UPF's answer names the N3 tunnel endpoint it chose for PDR 1 and
       # its own F-SEID; without both the SMF cannot hand a tunnel to the gNB.
+      # `greater_than 0`, not `not_empty`: the TEID is a number and `not_empty`
+      # passes on a zero one. The values are the UPF's to choose, so they are
+      # not pinned.
       - event: pfcp.PFCPSessionEstablishmentResponse
         target: wait_buffering
         actions:
@@ -101,12 +104,11 @@ states:
             expected: 1
           - type: check
             field: pfcp.created_pdr[0].local_f_teid.teid
-            op: equals
-            expected: 4660
+            op: greater_than
+            expected: 0
           - type: check
             field: pfcp.created_pdr[0].local_f_teid.ipv4_address
-            op: equals
-            expected: "192.0.2.1"
+            op: not_empty
           - type: check
             field: pfcp.up_f_seid.seid
             op: greater_than

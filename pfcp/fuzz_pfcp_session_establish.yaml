@@ -116,7 +116,7 @@ states:
                     "precedence": {"value": 255},
                     "pdi": {
                       "source_interface": 1,
-                      "local_f_teid": {"ch": true}
+                      "local_f_teid": {"ch": true, "v4": true}
                     },
                     "outer_header_removal": {"description": 0},
                     "far_id": {"value": 1}
