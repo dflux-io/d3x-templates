@@ -87,35 +87,40 @@
 #     numeric assertion below is `equals` or `greater_than`.
 #   * pkt_tx — no user-plane leg in this row.
 #   * zero checks evaluated — impossible: all three non-`failed` terminals are
-#     reached through transitions carrying checks (7, 3 and 2 respectively).
+#     reached through transitions carrying checks (6, 4 and 2 respectively).
 #
 # NOT A BARE TIMER: every non-`failed` terminal is reached by a message
 # arriving. Every on_timeout targets `failed`.
 #
-# NOT VALIDATED AGAINST A LIVE CORE. Authored 2026-08-12 against HEAD; another
-# agent holds Docker (xp-234) and this flow has never been executed. tinycore is
-# expected to reach `failed` on this row: nothing in tinycore/ references
-# PDU SESSION MODIFICATION REQUEST outside the codec, so it has no handler for
-# the message this flow sends — a capability gap, which is what the row is for.
+# TINYCORE'S ANSWER IS THE REJECT. Its SMF answers this UE-requested PDU SESSION
+# MODIFICATION REQUEST with a PDU SESSION MODIFICATION REJECT, 5GSM cause #32
+# "service option not supported", under the UE's PTI
+# (tinycore/dmf/split_5gsm_dispatch_test.go TestSplitModificationRequestAnsweredBySmf).
+# `modification_rejected` is a pass when that cause is #32 and the PTI matches.
+# A reject with any other cause fails the cause check. Silence times out to
+# `failed`. REG-350's claim — a MODIFICATION COMMAND whose PTI is the one the UE
+# allocated — stays true of the `modified` path, which is still a pass.
 
 kind: flow
 name: pdu_session_ue_requested_modify
-description: Registration, one PDU session, then a UE-requested PDU session modification; assert the COMMAND comes back under the PTI the UE allocated and complete the transaction (TS 24.501 §6.3.2.2)
+description: Registration, one PDU session, then a UE-requested PDU session modification. A MODIFICATION COMMAND under the UE's PTI passes (REG-350); TinyCore's MODIFICATION REJECT cause #32 under that PTI also passes.
 detail: |
   Registration and one PDU session establishment, then the UE opens a
   UE-requested PDU session modification (TS 24.501 §6.4.2.2) under a PTI it
   allocates itself.
 
-  TS 24.501 §6.4.2.3 makes the SMF answer by running the network-requested
-  procedure, and §6.3.2.2 obliges it to carry the UE's PTI in the PDU SESSION
-  MODIFICATION COMMAND. The flow asserts exactly that — the PTI in the command
-  read off the wire against the PTI the UE published when it built the request —
-  and then closes the transaction with a PDU SESSION MODIFICATION COMPLETE
-  under the same PTI.
+  Two answers pass. A PDU SESSION MODIFICATION COMMAND whose PTI is the one
+  the UE allocated is `modified` — REG-350 — and the flow closes it with a
+  PDU SESSION MODIFICATION COMPLETE under that PTI (TS 24.501 §6.3.2.2).
+  TinyCore's answer is the reject: a PDU SESSION MODIFICATION REJECT with
+  5GSM cause #32 and the same PTI is `modification_rejected`, and that is a
+  pass too. A reject with any other cause fails the cause check. Silence is
+  `failed`.
 
   A command delivered on the N2 road instead (PDU SESSION RESOURCE MODIFY
   REQUEST carrying the NAS-PDU) is equally conformant and is NOT decodable by
   this Runik; it gets its own terminal so the trace says which road was taken.
+  That terminal is not a pass.
 category: functional
 type: client
 protocol: ngap
@@ -222,7 +227,12 @@ states:
           # from the command rather than assuming one.
           - { type: send, message: PDUSessionModificationComplete }
 
-      # A REJECT is a real answer and its cause is the finding, not a timeout.
+      # TinyCore's answer. Cause #32 and the UE's PTI are a pass. Any other
+      # 5GSM cause fails the check below; silence is the timeout, `failed`.
+      # gsm_cause is the field on the inner reject. The check path is the one
+      # the other 5GSM reject rows use — stashInner5GSMHeader stores the
+      # header (sm_pti / sm_message_type / sm_pdu_session_id) and does not
+      # store a cause.
       - event: NASDownlinkTransport.DLNASTransport.PDUSessionModificationReject
         target: modification_rejected
         actions:
@@ -231,6 +241,8 @@ states:
           # transaction is not an answer to this one.
           - { type: check, field: ue.Params.sm_pti, op: equals, expected: "{{ue.Params.pdu_modify_pti}}" }
           - { type: check, field: ue.Params.pdu_modify_pti, op: greater_than, expected: 0 }
+          # #32 "service option not supported" (TS 24.501 §9.11.4.2).
+          - { type: check, field: nas.payload_container.n1_sm_message.gsm_cause, op: equals, expected: 32 }
 
       # THE OTHER CONFORMANT ROAD, which this Runik cannot read. See the header:
       # reaching here is OUR gap, not the core's.
@@ -254,32 +266,27 @@ any_state_transitions:
 # END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
 # ran correctly, so the row's claim is stated here rather than reassembled downstream.
 #
-# THE REGISTER'S CLAIM, VERBATIM: REG-350 (positive, expected_terminal: modified) — A
-# PDUSessionModificationCommand is received whose PTI equals the PTI the UE used in its
-# PDUSessionModificationRequest
+# REG-350's claim stays the `modified` path: a PDUSessionModificationCommand whose
+# PTI equals the PTI the UE used in its PDUSessionModificationRequest. TinyCore does
+# not take that path. Its answer is the reject (cause #32, same PTI), and
+# `modification_rejected` is a pass for that answer. `command_carried_on_n2` is the
+# command inside a PDU Session Resource Modify Request — a delivery this FSM cannot
+# read the PTI on — and it is not a pass. A reject with any other cause fails the
+# cause check (checks_failed), and silence is `failed`.
 #
-# REG-350: "A PDUSessionModificationCommand is received whose PTI equals the PTI the UE
-# used in its PDUSessionModificationRequest." Reading the PTI needs the NAS command
-# itself, which is what `modified` consumes. `command_carried_on_n2` is the command
-# delivered inside a PDU Session Resource Modify Request instead — a delivery TS 23.502
-# permits, and one where this FSM does not decode the inner PTI. It is a weaker
-# observation of the same procedure, not the row's claim, and it is the terminal to look
-# at if a core reads as failing this row. `modification_rejected` is a
-# PDUSessionModificationReject.
-#
-# Counts below are derived from this FSM's own transitions and from the clauses named
-# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
-# these flows can loop through a waiting state, and a floor cannot manufacture a failure
-# the way an equality can.
+# Both pass paths are pinned via or_metric, so requiring `modified` equals 1 does
+# not fail the reject path. checks_total is a FLOOR: the reject path runs 9 checks
+# (5 on the way to the probe, 4 on the reject) and the command path runs 11.
 final_checks:
-  - name: the flow reached `modified` — the terminal this row claims
+  - name: the flow reached `modified` (REG-350 command) or `modification_rejected` (cause #32)
     metric: final_state_counts.modified
     op: equals
     value: 1
+    or_metric: final_state_counts.modification_rejected
   - name: the run asserted something on the messages it saw
     metric: checks_total
     op: greater_or_equal
-    value: 11
+    value: 9
   - name: and no assertion failed
     metric: checks_failed
     op: equals

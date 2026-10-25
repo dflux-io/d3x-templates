@@ -1,0 +1,113 @@
+# PDU Session Modification Request for a PSI the AMF has no routing context for.
+#
+# tinycore/dmf/amf/ul_nas_sm_test.go
+# TestULNASTransport_ModificationRequestUnknownPsi_NotForwarded: the request
+# is sent back with 5GMM cause #90 (TS 24.501 §5.4.5.3.2 case e) and does not
+# create a session. The AMF keys that decision on the nested 5GSM message
+# not being an establishment request (handleULNASTransport), so the request
+# type IE is not what this row has to set. PDUSessionModificationRequest is
+# the message the enricher can send; it leaves request type unset, and that
+# still takes the no-routing path.
+#
+# THE EVENT NAME is the one the resolver emits when a DL NAS TRANSPORT carries
+# a non-zero 5GMM cause: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+# (runik/engine/event_resolver.go). The cause itself is nas.gmm_cause.
+# Silence is `failed` — the timeout is not a pass. A core that instead sets
+# up a session ends in `session_created`, which is not a pass either.
+kind: flow
+name: pdu_session_modification_unknown_psi
+description: Modification Request for a PSI with no routing context; expect 5GMM cause #90 and no session (YAML)
+detail: |
+  Registers a UE and does not establish a PDU session, then sends a PDU
+  Session Modification Request for PSI 5 — an id the AMF has no routing
+  context for.
+
+  The conformant answer is a DL NAS TRANSPORT with 5GMM cause #90 "payload
+  was not forwarded" (TS 24.501 §5.4.5.3.2 case e), echoed for that PSI.
+  That is the only pass. A PDU Session Resource Setup (a session was
+  created) is `session_created` and fails. Silence is `failed`.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - not_forwarded
+  - session_created
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration — the modification
+          # request below — so the FOR bit must say so (TS 24.501 §9.11.3.7).
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_not_forwarded
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # PSI 5 matches the unit test and is not a session this flow
+          # established. The enricher publishes it as pdu_modify_session_id.
+          - { type: send, message: PDUSessionModificationRequest, params: { pdu_session_id: 5 } }
+
+  wait_not_forwarded:
+    # §5.4.5.3.2 obliges the #90 answer. A timer is not that answer.
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+        target: not_forwarded
+        actions:
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 90 }
+          - { type: check, field: nas.pdu_session_id, op: equals, expected: "{{ue.Params.pdu_modify_session_id}}" }
+      # The bug this row exists for: the AMF created a session instead of
+      # sending the request back. Not a pass.
+      - event: PDUSessionResourceSetupRequest
+        target: session_created
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# The pass is cause #90 (`not_forwarded`). `session_created` is the core
+# establishing a session for a modification of a PSI it does not route, and
+# `failed` is silence or a transport error. Neither is a pass.
+final_checks:
+  - name: the AMF sent the modification back with 5GMM cause #90 (`not_forwarded`)
+    metric: final_state_counts.not_forwarded
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 5
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0
