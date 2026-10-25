@@ -33,9 +33,10 @@ detail: |
   This flow therefore does NOT include a wait_dereg_accept state. It transitions
   directly from sending the switch-off DeregistrationRequest to waiting for the
   UEContextReleaseCommand, replying UEContextReleaseComplete. Success terminal is
-  `released`. If a DeregistrationAccept were (incorrectly) the only reaction, the
-  release wait would time out and the flow would fail — which is the desired
-  compliance signal.
+  `released`. A DeregistrationAccept is its own terminal, `accepted_anyway`:
+  §5.5.2.2.2 says the AMF sends one only "if the De-registration type IE does
+  not indicate 'switch off'", so receiving one is the finding, and the flow
+  fails on it rather than counting it as a completed de-registration.
 category: negative
 type: client
 protocol: ngap
@@ -43,6 +44,7 @@ nf: gnb
 initial_state: idle
 final_states:
   - released
+  - accepted_anyway
   - failed
 
 states:
@@ -111,13 +113,18 @@ states:
             params:
               switch_off: true
 
-  # Switch-off de-registration is "processed" when the AMF either releases
-  # the NGAP context (UEContextReleaseCommand — the strict 24.501 §5.5.2.2
-  # behavior, no accept) OR returns a DeregistrationAccept. The latter is a
-  # minor spec deviation but the common real-AMF behavior (Open5GS sends a
-  # DeregistrationAccept even for switch-off); accepting both keeps the flow
-  # asserting "the AMF accepted the switch-off" without failing on that
-  # debatable nuance.
+  # TS 24.501 §5.5.2.2.2, verbatim: "When the DEREGISTRATION REQUEST message is
+  # received by the AMF, the AMF shall send a DEREGISTRATION ACCEPT message to
+  # the UE, if the De-registration type IE does not indicate 'switch off'.
+  # Otherwise, the procedure is completed when the AMF receives the
+  # DEREGISTRATION REQUEST message." The only conformant reaction here is the
+  # NGAP release (UEContextReleaseCommand). This state used to route a
+  # DeregistrationAccept to `released` too, calling it a "debatable nuance";
+  # the clause is not debatable, and REG-175's criterion is "no
+  # DeregistrationAccept arrives". An ACCEPT now lands on `accepted_anyway`,
+  # which no success criterion names. An AMF that sends the ACCEPT sends it
+  # BEFORE its release command (it must, or the UE never sees it), so the
+  # ACCEPT is the first thing this state sees from such an AMF.
   wait_release:
     on_timeout:
       duration: 10s
@@ -132,7 +139,7 @@ states:
           - type: send
             message: UEContextReleaseComplete
       - event: NASDownlinkTransport.DeregistrationAccept
-        target: released
+        target: accepted_anyway
 
 any_state_transitions:
   - event: Error
@@ -155,6 +162,12 @@ final_checks:
     metric: final_state_counts.released
     op: equals
     value: 1
+  # REG-175's own words: "no DeregistrationAccept arrives". Counted on the
+  # identity of the NAS message, so it holds whichever state was waiting.
+  - name: no DEREGISTRATION ACCEPT arrived (TS 24.501 §5.5.2.2.2 — none for a switch-off)
+    metric: rx_events.NASDownlinkTransport.DeregistrationAccept
+    op: equals
+    value: 0
   # What this flow sent. Exact: each of these is a `send` action on the
   # path to the terminal above, so a count that moved means the flow did
   # not walk the path it claims to have walked.
