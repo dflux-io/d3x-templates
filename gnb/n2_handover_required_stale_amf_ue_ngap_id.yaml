@@ -1,16 +1,21 @@
-# N2 HandoverRequired with NO PDU session to relocate (3GPP TS 38.413 §8.4.1).
-# Registers (no PDU session), then sends HandoverRequired. In a single-gNB lab
-# the AMF cannot find a target and reports HandoverPreparationFailure /
-# ErrorIndication — exercised here without any PDU session in the request.
+# N2 HandoverRequired carrying a stale AMF-UE-NGAP-ID (TS 38.413 §10.6 / §10.4).
+# Registers, then sends HandoverRequired with amf_ue_ngap_id 8388607 — not this
+# UE's id. REG-507 accepts an ErrorIndication echoing those AP IDs, or a silent
+# discard. Neither may produce a HandoverCommand, and the association stays up.
+# Tinycore's handleHandoverRequired returns without a response when the id
+# matches no UE, so the discard leg is the one this core takes. The absence
+# window used to time out into `failed`, which Runik counts as a failed flow
+# even though the criterion permits the discard. The probe after that window
+# is what separates a discard from a dead association.
 kind: flow
 name: n2_handover_required_stale_amf_ue_ngap_id
-description: HandoverRequired with a stale AMF-UE-NGAP-ID; assert graceful prep failure (YAML)
+description: HandoverRequired with a stale AMF-UE-NGAP-ID; no HandoverCommand, association stays up (YAML)
 category: negative
 type: client
 protocol: ngap
 nf: gnb
 initial_state: idle
-final_states: [prep_failed, handed_over, failed]
+final_states: [prep_failed, discarded, handed_over, failed]
 states:
   idle:
     transitions:
@@ -46,11 +51,49 @@ states:
             message_body: |
               { "amf_ue_ngap_id": 8388607 }
   wait_ho_reaction:
-    on_timeout: { duration: 12s, target: failed }
+    # Silence is not yet a terminal. REG-507's discard is only a pass once a
+    # later uplink on the real UE ids still draws a downlink.
+    on_timeout:
+      duration: 12s
+      target: prove_association_up
+      actions:
+        - { type: send, message: PDUSessionEstablishmentRequest }
     transitions:
       - { event: HandoverPreparationFailure, target: prep_failed }
       - { event: ErrorIndication, target: prep_failed }
       - { event: HandoverCommand, target: handed_over }
+      # Releasing the live UE is not "the association stays up". Answer the
+      # command (the default would) and fail the row.
+      - event: UEContextReleaseCommand
+        target: failed
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+  prove_association_up:
+    on_timeout: { duration: 8s, target: failed }
+    transitions:
+      # Any downlink for this UE is the association still serving it. The
+      # session accept is what this lab's AMF sends; a reject or a §5.4.5.3.2
+      # #90 is the same proof when the SMF refuses the probe.
+      - event: PDUSessionResourceSetupRequest
+        target: discarded
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentAccept
+            - NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+            - NASDownlinkTransport.5GMMStatus
+        target: discarded
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+      - { event: HandoverCommand, target: handed_over }
+      - event: UEContextReleaseCommand
+        target: failed
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+      - { event: ErrorIndication, target: failed }
 any_state_transitions:
   - { event: Error, target: failed }
 
@@ -62,36 +105,28 @@ any_state_transitions:
 # or the message is silently discarded; in neither case is a HandoverCommand produced,
 # and the association stays up.
 #
-# NO PASS TERMINAL IS PINNED. REG-507 declares `expected_terminal: null` and accepts "An
-# ErrorIndication is received on the source association echoing the offending AP ID(s),
-# OR THE MESSAGE IS SILENTLY DISCARDED". The discard has no terminal in this FSM —
-# wait_ho_reaction's timeout targets `failed` — so pinning `prep_failed` would fail a
-# core doing the thing §10.6 also permits. What the criterion states without an
-# alternative is its second clause: "in neither case is a HandoverCommand produced".
-# That is `handed_over`, and it is pinned to zero. Turning the discard branch into an
-# outcome needs a liveness probe after the absence window, which this flow does not
-# have.
+# NO PASS TERMINAL IS PINNED. REG-507 declares `expected_terminal: null` and accepts an
+# ErrorIndication OR a silent discard. Pinning `prep_failed` would fail a core that
+# discards, which §10.6 also permits. `discarded` is that discard, and only after
+# prove_association_up saw a downlink for the real UE — a timer alone is not the
+# association staying up. What the criterion rules out without an alternative is a
+# HandoverCommand (`handed_over` equals 0) and a dead association (`failed` equals 0).
 #
 # Counts below are derived from this FSM's own transitions and from the clauses named
-# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
-# these flows can loop through a waiting state, and a floor cannot manufacture a failure
-# the way an equality can.
+# above; no core was contacted. checks_total is a FLOOR, not an equality.
 #
-# THE FLOOR IS NOW PRESENT, AND IT IS WHAT MAKES THE `checks_failed` LINE MEAN ANYTHING.
-# `checks_failed equals 0` is true of a run that evaluated NOTHING — a core that never
-# answered leaves both inline checks unexecuted and satisfies it vacuously. This FSM
-# declares exactly two `check` actions on the path to the handover: `amf_ue_ngap_id`
-# not_empty in wait_auth_request, and `ue.SecCtx` not_empty in wait_security_mode. Both
-# lie on the single route to wait_ho_reaction, so any run that got far enough to send
-# HandoverRequired at all has run both, and 2 is the floor. Neither state loops, so the
-# count cannot exceed 2 either — but it stays a floor per the paragraph above.
-#
-# NO POSITIVE TERMINAL PIN, DELIBERATELY — see the paragraph above on REG-507's
-# `expected_terminal: null`. With the discard branch unpinnable, this floor plus the
-# `handed_over` zero is the whole of what the row can assert today.
+# THE FLOOR IS 2, THE PREAMBLE. `amf_ue_ngap_id` not_empty and `ue.SecCtx` not_empty
+# both lie on the only route to the handover. The discard path adds a third check
+# (`amf_ue_ngap_id` on the probe); the ErrorIndication path does not, so 2 is the
+# minimum and the floor stays 2. `checks_failed equals 0` is true of a run that
+# evaluated nothing, which is why the floor is here.
 final_checks:
   - name: no UE ended in `handed_over` — no HANDOVER COMMAND was produced
     metric: final_state_counts.handed_over
+    op: equals
+    value: 0
+  - name: no UE ended in `failed` — the association or the preamble died
+    metric: final_state_counts.failed
     op: equals
     value: 0
   - name: both pre-handover checks actually ran — `checks_failed` alone is true of a run that evaluated nothing
