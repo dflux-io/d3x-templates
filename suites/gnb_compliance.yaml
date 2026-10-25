@@ -166,6 +166,26 @@ steps:
     success_when:
       at_least_one_final_state: handled
 
+  # Modification Request for a PSI with no routing context: 5GMM cause #90,
+  # and no session is created. Silence is not a pass.
+  - name: pdu_session_modification_unknown_psi
+    flow: pdu_session_modification_unknown_psi
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: not_forwarded
+
+  # Second initial-request establishment on a PSI that already has a session.
+  # The pass is the new Establishment Accept for that PSI.
+  - name: pdu_session_duplicate_initial_request
+    flow: pdu_session_duplicate_initial_request
+    repetitions: 1
+    timeout: 45s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: accepted
+
   - name: deregistration_switchoff
     flow: deregistration_switchoff
     repetitions: 1

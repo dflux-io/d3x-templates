@@ -1,0 +1,146 @@
+# A second PDU Session Establishment Request with request type "initial request"
+# on a PSI that already has a session.
+#
+# tinycore/dmf/split_5gsm_dispatch_test.go
+# TestSplitDuplicateInitialRequestReleasesOldSession: the core accepts the
+# new request and releases the old session first. The release cause
+# REL_DUE_TO_DUPLICATE_SESSION_ID is the Nsmf_PDUSession ReleaseSMContext
+# cause (TS 29.502). Nothing in that release is an NGAP or NAS message to
+# the gNB — the UE has already dropped the old session locally — so this
+# flow does not assert that string.
+#
+# What the gNB does see is the new PDU SESSION ESTABLISHMENT ACCEPT for the
+# same PSI, carried the way tinycore always carries one: the per-item NAS-PDU
+# of a PDU SESSION RESOURCE SETUP REQUEST. `nas.*` does not read that IE
+# (extractNasPdu only sees the message-level NAS-PDU, which this message
+# leaves empty). stashInner5GSMHeader writes sm_message_type /
+# sm_pdu_session_id from the 5GSM header inside it, and 0xC2 (194) is
+# PDU SESSION ESTABLISHMENT ACCEPT. The pass is that second setup.
+#
+# EnrichPDUSessionEstablishmentRequest hardcodes request type "initial
+# request". Sending it again with the same pdu_session_id is the probe.
+# A reject, or silence, is `failed` — not a pass.
+kind: flow
+name: pdu_session_duplicate_initial_request
+description: Second initial-request establishment on an in-use PSI; expect a new Establishment Accept for that PSI (YAML)
+detail: |
+  Registers a UE, establishes PDU session 1, then sends a second PDU Session
+  Establishment Request with request type "initial request" for that same PSI.
+
+  TinyCore releases the old session at the SMF and accepts the new one. The
+  gNB-visible pass is a PDU SESSION RESOURCE SETUP REQUEST for PSI 1 whose
+  NAS-PDU is a PDU SESSION ESTABLISHMENT ACCEPT. The SBI release cause is not
+  on a message this flow receives, and it is not asserted. A reject or no
+  answer is `failed`.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - accepted
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_first_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_first_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_second_accept
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # Same PSI, request type "initial request" (the enricher hardcodes
+          # it). The AMF must release the old session and accept this one.
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_second_accept:
+    # The new accept is the pass. A core that rejects, or says nothing, has
+    # not accepted the duplicate initial request.
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: accepted
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          # 0xC2 = 194, PDU SESSION ESTABLISHMENT ACCEPT. Written from the
+          # 5GSM header of the per-item NAS-PDU.
+          - { type: check, field: ue.Params.sm_message_type, op: equals, expected: 194 }
+          - { type: check, field: ue.Params.sm_pdu_session_id, op: equals, expected: 1 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+      - event:
+          or:
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# The pass is the new Establishment Accept for PSI 1 (`accepted`). A reject
+# lands on `failed` directly; silence is the timeout, also `failed`.
+final_checks:
+  - name: the second initial request was accepted (`accepted`)
+    metric: final_state_counts.accepted
+    op: equals
+    value: 1
+  - name: two PDU SESSION RESOURCE SETUP REQUESTs arrived (the original and the new accept)
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 2
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 10
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0
