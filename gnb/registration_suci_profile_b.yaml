@@ -1,0 +1,142 @@
+# Initial registration with a Profile B SUCI (TS 33.501 Annex C).
+#
+# Protection scheme identifier 2 is Profile B: ECIES on secp256r1 (P-256).
+# The UE conceals the MSIN under the home network's public key and sends
+# that scheme output, not the clear MSIN. Scheme identifiers, as already
+# quoted in registration_null_scheme_suci.yaml from Annex C: null-scheme
+# 0x0, Profile A 0x1, Profile B 0x2.
+#
+# WHAT THIS FLOW SENDS
+# --------------------
+# InitialUEMessage with protection_scheme 2, hn_pubkey_id 2, and hn_pubkey.
+# hn_pubkey is the hex of the 65-byte uncompressed SEC1 point (0x04 || X ||
+# Y). The id is 2, not the default 0, so a dropped param cannot look like
+# this flow on the wire.
+#
+# The public key is a test vector, not a production home-network key. The
+# matching private key is only in d3x
+# runik/engine/enrichers_suci_registration_flows_test.go, marked as a test
+# vector. This file carries the public key and not the private key.
+#
+# NOT IN A LAB SUITE
+# ------------------
+# Not listed in gnb-compliance, gnb-security, gnb-sms, pentest-n2, or any
+# other suite scripts/e2e-gnb-run.sh runs. The lab dpf is started without
+# -hn-key, so a lab run would reject this SUCI until the core holds the
+# matching private key. Do not add it to those suites without that key.
+#
+# The procedure is the short successful registration (the same states as
+# registration_accept_t3512.yaml, without that flow's T3512 checks): an
+# Authentication Request, a Security Mode Command, a Registration Accept
+# inside Initial Context Setup, then Registration Complete. A core that
+# cannot deconceal does not reach `registered`.
+#
+# Terminals are (registered, failed) only and every on_timeout targets `failed`.
+
+kind: flow
+name: registration_suci_profile_b
+description: Initial registration with a Profile B (P-256) concealed SUCI (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params:
+              protection_scheme: 2
+              hn_pubkey_id: 2
+              hn_pubkey: "04e2d0b9325651909b76efe11c26775bffc3d95cdd84fddf68b287e3801769abe8615b2f19a8675024c75206134ded943c47ff029dda48ba007be96eb9cf0664b1"
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: registered
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: check, field: nas.guti, op: ie_present }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — a successful initial registration. Counts are
+# derived from the FSM, not measured against a core.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's
+# with a floor, because a retransmission the spec permits must not fail a run
+# that otherwise did what it claimed.
+final_checks:
+  - name: the flow reached `registered`
+    metric: final_state_counts.registered
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: all four declared checks ran
+    metric: checks_total
+    op: equals
+    value: 4
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0
