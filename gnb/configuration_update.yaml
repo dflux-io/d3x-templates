@@ -5,9 +5,23 @@
 # allowed/configured NSSAI, TAI list, or other UE configuration. When the command
 # requests an acknowledgement, the UE replies with ConfigurationUpdateComplete.
 #
-# Open5GS commonly issues a ConfigurationUpdateCommand for GUTI reallocation right
-# after sending RegistrationAccept. Because the procedure is OPTIONAL, the flow
-# treats a timeout (no command arrives) as a valid, successful outcome.
+# THIS FLOW IS REG-190'S, AND REG-190 CLAIMS THE COMMAND: it passes only on
+# `complete` (see final_checks). The procedure itself is optional after an initial
+# registration — TS 24.501 §5.4.4.1 mandates a GUTI reallocation by it only after a
+# paging-triggered service request, and §5.5.1.2.4 lets the AMF hand the new 5G-GUTI
+# out in REGISTRATION ACCEPT instead — so an AMF that ends here in `no_update` has not
+# misbehaved, but it has not done what REG-190 is about either, and this flow scores
+# that red.
+#
+# This header used to say a timeout was "a valid, successful outcome" while the
+# final_checks pinned `complete`, so the flow contradicted itself. The compliance
+# suite's view, where either outcome IS a pass, is its own flow:
+# configuration_update_optional, which is what gnb-compliance runs. Reporting
+# `no_update` here as `unsupported` (as ue_context_suspend does for its refusal)
+# would be the honest REG-190 answer, but it needs a registration probe so the
+# terminal is message-reached, plus a matching entry in Runik's corpus table
+# (runik/engine/verdict_unsupported_test.go in dflux-io/d3x), so it is left for a
+# change that lands in both repos together.
 
 kind: flow
 name: configuration_update
@@ -22,11 +36,11 @@ detail: |
   ConfigurationUpdateCommand inside an NGAP NASDownlinkTransport. On receipt it
   replies with ConfigurationUpdateComplete and reaches the `complete` terminal.
 
-  This procedure is OPTIONAL. Open5GS frequently sends the command for GUTI
-  reallocation immediately after RegistrationAccept, but an AMF is not required
-  to. The wait state therefore routes its on_timeout to the `no_update` terminal,
-  which is also a success state: an AMF that performs no reconfiguration is fully
-  spec-compliant.
+  The procedure is OPTIONAL after an initial registration, so an AMF that sends
+  no command is spec-compliant. This flow, though, carries REG-190's claim that
+  the 5G-GUTI is reallocated by the command, so it passes only on `complete`;
+  the wait state's on_timeout reaches `no_update`, which fails the row. The
+  either-outcome view is configuration_update_optional.
 category: functional
 type: client
 protocol: ngap
@@ -94,7 +108,8 @@ states:
             message: RegistrationComplete
 
   wait_config_update:
-    # Optional procedure: no command within the window is a valid outcome.
+    # Optional procedure, but REG-190 claims it: no command within the window ends in
+    # `no_update`, which this flow's final_checks score as a fail.
     on_timeout:
       duration: 10s
       target: no_update

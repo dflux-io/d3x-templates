@@ -9,9 +9,9 @@
 # Each step asserts, via success_when.at_least_one_final_state, that the flow
 # reached its SPEC-CORRECT terminal (e.g. a negative flow must reach its
 # reject/release terminal, not merely "not failed"). Steps where more than
-# one terminal is spec-valid (configuration_update, handover_source) omit
-# success_when and fall back to the engine default (any non-"failed"
-# terminal passes).
+# one outcome is spec-valid (configuration_update, handover_source) omit
+# success_when and are graded by the flow's own verdict, which is where the
+# passing outcomes and the checks behind each one are declared.
 #
 # Run:
 #   ./bin/rk run-suite -suite gnb-compliance \
@@ -121,11 +121,17 @@ steps:
     success_when:
       at_least_one_final_state: context_resumed
 
-  # configuration_update: complete OR no_update are both spec-valid
-  # (Open5GS may or may not send a Configuration Update Command), so no
-  # success_when — any non-"failed" terminal passes.
+  # configuration_update: the procedure is optional after an initial
+  # registration (TS 24.501 §5.4.4.1, §5.5.1.2.4), so this step runs
+  # configuration_update_optional. It passes whether or not the AMF sends a
+  # command, as long as any command that does arrive is protected and verifies,
+  # and the AMF then answers a protected DEREGISTRATION REQUEST, which proves it
+  # still holds the registration. The `configuration_update` flow is REG-190's.
+  # REG-190 claims the command itself, so that flow fails when no command
+  # arrives. No success_when here: it would override the verdict, and with it
+  # every check that gives the step its meaning.
   - name: configuration_update
-    flow: configuration_update
+    flow: configuration_update_optional
     repetitions: 1
     timeout: 30s
     stop_on_failure: false

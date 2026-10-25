@@ -1,0 +1,264 @@
+# AMF-initiated Generic UE Configuration Update as an OPTIONAL procedure
+# (3GPP TS 24.501 §5.4.4). This is the gnb-compliance view of the procedure.
+#
+# WHY THIS IS A SEPARATE FLOW FROM configuration_update. The two answer different
+# questions about the same procedure, and Runik gives one verdict per flow:
+#
+#   configuration_update           REG-190's claim: the AMF reallocates the 5G-GUTI by
+#                                  a CONFIGURATION UPDATE COMMAND. It passes only when
+#                                  the command arrives.
+#   configuration_update_optional  the compliance suite's claim: after a registration
+#   (this file)                    the AMF either runs the procedure correctly or does
+#                                  not run it, and both are conformant.
+#
+# If `configuration_update` passed without the command, REG-190 would pass on a core
+# that never sent the message the row is named after. If this flow required the
+# command, the suite would fail a conformant AMF. So they are two flows.
+#
+# THE SPEC. After an initial registration the procedure is the AMF's choice.
+# TS 24.501 §5.4.4.1: "This procedure shall be initiated by the network to assign a
+# new 5G-GUTI to the UE after: a) a successful service request procedure invoked as a
+# response to a paging request from the network ...". That is the only trigger that
+# makes a GUTI reallocation by this procedure mandatory, and this flow sends no
+# Service Request and is not paged. §5.5.1.2.4: "The 5G-GUTI reallocation shall be
+# part of the initial registration procedure. During the initial registration
+# procedure, if the AMF has not allocated a new 5G-GUTI by the generic UE
+# configuration update procedure, the AMF shall include in the REGISTRATION ACCEPT
+# message the new assigned 5G-GUTI". An AMF that puts the GUTI in REGISTRATION ACCEPT
+# has done its whole duty and owes no CONFIGURATION UPDATE COMMAND afterwards.
+#
+# ONE PASSING TERMINAL, TWO ROUTES TO IT. Both routes end with the same probe, so
+# neither one is reached on a bare timer:
+#
+#   with a command        a CONFIGURATION UPDATE COMMAND arrives in the 10 s window.
+#   (probe_after_update)  It must be integrity-protected, with a MAC that verifies
+#                         under the context the registration set up (§4.4.4.2: once
+#                         security is active the UE accepts no 5GMM message that is
+#                         not). The UE answers with CONFIGURATION UPDATE COMPLETE,
+#                         then probes. A second command after the COMPLETE is a
+#                         retransmission the COMPLETE should have stopped (T3555,
+#                         §5.4.4.4) and fails the run.
+#   without a command     the 10 s window passes with no command, then the UE
+#   (probe_without_update) probes. A command that shows up only after the window,
+#                         racing the probe, is a clean observation of neither route
+#                         and fails the run.
+#
+# THE PROBE. A normal (not switch-off) DEREGISTRATION REQUEST, NAS-protected under the
+# registration's security context. §5.5.2.2.2: "the AMF shall send a DEREGISTRATION
+# ACCEPT message to the UE, if the De-registration type IE does not indicate 'switch
+# off'". A protected DEREGISTRATION ACCEPT whose MAC verifies proves the AMF is alive
+# and still holds this UE's 5GMM context and NAS security context after the window,
+# and after the update on the first route. Silence to the probe is `failed`, never a
+# pass, because a dead core, a dropped association and a lost context all look like
+# silence. The trace shows which route was taken: the intermediate state, and
+# whether a CONFIGURATION UPDATE COMPLETE went out.
+#
+# WHY ONE TERMINAL AND NOT `complete` / `no_update`. Runik's corpus guards require
+# every gnb flow to pin a passing terminal in final_checks, and
+# `final_state_counts.<state>` cannot say "one of these two". Two passing terminals
+# would need an exemption entry in Runik's own test table (dflux-io/d3x), which ties
+# this repo's change to a change there. Ending both routes on the same probe gives one
+# terminal that is pinned, and each route still has its own checks.
+#
+# The N1 connection is kept up for the window (follow-on request pending, §9.11.3.7).
+# §5.4.4.1 lets the procedure run only "when the UE has an established 5GMM context,
+# and the UE is in 5GMM-CONNECTED mode". If the UE were released straight after the
+# registration, the AMF would lose its chance to send the command and the "without a
+# command" route would prove nothing.
+
+kind: flow
+name: configuration_update_optional
+description: Registration + optional AMF-initiated Generic UE Configuration Update — a correct command or no command both pass, and either way the AMF must still answer a protected deregistration (YAML)
+detail: |
+  Performs UE registration, then gives the AMF a 10 s window to run the
+  Generic UE Configuration Update procedure (3GPP TS 24.501 §5.4.4). The
+  procedure is optional after an initial registration, so the flow passes
+  whether or not the AMF sends a command. If a command arrives, it must be
+  integrity-protected with a verifying MAC, and the UE answers with
+  CONFIGURATION UPDATE COMPLETE.
+
+  Either way, the flow then sends a normal DEREGISTRATION REQUEST. A
+  protected DEREGISTRATION ACCEPT proves the AMF still holds the registration,
+  and the flow ends in `still_registered`.
+
+  These end in `failed`: no answer to the probe, a second command after the
+  COMPLETE, a command that arrives only after the window (racing the probe), a
+  timeout earlier in the registration, and a transport error.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - still_registered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_config_update
+        actions:
+          - type: check
+            field: security_key
+            op: not_empty
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+  wait_config_update:
+    # The window. When it runs out the UE probes; it does not end the flow.
+    on_timeout:
+      duration: 10s
+      target: probe_without_update
+      actions:
+        - type: send
+          message: DeregistrationRequest
+    transitions:
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: probe_after_update
+        actions:
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+          - type: send
+            message: ConfigurationUpdateComplete
+          - type: send
+            message: DeregistrationRequest
+
+  probe_after_update:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: still_registered
+        actions:
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+      # A second command after the COMPLETE: T3555 should have stopped (§5.4.4.4).
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: failed
+
+  probe_without_update:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: still_registered
+        actions:
+          - type: check
+            field: nas.security.protected
+            op: equals
+            expected: true
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+      # A command after the window, racing the probe: neither route observed cleanly.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS.
+#
+# `still_registered` is reachable only on a DEREGISTRATION ACCEPT, so the pin below
+# means the AMF answered the probe. The checks on the route taken decide the rest: two
+# on the DEREGISTRATION ACCEPT on both routes, and two more on the command when one
+# arrived. `checks_total >= 6` (four preamble checks plus the two on the ACCEPT) cannot
+# be met by the preamble alone. On the command route a failed check on the command
+# ends the run in `failed` before the probe is sent.
+#
+# The tx counts pin the walk: one INITIAL UE MESSAGE, one INITIAL CONTEXT SETUP
+# RESPONSE, and at least four NAS UPLINK TRANSPORTs (AuthResponse,
+# SecurityModeComplete, RegistrationComplete, DEREGISTRATION REQUEST), plus a fifth,
+# the CONFIGURATION UPDATE COMPLETE, on the command route.
+final_checks:
+  - name: the flow reached `still_registered` — the AMF answered the deregistration probe
+    metric: final_state_counts.still_registered
+    op: equals
+    value: 1
+  - name: no UE ended in `failed`
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: the run asserted something on the messages that decided it
+    metric: checks_total
+    op: greater_or_equal
+    value: 6
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: the registration answers and the deregistration probe went out
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: greater_or_equal
+    value: 4
