@@ -36,7 +36,7 @@ states:
         target: wait_auth_request
         actions:
           - type: send
-            message: InitialUEMessage
+            message: InitialUEMessageSMSRequested
             message_body: |
               {
                 "criticality": 1,
