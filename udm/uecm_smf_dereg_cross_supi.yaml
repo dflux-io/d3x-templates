@@ -1,0 +1,151 @@
+# NEGATIVE / pentest — Nudm_UECM SMF deregistration of SUPI-B by SUPI-A's SMF.
+#
+# 3GPP TS 29.503 §5.3.2.4.4 (DELETE …/{ueId}/registrations/smf-registrations/{pduSessionId};
+# the {ueId} is that registration's SUPI). TS 33.501 §13.4.1 (the consumer must be
+# authorized for the resource it names).
+#
+# Distinct from smf_nsmf_update_smcontext_stolen_ref, which steals an
+# smContextRef. No other udm_* or namf_* flow updates or releases one SUPI's
+# context as another SUPI's peer. This is that shape: the path names SUPI-B;
+# the consumer is the SMF that was just accepted for SUPI-A.
+#
+# WHAT IS ON THE WIRE
+# -------------------
+# 1. PUT …/imsi-001010000000002/registrations/smf-registrations/15
+#    as SMF-B (smfInstanceId …bbbb). Creates SUPI-B's registration, so a later
+#    2xx is the release being applied and not a 404 for an empty row.
+#    SUPI-B is the lab's second subscriber (imsi-001010000000002). An
+#    unprovisioned SUPI fails this leg; that is setup, not the finding.
+# 2. PUT …/imsi-001010000000001/registrations/smf-registrations/15
+#    as SMF-A (smfInstanceId 11111111-2222-3333-4444-555555555555), the same
+#    peer id the other UDM flows use. A 2xx here is "this consumer may touch
+#    SUPI-A". pduSessionId 15 is not the compliance flow's session 1.
+# 3. DELETE …/imsi-001010000000002/registrations/smf-registrations/15.
+#    The path names SUPI-B. The consumer is SMF-A from step 2. DELETE has no
+#    body (TS 29.503 §5.3.2.4.4); the SUPI is only in the path.
+#
+# SBI_Request already carries the SUPI in the path. No new Runik send-param.
+#
+# EXPECTED TERMINAL
+# -----------------
+#   rejected — DELETE answered 4xx. The UDM refused to release SUPI-B.
+#              Secure. The finding does not fire.
+#   failed   — DELETE answered 2xx (the release was applied). The 4xx checks
+#              fail and the flow's failure terminal is the finding.
+#              A timeout is not a pass: silence on any leg, including the
+#              DELETE, ends in `failed`. A timeout before the DELETE is sent
+#              (registration of B or of A) is setup and reads inconclusive.
+#
+# category: negative.
+
+kind: flow
+name: udm_uecm_smf_dereg_cross_supi
+description: SUPI-A's SMF DELETEs SUPI-B's Nudm_UECM SMF registration; 2xx is an IDOR, 4xx is a refusal
+category: negative
+finding:
+  class: idor
+  attacker: rogue-sbi
+  clause: "TS 29.503 §5.3.2.4.4 — SMF deregistration deletes the registration of the ueId in the URI, not another subscriber's"
+  # The DELETE (the probe) is only on the wire once the UE enters wait_release,
+  # which it does after both registrations returned 2xx. The finding fires on
+  # `failed` from that state: a 2xx fails the 4xx checks, and a timeout after
+  # the DELETE was sent is not a secure pass either. A failure in wait_reg_b
+  # or wait_reg_a — SUPI-B unprovisioned, or the UDM never answering the PUT —
+  # never entered wait_release and must read inconclusive.
+  fires_on: [wait_release]
+type: client
+protocol: sbi
+nf: udm
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reg_b
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: udm
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudm-uecm/v1/imsi-001010000000002/registrations/smf-registrations/15",
+                "body": {
+                  "smfInstanceId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                  "pduSessionId": 15,
+                  "singleNssai": {"sst": 1, "sd": "010203"},
+                  "dnn": "internet",
+                  "plmnId": {"mcc": "001", "mnc": "01"}
+                }
+              }
+
+  wait_reg_b:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_reg_a
+        actions:
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "PUT",
+                "path": "/nudm-uecm/v1/imsi-001010000000001/registrations/smf-registrations/15",
+                "body": {
+                  "smfInstanceId": "11111111-2222-3333-4444-555555555555",
+                  "pduSessionId": 15,
+                  "singleNssai": {"sst": 1, "sd": "010203"},
+                  "dnn": "internet",
+                  "plmnId": {"mcc": "001", "mnc": "01"}
+                }
+              }
+
+  wait_reg_a:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: wait_release
+        actions:
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 300
+          - type: send
+            message: SBI_Request
+            message_body: |
+              {
+                "method": "DELETE",
+                "path": "/nudm-uecm/v1/imsi-001010000000002/registrations/smf-registrations/15"
+              }
+
+  # The probe is on the wire. 4xx is the secure terminal. 2xx fails the
+  # checks below and is the finding. Silence is `failed`, not a pass.
+  wait_release:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: greater_than
+            expected: 399
+          - type: check
+            field: sbi.status
+            op: less_than
+            expected: 500
