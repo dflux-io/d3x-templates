@@ -1,12 +1,19 @@
 # PFCP Session Establishment with an invalid PDR (dangling FAR reference)
 # (3GPP TS 29.244 §7.5.2 / §8.2.1 / §7.6).
 #
-# Security/negative: the Create PDR references FAR ID 99, but NO matching
-# Create FAR is supplied (dangling rule reference). A spec-correct UPF must
-# REJECT and install nothing, returning Cause "Rule creation/modification
-# Failure" (TS 29.244 §8.2.1, value 73) — or "Mandatory IE incorrect" (69)
-# depending on validation order. The check accepts the primary 73 outcome;
-# the on_timeout/tolerated fallback covers a UPF that drops instead.
+# Security/negative: the Create PDR references FAR ID 99, but the only FAR
+# the request creates is FAR 1 (dangling rule reference). A spec-correct UPF
+# must REJECT and install nothing, returning Cause "Rule creation/modification
+# Failure" (TS 29.244 §8.2.1, value 73: "used by the UP function if a received
+# Rule failed to be stored and be applied") with the PDR in Failed Rule ID
+# (Table 7.5.3.1-1). The on_timeout/tolerated fallback covers a UPF that drops
+# instead.
+#
+# The request DOES carry a Create FAR. Create FAR is "M" in Table 7.5.2.1-1,
+# so a request with no Create FAR at all is a different defect with a
+# different answer — "Mandatory IE missing" with Create FAR as the Offending
+# IE (§7.6.6) — and an earlier version of this flow, which sent none, was
+# asking a spec-correct UPF for the wrong cause.
 #
 # Spec-correct success = a SessionEstablishmentResponse whose Cause indicates
 # rule-creation failure.
@@ -47,7 +54,7 @@ states:
             field: pfcp.cause
             op: equals
             expected: "Request accepted"
-          # PDR points at FAR id 99 which is never created -> dangling ref.
+          # PDR points at FAR id 99; only FAR 1 is created -> dangling ref.
           - type: send
             message: PFCPSessionEstablishmentRequest
             message_body: |
@@ -62,6 +69,15 @@ states:
                     },
                     "outer_header_removal": {"description": 0},
                     "far_id": {"value": 99}
+                  }
+                ],
+                "create_far": [
+                  {
+                    "far_id": {"value": 1},
+                    "apply_action": {"flags": 2},
+                    "forwarding_parameters": {
+                      "destination_interface": 2
+                    }
                   }
                 ]
               }
