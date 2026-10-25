@@ -10,8 +10,12 @@
 # transition was a bare `{event, target}` with no actions, so the row reached its
 # expected terminal `rejected` on ANY downlink and asserted NOTHING on the way.
 # The carve-out — the entire security content of the row — was unexpressed, and
-# the defect scored green. See the per-branch comments below for which legs are
-# now asserted and which are deliberately still bare.
+# the defect scored green. An AUTHENTICATION REQUEST is not that decision:
+# tinycore selects algorithms only after AuthResponse, in deriveKamfAndAlgKeys,
+# and a null-only UE fails the cipher intersection (NEA0 is not in the default
+# order) with REGISTRATION REJECT cause #23. Stopping on the challenge pinned
+# `rejected` for a message the criterion does not name, and those branches
+# carried no checks, so checks_total stayed 0.
 kind: flow
 name: smc_null_integrity_rejected_nonemergency
 description: Register with null-only UE security capabilities; assert AMF reaction (YAML)
@@ -65,26 +69,46 @@ states:
         target: rejected
         actions:
           - { type: check, field: nas.gmm_cause, op: greater_than, expected: 0 }
-      # DELIBERATELY LEFT WITHOUT ASSERTIONS, and not an oversight.
-      #
-      # Neither an AUTHENTICATION REQUEST nor an ERROR INDICATION satisfies
-      # either leg of the pass_criterion: the first means the AMF has not yet
-      # made the security decision this row is about, and the flow never
-      # answers the challenge, so it can never go on to observe the algorithm
-      # selection. Routing them to `rejected` therefore scores "the AMF said
-      # something" as "the AMF refused null integrity", which is not the same
-      # claim.
-      #
-      # Rerouting them is NOT done here because it cannot be got right without
-      # a live core to confirm the flow can actually progress past
-      # authentication, and a wrong assertion on a P0 security row is worse
-      # than an absent one. Instead these branches are left evaluating ZERO
-      # checks on purpose: the zero-check guard in matrix/scripts/lib/outcome.py
-      # now classifies a row that terminates having asserted nothing as
-      # `not-tested` rather than `pass`. Adding a token check to either branch
-      # would defeat that guard and restore the false green.
-      - { event: NASDownlinkTransport.AuthenticationRequest, target: rejected }
-      - { event: ErrorIndication, target: rejected }
+      # Not a decision. Answer the challenge and wait for the reject, the
+      # release, or the SMC. amf_ue_ngap_id not_empty can fail: an
+      # Authentication Request with no UE id is not this registration.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_decision
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+      # "rejected or released". A UE CONTEXT RELEASE COMMAND is the release
+      # leg. ran_ue_ngap_id not_empty can fail; a release with no RAN UE id
+      # is not an answer to this UE. The complete is the answer §8.3.3
+      # requires — naming the event suppresses Dispatch's default send.
+      - event: UEContextReleaseCommand
+        target: rejected
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+      # ErrorIndication is not named. Dispatch's default sends it to `failed`,
+      # which is not "rejected or released or a non-null SMC".
+  wait_security_decision:
+    on_timeout: { duration: 12s, target: tolerated }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: greater_than, expected: 0 }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_decision
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+      - event: UEContextReleaseCommand
+        target: rejected
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
 any_state_transitions:
   - { event: Error, target: failed }
 
@@ -98,18 +122,17 @@ any_state_transitions:
 # UE is a failure.
 #
 # REG-435's pass is "either the registration is rejected or released, or a SECURITY MODE
-# COMMAND arrives selecting a NON-NULL integrity algorithm", and `tolerated` is the bare
-# 12 s timer. THE `checks_total` FLOOR IS NOT BOILERPLATE ON THIS ROW. Two of the four
-# branches into `rejected` (AUTHENTICATION REQUEST, ERROR INDICATION) carry no checks at
-# all, and the file's own comment says they are left that way on purpose so that a run
-# which terminates having asserted NOTHING is not read as a pass. That guard lived in
-# matrix/scripts/lib/outcome.py, outside the Runik. `checks_total greater_or_equal 1`
-# is the same guard, in the template, where CLAUDE.md says the verdict belongs.
+# COMMAND arrives selecting a NON-NULL integrity algorithm". `tolerated` is the 12 s
+# timer on either wait, and the pin on `rejected` fails it, so silence is not a pass.
+# Every transition into `rejected` now carries a check that can fail: the integrity
+# nibble on an SMC, `nas.gmm_cause` on a REGISTRATION REJECT, `ran_ue_ngap_id` on a
+# release. The AUTHENTICATION REQUEST is not one of those transitions. `checks_total
+# greater_or_equal 1` remains the floor — the shortest accepting route is a single
+# check (a reject or an SMC before authentication). A retransmission of the challenge
+# runs the id check again, so the floor is not an equality.
 #
 # Counts below are derived from this FSM's own transitions and from the clauses named
-# above; no core was contacted. checks_total is a FLOOR, not an equality: several of
-# these flows can loop through a waiting state, and a floor cannot manufacture a failure
-# the way an equality can.
+# above; no core was contacted.
 final_checks:
   - name: the flow reached `rejected` — the terminal this row claims
     metric: final_state_counts.rejected

@@ -6,10 +6,21 @@
 # correct SMF/AMF rejects or ignores the request for the unknown session rather
 # than acting on it.
 #
-# Success terminal is `handled` (AMF flags it: PDUSessionReleaseCommand /
-# 5GMMStatus / ErrorIndication). `tolerated` is the wait_reaction timer —
-# silence — and the pin below fails closed on it. `failed` is a transport
-# error or a timeout during the registration preamble.
+# Success terminal is `handled`: the AMF flags the unknown session instead of
+# acting on it. REG-363 names PDU SESSION RELEASE REJECT with 5GSM cause #43.
+# nasEventMap has no NAS_PDUSessionReleaseReject entry, so the resolver never
+# emits PDUSessionReleaseReject — a transition on that string cannot fire, and
+# adding the map entry is an engine change this flow does not make. What this
+# AMF does send, and what the resolver does name, is a DL NAS TRANSPORT with
+# 5GMM cause #90 (TS 24.501 §5.4.5.3.2 case e), which tinycore builds in
+# sendN1SmNotForwarded. That event was not on this FSM, so the answer was
+# dropped and the wait timed out to `tolerated`. Silence stays `tolerated`
+# and the pin still fails closed on it. `failed` is a transport error or a
+# timeout during the registration preamble.
+# PDUSessionReleaseCommand stays a `handled` transition because this file's
+# claim is "the AMF flagged it", which already listed that command. REG-363
+# also says no PDUSessionResourceReleaseCommand may arrive; that branch is not
+# retargeted here, and tinycore does not send one for an unknown session.
 kind: flow
 name: pdu_session_release_for_unknown_session
 description: Release a non-existent PDU session id; assert AMF rejects/ignores (YAML)
@@ -64,6 +75,17 @@ states:
   wait_reaction:
     on_timeout: { duration: 10s, target: tolerated }
     transitions:
+      # No SM routing context: DL NAS TRANSPORT, 5GMM cause #90, the session id
+      # echoed. This is the name the resolver emits (PayloadNotForwarded). A
+      # PDU SESSION RELEASE REJECT cause #43 is the register's message, and it
+      # is not waited on here because the resolver has no name for it — see
+      # the header. nas.gmm_cause is the 5GMM cause; the container is the UE's
+      # own request, so it is not where cause #43 would be.
+      - event: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+        target: handled
+        actions:
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 90 }
+          - { type: check, field: nas.pdu_session_id, op: equals, expected: 99 }
       - event: PDUSessionReleaseCommand
         target: handled
       - event: NASDownlinkTransport.5GMMStatus
