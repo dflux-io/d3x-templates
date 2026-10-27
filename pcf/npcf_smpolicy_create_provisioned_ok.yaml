@@ -1,6 +1,6 @@
 # Npcf_SMPolicyControl — Create SM Policy for an API-PROVISIONED subscriber.
 #
-# PCF-1 acceptance flow: rather than relying on dpf/seed.go, this provisions a
+# PCF-1 acceptance flow: rather than relying on udr/seed.go, this provisions a
 # fresh subscriber (imsi-001010000000042, outside the 5-seed range) at runtime
 # through the Nudr write surface, then drives the same dynamic-decision create
 # and assertions as npcf_smpolicy_create_dynamic_ok.
@@ -11,7 +11,7 @@
 #      The body is an ARRAY of SessionManagementSubscriptionData (TS 29.505
 #      whole-set replace) — the same shape nudr_provisioning_crud_ok uses. It
 #      was a bare object until 2026-07-28, which the UDR answered 400, so this
-#      step failed inside the dpf-sanity 05-pcf-compliance suite.
+#      step failed inside the PCF sanity 05-pcf-compliance suite.
 #   2. PUT /nudr-dr/v1/policy-data/ues/{supi}/sm-data  (PCF-1, available now)
 #      → SmPolicySnssaiData "01000001" + DNN internet.
 #

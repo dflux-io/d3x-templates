@@ -10,7 +10,7 @@
 # PDU-session establishment) needs the docker lab + a live SMF and stays
 # Go-gated; here we only assert the stored TrafficInfluData round-trips.
 #
-# Drives the UDR role against the seeded dpf (peer: udr). The PUT body is a
+# Drives the UDR role against the seeded UDR (peer: udr). The PUT body is a
 # minimal TrafficInfluData satisfying the TS 29.519 oneOf constraints
 # validateInfluenceData enforces: traffic identified by afAppId AND scope set
 # by supi, plus dnn/snssai for the query filter and a trafficRoutes DNAI hint.

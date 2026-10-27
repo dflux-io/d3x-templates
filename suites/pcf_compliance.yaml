@@ -1,14 +1,14 @@
-# Runik -> dpf Npcf SBI compliance suite — one execution per flow.
+# Runik -> PCF Npcf SBI compliance suite — one execution per flow.
 #
-# Drives dpf's PCF service (Npcf_SMPolicyControl + Npcf_PolicyAuthorization)
+# Drives the PCF service (Npcf_SMPolicyControl + Npcf_PolicyAuthorization)
 # with Runik acting as the SBI consumer (SMF role for SM-policy CRUD, AF role for
 # the app-session N5 chain). Every step is a single deterministic execution
 # (repetitions: 1, no rate) scored on its own spec-correct terminal — a
-# conformance pass, not a load test. See d3x-core docs/dpf/sanity-tests.md.
+# conformance pass, not a load test. See d3x-core tinycore/docs/sanity-tests.md.
 #
-# Run (script step 05-pcf-compliance in scripts/dpf-sanity-run.sh):
+# Run (script step 05-pcf-compliance of the d3x-core PCF sanity run (tinycore/scripts)):
 #   rk run-suite -suite pcf-compliance \
-#       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
+#       -templates <templates-dir> -c <lab-config.yaml> -gen-subscriber -trace
 #
 # The notify round-trip (npcf_smpolicy_update_notify_receiver +
 # npcf_smpolicy_notify_trigger) is NOT a suite step — it is cross-protocol
@@ -17,12 +17,12 @@
 # + npcf_af_lab_trigger) lands in scripts/e2e-gnb-run.sh (integrator, OQ9).
 #
 # DEPENDENCY: this suite asserts the DYNAMIC PCF surface (lanes A1+A2). Against
-# a contracts-only/main dpf the dynamic-decision and N5 assertions FAIL by
+# a contracts-only/main PCF the dynamic-decision and N5 assertions FAIL by
 # design — the expected-fail list is EMPTY on purpose; the suite merges in the
 # same train AFTER A1/A2, where every step must pass.
 #
 # GATE: smpolicy_create_dynamic_ok (stop_on_failure: true) — if the simplest
-# dynamic CreateSMPolicy can't reach `completed` (dpf down, route wrong,
+# dynamic CreateSMPolicy can't reach `completed` (PCF down, route wrong,
 # subscriber unprovisioned), nothing downstream can pass, so abort early.
 # Everything after runs to completion (stop_on_failure: false) for a full
 # per-procedure pass/fail report.
@@ -34,7 +34,7 @@
 
 kind: suite
 name: pcf-compliance
-description: One-execution-per-flow Npcf SBI conformance pass for Runik as SBI consumer against dpf's PCF.
+description: One-execution-per-flow Npcf SBI conformance pass for Runik as SBI consumer against the PCF.
 steps:
   # --- SM-policy CRUD (dynamic-decision gate, then round-trips) -----------
   - name: smpolicy_create_dynamic_ok

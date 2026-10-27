@@ -1,7 +1,7 @@
-# Runik -> dpf Nudr application-data/influenceData SBI suite — one execution per
+# Runik -> UDR Nudr application-data/influenceData SBI suite — one execution per
 # flow.
 #
-# Drives dpf's UDR application-data facade
+# Drives the UDR application-data service
 # (/nudr-dr/v2/application-data/influenceData, TS 29.519) with Runik acting as
 # the SBI consumer (the AF→NEF→UDR provisioning role). Every step is a single
 # deterministic execution scored on its own spec-correct terminal.
@@ -13,17 +13,17 @@
 # establishment) and the TrafficInfluDataNotif fan-out both need the docker lab
 # + a live SMF and stay Go-gated.
 #
-# Run (script step 10-nudr-influence in d3x-core scripts/dpf-sanity-run.sh):
+# Run (script step 10-nudr-influence of the d3x-core UDR sanity run (tinycore/scripts)):
 #   rk run-suite -suite nudr-influence \
-#       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
+#       -templates <templates-dir> -c <lab-config.yaml> -gen-subscriber -trace
 #
-# Requires the lab config to declare a `udr` NF binding at the dpf base URL
-# (the seeded dpf serves the UDR facade on the same port as PCF). Empty
-# expected-fail list — every step must pass against the seeded dpf.
+# Requires the lab config to declare a `udr` NF binding at the UDR base URL
+# (http://udr:8087 in the lab). Empty
+# expected-fail list — every step must pass against the seeded UDR.
 
 kind: suite
 name: nudr-influence
-description: One-execution-per-flow Nudr application-data/influenceData SBI conformance pass against dpf's UDR facade (SBI round-trips only).
+description: One-execution-per-flow Nudr application-data/influenceData SBI conformance pass against the UDR (SBI round-trips only).
 steps:
   - name: influence_crud_ok
     flow: nudr_influence_crud_ok

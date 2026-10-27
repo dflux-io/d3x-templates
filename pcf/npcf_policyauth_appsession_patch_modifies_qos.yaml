@@ -173,7 +173,7 @@ states:
             op: contains
             expected: "40 Mbps"
           # Suite-isolation cleanup (R6): release this (supi,dnn) association so
-          # the NEXT policyauth flow binds unambiguously. dpf's onSMPolicyDeleted
+          # the NEXT policyauth flow binds unambiguously. The PCF's onSMPolicyDeleted
           # also removes the bound app session server-side (OQ4).
           - type: send
             message: SBI_Request

@@ -1,5 +1,5 @@
 # Npcf_SMPolicyControl — Create for an unprovisioned slice → 403 (negative).
-# 3GPP TS 29.512 §4.2.2. dpf keys SmPolicySnssaiData by snssaiKey (sst hex +
+# 3GPP TS 29.512 §4.2.2. The PCF keys SmPolicySnssaiData by snssaiKey (sst hex +
 # sd); the seed provisions only "01000001" ({sst:1,sd:"000001"}). A request
 # with {sst:2} (or sd "999999") has no provisioned SM-policy data → 403. The
 # deterministic negative companion to the {sst:1,sd:"000001"} positive case.

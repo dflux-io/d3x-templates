@@ -1,9 +1,9 @@
-# Runik -> dpf Nbsf_Management SBI compliance suite (TS 29.521). Runik as the
-# AF/NEF consumer against dpf's co-located BSF. Run as 07-bsf-compliance in
-# scripts/dpf-sanity-run.sh. Empty expected-fail list — every step must pass.
+# Runik -> BSF Nbsf_Management SBI compliance suite (TS 29.521). Runik as the
+# AF/NEF consumer against the BSF. Run as 07-bsf-compliance in
+# the d3x-core BSF sanity run (tinycore/scripts). Empty expected-fail list — every step must pass.
 kind: suite
 name: bsf-compliance
-description: Nbsf_Management register/discover/deregister conformance for Runik as SBI consumer against dpf's BSF.
+description: Nbsf_Management register/discover/deregister conformance for Runik as SBI consumer against the BSF.
 steps:
   - name: binding_register_discover_deregister_ok
     flow: nbsf_binding_register_discover_deregister_ok

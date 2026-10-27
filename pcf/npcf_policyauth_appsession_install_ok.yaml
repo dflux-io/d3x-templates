@@ -8,7 +8,7 @@
 #   (b) AF role: POST app-sessions with ascReqData{supi, dnn, sliceInfo,
 #       notifUri, suppFeat, medComponents}. Every media component carries at
 #       least one fDescs entry (E5 — flow-less components get 400 from A2).
-#       supi is the DASH-LESS dpf seed form (E15) — the binding key.
+#       supi is the DASH-LESS UDR seed form (E15) — the binding key.
 #   (c) GET the sm-policy and assert the AF-derived PCC rule + QoS landed.
 #
 # A2 ids the AF entries app-{appSessionId}-{medCompN} / appqos-{...} (R4);
@@ -156,7 +156,7 @@ states:
             op: contains
             expected: "20 Mbps"
           # Suite-isolation cleanup (R6): release this (supi,dnn) association so
-          # the NEXT policyauth flow binds unambiguously. dpf's onSMPolicyDeleted
+          # the NEXT policyauth flow binds unambiguously. The PCF's onSMPolicyDeleted
           # also removes the bound app session server-side (OQ4).
           - type: send
             message: SBI_Request

@@ -3,14 +3,14 @@
 # npcf_smpolicy_update_notify_receiver). Creates an SM policy whose
 # notificationUri points at Runik REST listener
 # (http://127.0.0.1:39998/sm-policy-notify), installs an AF app-session, then
-# PATCHes the app-session marBwDl 20→40 Mbps. The decision change makes dpf's
+# PATCHes the app-session marBwDl 20→40 Mbps. The decision change makes the PCF's
 # PolicyNotifier POST an SmPolicyNotification to {notificationUri}/update — the
 # assertion of record lives in the receiver flow.
 #
 # Notify is async/fire-and-forget (R14): these client steps assert only their
 # own immediate SBI statuses, never the notify effect (which the receiver
 # observes out-of-band). Runs in the foreground while the receiver listens;
-# scripts/dpf-sanity-run.sh step 06-pcf-notify orchestrates both halves.
+# the d3x-core PCF sanity run (tinycore/scripts) step 06-pcf-notify orchestrates both halves.
 # supi is the dash-less seed form (E15); the component carries fDescs (E5).
 
 kind: flow

@@ -41,7 +41,7 @@
 # N2/SCTP listener matters is the probe being honest, not a finding.
 #
 #   rk run-flow -flow fuzz_ausf_ueauth_body \
-#     -templates . -c <dpf-lab.yaml> -gen-subscriber -trace
+#     -templates . -c <lab-config.yaml> -gen-subscriber -trace
 
 kind: flow
 name: fuzz_ausf_ueauth_body

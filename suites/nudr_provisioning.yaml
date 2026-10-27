@@ -1,6 +1,6 @@
-# Runik -> dpf Nudr runtime subscriber-provisioning SBI suite (UDM-1 + UDR-1).
+# Runik -> UDR Nudr runtime subscriber-provisioning SBI suite (UDM-1 + UDR-1).
 #
-# Drives dpf's Nudr_DataRepository write surface
+# Drives the UDR's Nudr_DataRepository write surface
 # (/nudr-dr/v1/subscription-data/{ueId}/..., TS 29.504/29.505) with Runik
 # acting as the SBI provisioner: create a brand-new subscriber
 # (authentication-subscription + provisioned data), read it back through the
@@ -13,20 +13,20 @@
 # post-delete 404 (UDR-1), the DELETEs (204) and the am-data post-delete 404.
 # The create→AUTHENTICATE→delete leg (the freshly provisioned SUPI generating
 # a real 5G-AKA vector through the AUSF) needs UE-side Milenage crypto and
-# stays Go-gated in dpf/integration TestProvision_Auth_Delete_E2E.
+# stays Go-gated in tinycore/e2e TestProvision_Auth_Delete_E2E.
 #
-# Run (script step 11-nudr-provisioning in scripts/dpf-sanity-run.sh):
+# Run (script step 11-nudr-provisioning of the d3x-core UDR sanity run (tinycore/scripts)):
 #   rk run-suite -suite nudr-provisioning \
-#       -templates <templates-dir> -c <lab-dpf.yaml> -gen-subscriber -trace
+#       -templates <templates-dir> -c <lab-config.yaml> -gen-subscriber -trace
 #
-# Requires the lab config to declare `udr` AND `udm` NF bindings at the dpf
-# base URL (the seeded dpf serves both facades; the dpf-sanity generated lab
+# Requires the lab config to declare `udr` (http://udr:8087) AND `udm`
+# (http://udm:8086) NF bindings (the UDR sanity run's generated lab
 # config declares them). Empty expected-fail list — every step must pass
-# against the seeded dpf.
+# against the seeded UDR.
 
 kind: suite
 name: nudr-provisioning
-description: One-execution-per-flow Nudr runtime subscriber-provisioning SBI conformance pass against dpf's UDR facade (create → read-back → delete round-trip).
+description: One-execution-per-flow Nudr runtime subscriber-provisioning SBI conformance pass against the UDR (create → read-back → delete round-trip).
 steps:
   - name: provisioning_crud_ok
     flow: nudr_provisioning_crud_ok

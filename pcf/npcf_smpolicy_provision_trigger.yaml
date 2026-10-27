@@ -7,14 +7,14 @@
 # Steps: (1) create an SM policy whose notificationUri points at Runik REST
 # listener (http://127.0.0.1:39998/sm-policy-notify); (2) PUT the subscriber's
 # provisioned-data/sm-data with a NEW session-AMBR (999/1500 Mbps, vs the seed's
-# 200/400). The PUT fires dpf's in-process PCF re-evaluation, which recomputes
+# 200/400). The PUT fires the PCF SM re-evaluation (UDR provisioning-data change), which recomputes
 # the default session-rule/AMBR from the new sm-data and POSTs an
 # SmPolicyNotification to {notificationUri}/update. The assertion of record is
 # in the receiver flow (npcf_smpolicy_provision_notify_receiver).
 #
 # Notify is async/fire-and-forget (R14): these client steps assert only their
 # own immediate SBI statuses. Runs foreground while the receiver listens;
-# scripts/dpf-sanity-run.sh step 06-pcf-notify orchestrates both halves.
+# the d3x-core PCF sanity run (tinycore/scripts) step 06-pcf-notify orchestrates both halves.
 # supi is the dash-less seed form (E15).
 
 kind: flow

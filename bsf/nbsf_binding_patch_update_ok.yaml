@@ -3,7 +3,7 @@
 # deregister. TS 29.521 §5.3.3.4 (PATCH /pcfBindings/{bindingId} with
 # application/merge-patch+json → 200 + updated PcfBinding). Uses test-range
 # values (RFC 5737 203.0.113.93, supi …093) disjoint from every other flow;
-# the trailing DELETE keeps reruns against a persistent DPF clean.
+# the trailing DELETE keeps reruns against a persistent BSF clean.
 kind: flow
 name: nbsf_binding_patch_update_ok
 description: POST /pcfBindings (201) -> PATCH merge-patch pcfFqdn (200) -> GET ?ipv4Addr (200) -> DELETE (204)
@@ -35,7 +35,7 @@ states:
                   "dnn": "internet",
                   "snssai": {"sst": 1, "sd": "000001"},
                   "ipv4Addr": "203.0.113.93",
-                  "pcfFqdn": "dpf.lab"
+                  "pcfFqdn": "pcf.lab"
                 }
               }
 
