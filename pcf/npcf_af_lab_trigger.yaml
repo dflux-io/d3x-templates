@@ -1,17 +1,17 @@
 # AF (Npcf_PolicyAuthorization) trigger for the lab QoS-change exit gate.
-# 3GPP TS 29.514 §4.2.2. Posts an app-session to the LAB dpf (via the
-# lab-af.yaml `pcf` binding → http://dpf:8082) for the registered lab UE,
+# 3GPP TS 29.514 §4.2.2. Posts an app-session to the LAB PCF (via the
+# lab-af.yaml `pcf` binding → http://pcf:8088) for the registered lab UE,
 # inducing PCF→SMF UpdateNotify → SMF QoS modify → AMF
 # PDUSessionResourceModifyRequest over N2 — which the gNB leg
 # (gnb/pdu_session_af_qos_modify.yaml) observes and answers.
 #
 # Binding keys (TS 23.503 §6.1.3.6) must match the SM policy the lab SMF
 # created at PDU-session establishment:
-#   - supi: the DASH-LESS dpf seed form imsi-001010000000001 (E15) — NOT the
-#     dashed lab-subscribers.yaml `supi` field; the dpf store key is dash-less.
+#   - supi: the DASH-LESS UDR seed form imsi-001010000000001 (E15) — NOT the
+#     dashed lab-subscribers.yaml `supi` field; the UDR store key is dash-less.
 #   - dnn: internet
 #   - sliceInfo: {sst:1, sd:"010203"} — the docker lab slice (seed S6 entry
-#     "01010203"; dmf sends sd at establishment per A3's S3c fix).
+#     "01010203"; SMF sends sd at establishment per A3's S3c fix).
 # The media component carries an fDescs entry (E5).
 #
 # Orchestrated by scripts/e2e-gnb-run.sh step 03-af-qos-modify (integrator,
@@ -20,7 +20,7 @@
 
 kind: flow
 name: npcf_af_lab_trigger
-description: AF posts a PolicyAuthorization app-session to the lab dpf to trigger a QoS modify
+description: AF posts a PolicyAuthorization app-session to the lab PCF to trigger a QoS modify
 category: functional
 type: client
 protocol: sbi

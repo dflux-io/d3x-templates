@@ -2,14 +2,14 @@
 # 3GPP TS 29.512 §4.2.3.2 (PCF POSTs SmPolicyNotification to the SMF's
 # notificationUri on a decision change).
 #
-# Runik binds a rest-listen listener on :39998 and waits for dpf's PolicyNotifier
+# Runik binds a rest-listen listener on :39998 and waits for the PCF's PolicyNotifier
 # to POST the SmPolicyNotification to {notificationUri}/update (the notifier
 # appends /update — TS 29.512 §4.2.3.2 / contract §8). The trigger half is
 # pcf/npcf_smpolicy_notify_trigger.yaml, orchestrated by
-# scripts/dpf-sanity-run.sh step 06-pcf-notify (the nrf-notify.sh skeleton).
+# the d3x-core PCF sanity run (tinycore/scripts) step 06-pcf-notify (the nrf-notify.sh skeleton).
 #
 # The notify is a DELTA SmPolicyNotification {resourceUri, smPolicyDecision}
-# (R10/R14). dpf's PolicyNotifier notifies on BOTH decision changes the trigger
+# (R10/R14). The PCF's PolicyNotifier notifies on BOTH decision changes the trigger
 # drives: the app-session INSTALL (medComponents marBwDl 20 Mbps → first POST
 # /update) and the subsequent PATCH (marBwDl→40 Mbps → second POST /update). The
 # assertion of record is the PATCH delta carrying "40 Mbps", which arrives
@@ -29,7 +29,7 @@
 
 kind: flow
 name: npcf_smpolicy_update_notify_receiver
-description: Receive + assert dpf's Npcf SmPolicyNotification (UpdateNotify) over REST.
+description: Receive + assert the PCF's Npcf SmPolicyNotification (UpdateNotify) over REST.
 type: server
 protocol: rest
 nf: external

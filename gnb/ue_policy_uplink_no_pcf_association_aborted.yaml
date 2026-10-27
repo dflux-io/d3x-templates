@@ -49,7 +49,7 @@
 #
 # WHY tinycore IS EXPECTED TO PASS, AND WHY THAT IS NOT A GIVEAWAY. tinycore's
 # AMF has no uplink UE-policy relay at all: handleULNASTransport
-# (tinycore/dmf/amf/registration.go:1419-1430) routes SMS containers to the SMSF,
+# (tinycore/amf/registration.go) routes SMS containers to the SMSF,
 # N1-SM containers to the SMF, and logs "UL NAS Transport with non-N1_SM payload
 # — ignoring" for everything else. §5.4.5.2.5 d)1) is satisfied by an AMF that
 # has no PCF association and does nothing about it, which is exactly what the

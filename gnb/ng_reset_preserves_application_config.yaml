@@ -24,7 +24,7 @@
 #      configuration of an EXISTING association: if the reset had erased the application-level
 #      configuration, the AMF would hold no association to update and must answer RAN
 #      CONFIGURATION UPDATE FAILURE — which is exactly what tinycore does when it cannot resolve
-#      the sending gNB (tinycore/dmf/amf/config_update.go: unresolved association →
+#      the sending gNB (tinycore/amf/config_update.go: unresolved association →
 #      sendRANConfigUpdateFailure). So the ACKNOWLEDGE is a positive, message-level observable
 #      of the configuration having survived, not an absence of complaint;
 #   4. a SECOND registration, again with NO NG SETUP REQUEST anywhere in this flow. It reaches

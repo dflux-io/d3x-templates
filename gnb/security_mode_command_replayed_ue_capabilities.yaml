@@ -67,8 +67,8 @@
 #   tinycore — replayed LV = 02 f0 f0       → ea0-ea3, ia0-ia3 true,
 #              the other 24 flags false                          → FAIL at `ea4`
 #              tinycore stores the UE capability as two 8-bit bitmaps
-#              (dmf/store/types.go UeSecurityCapability{NEA,NIA uint8}) and
-#              rebuilds the IE from them (dmf/amf/security.go replayUeSecCap),
+#              (amf/store/types.go UeSecurityCapability{NEA,NIA uint8}) and
+#              rebuilds the IE from them (amf/security.go replayUeSecCap),
 #              which reconstructs only EA0-EA3 / IA0-IA3. Both the E-UTRAN
 #              octets and the EA4-EA7 / IA4-IA7 bits are lost, so the replay is
 #              neither complete nor byte-identical and the bidding-down check

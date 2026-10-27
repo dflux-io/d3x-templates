@@ -1,5 +1,5 @@
 # Npcf_SMPolicyControl — Create for an unknown SUPI → 404 (negative).
-# 3GPP TS 29.512 §4.2.2 / TS 29.500 problem-details. dpf validates the supi
+# 3GPP TS 29.512 §4.2.2 / TS 29.500 problem-details. The PCF validates the supi
 # against its subscriber store (pcf_handlers.go) and 404s an unknown one. The
 # seed provisions imsi-001010000000001..5; imsi-001019999999999 is not seeded.
 

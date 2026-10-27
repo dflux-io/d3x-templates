@@ -19,13 +19,13 @@
 # SCOPE (be honest): this validates the Nudr provisioning WRITE round-trip
 # ONLY. The create→AUTHENTICATE→delete leg (the freshly provisioned SUPI
 # generating a real 5G-AKA vector through the AUSF) is covered by the Go
-# integration test dpf/integration TestProvision_Auth_Delete_E2E — it needs the
+# integration test tinycore/e2e TestProvision_Auth_Delete_E2E — it needs the
 # UE-side Milenage crypto Runik AUSF flow doesn't drive here.
 #
 # A fresh SUPI (imsi-001010000000042) not in the canonical seed is used so the
 # create starts from a clean 404 and the delete fully removes it. Credentials
-# use the open5gs default K/OPc (matching dpf/seed.go) in the internal hex wire
-# form. Drives the UDR role against the seeded dpf (peer: udr).
+# use the open5gs default K/OPc (matching udr/seed.go) in the internal hex wire
+# form. Drives the UDR role against the seeded UDR (peer: udr).
 
 kind: flow
 name: nudr_provisioning_crud_ok

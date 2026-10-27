@@ -1,6 +1,6 @@
 # Runik -> standalone NSSF SBI compliance suite (TS 29.531). Runik as the AMF
-# consumer against cmd/nssf (subscribed reads from seeded dpf UDR). Run as
-# 08-nssf-compliance in scripts/dpf-sanity-run.sh. Empty expected-fail list —
+# consumer against cmd/nssf (subscribed reads from seeded UDR). Run as
+# 08-nssf-compliance of the d3x-core NSSF sanity run (tinycore/scripts). Empty expected-fail list —
 # every step must pass.
 #
 # Coverage:

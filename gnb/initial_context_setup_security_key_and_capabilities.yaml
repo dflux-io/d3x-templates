@@ -64,7 +64,7 @@
 #   tinycore — security_key 32 octets (K_gNB, TS 33.501 Annex A.9) — OK;
 #              UE Security Capabilities IE present but ALL FOUR BITMAPS ZERO
 #              (raw N2 hex: IE id 0x0077, len 9, value 00×9)            → FAIL
-#              Root cause is on the tinycore side, not ours: dmf/amf/amf.go
+#              Root cause is on the tinycore side, not ours: amf/amf.go
 #              builds `NrEncryptionAlgorithms: uint32(NEA) << 24` while the
 #              shared encoder writeExtBitString16 emits `byte(val>>8),byte(val)`
 #              — the LOW 16 bits. The value is shifted 16 bits past the window

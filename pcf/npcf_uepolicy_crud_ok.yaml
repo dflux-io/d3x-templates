@@ -15,13 +15,13 @@
 # operator tooling. This flow asserts the route stays gone, because "we removed
 # it" is the kind of claim that quietly stops being true.
 #
-# SCOPE: the Npcf_UEPolicyControl SBI surface ONLY. Against this standalone DPF
-# no AMF is wired, so create-with-bytes persists them without pushing. The
+# SCOPE: the Npcf_UEPolicyControl SBI surface ONLY. Against a PCF with no
+# -amf peer wired, create-with-bytes persists them without pushing. The
 # actual URSP NAS-delivery leg — PCF → AMF namf-comm N1N2MessageTransfer
 # (N1MessageClass=UPDP) → UE over N1 — needs the docker lab and stays Go-gated;
-# the dpf→AMF push client lives at tinycore/dpf/amfclient.
+# the PCF→AMF push client lives at tinycore/amfclient.
 #
-# Drives the PCF role against the seeded dpf (peer: pcf). The create body is a
+# Drives the PCF role (peer: pcf). The create body is a
 # minimal PolicyAssociationRequest for seed SUPI imsi-001010000000001; v1 reads
 # supi + notificationUri + uePolReq and stores them, echoing the request back
 # inside the PolicyAssociation response (resp.Request). The {id} for the

@@ -86,7 +86,7 @@
 # status IE in the SERVICE ACCEPT message" is not met.
 #
 # The core's source agrees with the wire: handleServiceRequest
-# (tinycore/dmf/amf/registration.go) opens `_ = sr` — it discards the decoded
+# (tinycore/amf/registration.go) opens `_ = sr` — it discards the decoded
 # SERVICE REQUEST without reading any IE — and then calls reactivatePduSessions
 # unconditionally. There is no code path from a PDU session status IE to
 # anything.

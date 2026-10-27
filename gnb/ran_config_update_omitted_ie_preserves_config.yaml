@@ -35,7 +35,7 @@
 # registered to in the REGISTRATION ACCEPT message" — so "the same TAI as before" would be
 # measured the same way as the S-NSSAI: extract before, compare after. It is not, because
 # tinycore's REGISTRATION ACCEPT carries NO TAI list IE at all
-# (tinycore/dmf/amf/registration.go:989 builds the message with RegistrationResult, GUTI and
+# (tinycore/amf/registration.go builds the message with RegistrationResult, GUTI and
 # Allowed NSSAI and nothing else), and Runik FAILS A UE OUTRIGHT on an `extract` whose
 # field does not resolve (runik/engine/action_executor.go:execExtract). An extract of the TAI
 # in measurement 1 would therefore abort this flow on that core before the RAN CONFIGURATION

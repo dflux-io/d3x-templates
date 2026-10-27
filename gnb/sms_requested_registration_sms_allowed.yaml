@@ -50,7 +50,7 @@
 #
 # MEASURED AGAINST tinycore 2026-08-11: FAIL — the accept carries
 # sms_allowed=false. Diagnosed, not guessed: tinycore's AMF captures the bit at
-# tinycore/dmf/amf/registration.go:455 (`ue.SmsOverNasRequested = req.SMSRequested`)
+# tinycore/amf/registration.go (`ue.SmsOverNasRequested = req.SMSRequested`)
 # while handling the FIRST, cleartext REGISTRATION REQUEST, and its
 # handleSecurityModeComplete decodes the replayed NAS message container only to
 # re-check the UE security capabilities (registration.go:924-935) — it never

@@ -47,7 +47,7 @@
 # MEASURED RESULT against tinycore 2026-08-11: assertion 1 PASSES (the multi-TAC, multi-slice
 # advert is accepted, NG SETUP RESPONSE, 49 bytes) and assertion 2 FAILS — the response
 # advertises exactly one S-NSSAI, SST 1. tinycore's AMF builds its PLMN Support List from a
-# single configured SST (tinycore/dmf/amf/amf.go, `SliceSupportList: [{NssaiSst: a.cfg.Sst}]`),
+# single configured SST (tinycore/amf/amf.go, `SliceSupportList: [{NssaiSst: a.cfg.Sst}]`),
 # so it can never report coverage of a second slice whatever the RAN broadcasts. That is this
 # row's finding, not a harness defect: a core supporting the two slices it is offered passes
 # both assertions unchanged.

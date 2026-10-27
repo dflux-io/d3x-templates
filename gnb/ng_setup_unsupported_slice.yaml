@@ -61,7 +61,7 @@
 # filed 2026-08-11 — it accepts NG SETUP from any PLMN and has no path to refuse a gNB for any
 # reason), so branch (a) is unreachable on this core. Branch (b) is reached on its merits
 # rather than by that absence: the AMF's Slice Support List is built from its own configured
-# SST (tinycore/dmf/amf/amf.go), so it reports what it serves and not what it was offered.
+# SST (tinycore/amf/amf.go), so it reports what it serves and not what it was offered.
 #
 # ACCEPTANCE TEST (the row must be able to report the other verdict), RUN 2026-08-11: offering
 # `slice_ssts: 1` — the S-NSSAI tinycore DOES serve — and asserting `not_contains

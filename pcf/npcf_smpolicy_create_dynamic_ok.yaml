@@ -4,7 +4,7 @@
 #
 # Drives the SMF role: POST an SmPolicyContextData for the seeded subscriber
 # imsi-001010000000001 on dnn=internet, slice {sst:1,sd:"000001"} (the
-# dpf/seed.go positive case: SessionAmbr 200/400 Mbps, SmPolicySnssaiData
+# udr/seed.go positive case: SessionAmbr 200/400 Mbps, SmPolicySnssaiData
 # provisions "01000001"). Asserts the decision is the *dynamic* surface A1
 # computes from sm-data — not the old hardcoded default.
 #

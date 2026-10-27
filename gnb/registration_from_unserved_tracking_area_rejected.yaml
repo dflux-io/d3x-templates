@@ -36,7 +36,7 @@
 #      TAC 2 (`NGSetupRequestAdvertisedTAs`, tacs: "2"). §8.7.1 treats a
 #      repeated NG SETUP REQUEST on an established association as a
 #      configuration re-setup, so this is how a gNB says "I now serve TAC 2".
-#      The matrix's tinycore is configured for TAC 1 (dmf -tac 000001,
+#      The matrix's tinycore is configured for TAC 1 (amf -tac 000001,
 #      MATRIX_TAC=1 in versions.env), so TAC 2 is outside its served list.
 #   2. The INITIAL UE MESSAGE reports the UE camped in TAI 001-01-000002
 #      (`InitialUEMessageAtTac`, uli_tac: 2). Its PLMN and NR CGI are untouched:
@@ -69,7 +69,7 @@
 # `registered_in_unserved_tac`. The AMF accepted the NG SETUP re-advertising
 # TAC 2 with an NG SETUP RESPONSE, then authenticated and REGISTERED a UE
 # reported as camped in TAI 001-01-000002 — a tracking area it is not
-# configured to serve (dmf -tac 000001, MATRIX_TAC=1).
+# configured to serve (amf -tac 000001, MATRIX_TAC=1).
 #
 # THE DEVIATION IS ON THE WIRE, from the run's own trace:
 #   NG SETUP REQUEST  supported_ta_list: [ { tac: 2, broadcast_plmn_list:

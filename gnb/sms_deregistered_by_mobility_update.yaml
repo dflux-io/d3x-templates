@@ -61,7 +61,7 @@
 #
 # MEASURED AGAINST tinycore 2026-08-11: see the header of
 # gnb/sms_uplink_without_smsf_association_aborted.yaml — the same AMF path
-# (tinycore/dmf/amf/sms.go handleUplinkSMS) relays on `a.sms != nil` alone and
+# (tinycore/amf/sms.go handleUplinkSMS) relays on `a.sms != nil` alone and
 # never consults the UE's own SMS availability, so this row reds on (3).
 #
 # A 5GMM STATUS IS NOT SILENCE (xp-312). open5gs answers this submit with a 5GMM

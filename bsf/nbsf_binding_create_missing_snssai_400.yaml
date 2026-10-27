@@ -33,7 +33,7 @@ states:
                   "supi": "imsi-001010000000090",
                   "dnn": "internet",
                   "ipv4Addr": "203.0.113.90",
-                  "pcfFqdn": "dpf.lab"
+                  "pcfFqdn": "pcf.lab"
                 }
               }
 

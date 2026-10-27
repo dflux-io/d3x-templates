@@ -1,6 +1,6 @@
 # Npcf_SMPolicyControl — Usage monitoring: report accumulate → threshold → revoke.
 # 3GPP TS 29.512 §5.6.2.12 (UsageMonitoringData / US_RE). The "metered" DNN is
-# seeded with a usage-monitoring limit (dpf/seed.go: limit-metered, total 1000
+# seeded with a usage-monitoring limit (udr/seed.go: limit-metered, total 1000
 # bytes), so CreateSMPolicy emits a session-level umDec ("um-default"), a
 # monitored PCC rule ("rule-metered") referencing it, and arms US_RE.
 #

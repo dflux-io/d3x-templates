@@ -11,7 +11,7 @@
 # only assert the subscription resource is minted (201 + Location) and removed
 # (204). The notificationUri is a sink we never drive.
 #
-# Drives the UDR role against the seeded dpf (peer: udr). The {subscriptionId}
+# Drives the UDR role against the seeded UDR (peer: udr). The {subscriptionId}
 # for the DELETE comes verbatim from the create Location header.
 
 kind: flow

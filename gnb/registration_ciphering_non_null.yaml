@@ -9,7 +9,7 @@
 #
 #   NAS_CipheringAlgorithm: EA_NONE=0, EA_NEA0=1, EA_NEA1=2, EA_NEA2=3, EA_NEA3=4
 #
-# so "greater_than 1" == "not null ciphering". d3x dmf defaults to
+# so "greater_than 1" == "not null ciphering". d3x AMF defaults to
 # nea2,nea1,nea3 (null ciphering is opt-in via -nas-ciphering ...,nea0).
 #
 # The subscriber's `ciphering:` MUST match what the core selects — the

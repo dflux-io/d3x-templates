@@ -5,15 +5,15 @@
 # N1N2MsgTxfrFailureNotification{cause, n1n2MsgDataUri} to the consumer's
 # n1n2FailureTxfNotifURI.
 #
-# Runik binds a rest-listen listener and waits for dmf to POST the failure
+# Runik binds a rest-listen listener and waits for the AMF to POST the failure
 # notification to /n1n2-failure. The trigger half is a curl
 # N1N2MessageTransfer carrying n1n2FailureTxfNotifURI → this listener's URI,
 # fired by scripts/e2e-gnb-run.sh against a CM-IDLE UE that never answers
 # paging (gnb/paging_no_response_retransmission.yaml) or that replies
 # NASNonDeliveryIndication (gnb/nas_non_delivery.yaml).
 #
-# dmf POSTs to the exact n1n2MsgDataUri/notifyUri (no path suffix appended,
-# unlike the dpf PolicyNotifier). The body is plain JSON
+# the AMF POSTs to the exact n1n2MsgDataUri/notifyUri (no path suffix appended,
+# unlike the PCF PolicyNotifier). The body is plain JSON
 # {cause, n1n2MsgDataUri}; assert cause == UE_NOT_RESPONDING and the msg URI
 # is present. Reply 204 on the held ResponseWriter via a *_Answer send (the
 # notify_receiver pattern). on_timeout→failed so a missing notify fails the
