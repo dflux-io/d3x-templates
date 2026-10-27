@@ -5,7 +5,7 @@
 # the AMF deliver a session-less DL NAS immediately. The gNB simulates an
 # undeliverable NAS (lost radio link to the UE) by replying
 # NASNonDeliveryIndication that echoes the received NAS PDU byte-exact. The AMF
-# correlates the echoed PDU against its pending N1N2 queue (dmf
+# correlates the echoed PDU against its pending N1N2 queue (AMF
 # failN1N2OneByPdu) and POSTs an N1N2MsgTxfrFailureNotification(UE_NOT_RESPONDING)
 # to the failure URI — asserted by the namf/n1n2_failure_receiver listener.
 #

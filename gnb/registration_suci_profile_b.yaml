@@ -21,7 +21,7 @@
 # NOT IN A LAB SUITE
 # ------------------
 # Not listed in gnb-compliance, gnb-security, gnb-sms, pentest-n2, or any
-# other suite scripts/e2e-gnb-run.sh runs. The lab dpf is started without
+# other suite scripts/e2e-gnb-run.sh runs. The lab UDM is started without
 # -hn-key, so a lab run would reject this SUCI until the core holds the
 # matching private key. Do not add it to those suites without that key.
 #

@@ -1,7 +1,7 @@
 # A second PDU Session Establishment Request with request type "initial request"
 # on a PSI that already has a session.
 #
-# tinycore/dmf/split_5gsm_dispatch_test.go
+# tinycore/e2e
 # TestSplitDuplicateInitialRequestReleasesOldSession: the core accepts the
 # new request and releases the old session first. The release cause
 # REL_DUE_TO_DUPLICATE_SESSION_ID is the Nsmf_PDUSession ReleaseSMContext

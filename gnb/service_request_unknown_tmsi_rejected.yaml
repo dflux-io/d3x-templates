@@ -24,7 +24,7 @@
 # in the cleartext part of the SERVICE REQUEST (TS 24.501 §4.4.6). Leaving either one correct
 # would let an AMF resolve the context from the other and the row would be probing nothing —
 # tinycore reads the NGAP IE first and falls back to the NAS copy (lookupServiceRequestUE,
-# tinycore/dmf/amf/registration.go), so both had to move. The deviation lives in the sender
+# tinycore/amf/registration.go), so both had to move. The deviation lives in the sender
 # (ServiceRequestUnknownTmsi, runik/engine/enrichers_ngap_ifmgmt.go) and is pinned by
 # TestServiceRequestUnknownTmsi_BothIdentitiesDeviate, which decodes the NAS PDU back off the
 # built message and checks both copies.
@@ -77,7 +77,7 @@
 # — both identity lookups missed, as designed, and the message was then dropped by the
 # pre-security gate with nothing sent back. That is the §5.6.1.5 finding: tinycore's nas_gate
 # has no path from "identity cannot be derived" to SERVICE REJECT #9, even though
-# sendServiceReject(ue, 9) exists in tinycore/dmf/amf/registration.go for the case where a UE
+# sendServiceReject(ue, 9) exists in tinycore/amf/registration.go for the case where a UE
 # context IS resolved but carries no security context.
 #
 # ACCEPTANCE TEST (the row must be able to report the other verdict), RUN 2026-08-11: the same

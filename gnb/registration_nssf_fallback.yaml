@@ -2,9 +2,9 @@
 # when NSSF is unreachable (e2e-gnb-run.sh stops tinycore-nssf first).
 #
 # Lab contract:
-#   - dmf -sst 1 (no -sd) → staticAllowedNssai is a single S-NSSAI {sst:1}
+#   - amf -sst 1 (no -sd) → staticAllowedNssai is a single S-NSSAI {sst:1}
 #   - AMF computeAllowedNssai falls back on NSSF error / empty / unwired
-#     (tinycore/dmf/amf/nssf.go)
+#     (tinycore/amf/nssf.go)
 #
 # Distinct from registration_nssf_allowed (expects 2 NSSF-plan slices).
 # Run via suites/gnb_nssf_fallback.yaml (e2e-gnb-run.sh step 10-nssf-fallback).
@@ -89,7 +89,7 @@ states:
           # static fallback apart from the NSSF-derived slice that
           # registration_nssf_allowed expects (sst=1, sd=1). Closing that gap
           # means asserting `snssai_list.0.sd equals 16777215` once the lab's
-          # dmf static fallback is confirmed to emit no SD octets; unmeasured
+          # AMF static fallback is confirmed to emit no SD octets; unmeasured
           # in the 2026-08-11 matrix run (no REG trace for this flow), so it is
           # reported rather than guessed at.
           - type: check

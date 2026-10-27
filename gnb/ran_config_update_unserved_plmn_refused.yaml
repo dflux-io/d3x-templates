@@ -17,7 +17,7 @@
 # the flow's own sender (RANConfigurationUpdateAdvertisedTAs,
 # runik/engine/enrichers_ngap_ifmgmt.go) and the encoding is pinned by a round-trip test
 # through ngap5g.DecodeSupportedTAList — the very function the AMF parses this IE with
-# (tinycore/dmf/amf/config_update.go) — so "the violation is on the wire" is a measured claim,
+# (tinycore/amf/config_update.go) — so "the violation is on the wire" is a measured claim,
 # not a YAML-level intention. The deviation lives in the flow rather than in a gNB config file
 # for the reason REG-804 exists to teach: a probe whose deviation lives elsewhere can silently
 # stop deviating.

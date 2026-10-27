@@ -55,7 +55,7 @@
 # MEASURED ON tinycore (2026-08-11): the accept carries NO ePCO IE at all
 # (pdu_accept_epco_container_count == -1), i.e. branch (b) — recorded, not
 # failed. Its accept builder (buildPDUSessionEstablishmentAccept,
-# tinycore/dmf/smf/bridge.go) never sets ExtendedPco, so this core does not
+# tinycore/smf/accept.go) never sets ExtendedPco, so this core does not
 # deliver DNS over NAS at all.
 #
 # HARNESS NOTE — the accept's IEs are read from ue.Params, not `nas.*`: the

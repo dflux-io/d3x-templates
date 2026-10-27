@@ -44,7 +44,7 @@
 # resources are set up for the PDU session named in the inner Uplink data status
 # IE". Taken alone that is VACUOUS against any AMF that reactivates every idle
 # session on any service request — which is exactly what tinycore does
-# (handleServiceRequest -> reactivatePduSessions, tinycore/dmf/amf/
+# (handleServiceRequest -> reactivatePduSessions, tinycore/amf/
 # registration.go, whose body opens `_ = sr`). Such a core would set the session
 # up having never looked inside the container, and the row would report
 # container support it had not demonstrated.
@@ -126,7 +126,7 @@
 # status IE was received. The AMF therefore never read the container.
 #
 # The core's source says the same thing and says it more broadly:
-# handleServiceRequest (tinycore/dmf/amf/registration.go) opens `_ = sr`,
+# handleServiceRequest (tinycore/amf/registration.go) opens `_ = sr`,
 # discarding the decoded message, and has no NAS-message-container handling for
 # a SERVICE REQUEST anywhere (the only NasMessageContainer reads in the AMF are
 # the §4.4.6 replay inside SECURITY MODE COMPLETE).

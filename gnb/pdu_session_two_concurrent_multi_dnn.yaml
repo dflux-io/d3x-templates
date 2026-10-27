@@ -66,8 +66,8 @@
 #    provisioned for subscriber"
 # and refusing a DNN that is not in the subscription is CONFORMANT (§6.4.1.6).
 # The finding is one level up: tinycore has no way to put a second DNN in a
-# subscription at all. dpf's seed hardcodes DnnConfigurations to a single
-# "internet" entry per S-NSSAI (tinycore/dpf/seed.go), and the `dpf -import`
+# subscription at all. The UDR seed hardcodes DnnConfigurations to a single
+# "internet" entry per S-NSSAI (tinycore/udr/seed.go), and the `udr -import`
 # subscriber schema — which is what matrix/cores/tinycore/subscribers.yaml
 # feeds — carries no DNN field whatsoever. So no provisioning of this core can
 # make this row pass, which is a capability statement about the core and not a
@@ -231,9 +231,9 @@ states:
       #
       # IT DOES NOT ERASE THE CAPABILITY FINDING, and the distinction matters
       # because `disabled-by-config` must never excuse a gap. What is recorded
-      # about tinycore is not this cell: it is that dpf's seed hardcodes
+      # about tinycore is not this cell: it is that the UDR seed hardcodes
       # DnnConfigurations to a single "internet" entry per S-NSSAI
-      # (tinycore/dpf/seed.go) and the `dpf -import` subscriber schema carries no
+      # (tinycore/udr/seed.go) and the `udr -import` subscriber schema carries no
       # DNN field at all, verified by reading the subscription back out of the
       # core (see the MEASURED note above). That is CODE-level evidence and it
       # stands on its own, exactly as xp-257's does.

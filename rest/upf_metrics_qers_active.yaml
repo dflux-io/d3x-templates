@@ -5,7 +5,7 @@
 # with the upf_qers_active baseline (0) this proves the QER is actually
 # programmed at establishment and externally observable via /metrics — the
 # black-box "QoS programmed" assertion (rebuilds the gnbsim-only QER-programming
-# check; see d3x-core docs/dmf/sanity-tests.md §Coverage-to-rebuild item 3).
+# check; see d3x-core tinycore/docs/sanity-tests.md §Coverage-to-rebuild item 3).
 #
 # upf_qers_active is an unlabelled gauge, so it renders as the exposition line
 # `upf_qers_active 1`; assert via substring `contains` (JSON-path resolution

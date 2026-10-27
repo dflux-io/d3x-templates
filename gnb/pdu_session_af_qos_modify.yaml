@@ -3,7 +3,7 @@
 #
 # Identical registration + PDU-session establishment to
 # pdu_session_amf_initiated_modify, but the trigger here is REAL: an AF posts a
-# PolicyAuthorization app-session to dpf (pcf/npcf_af_lab_trigger.yaml) which
+# PolicyAuthorization app-session to the PCF (pcf/npcf_af_lab_trigger.yaml) which
 # drives PCF→SMF UpdateNotify → SMF QoS modify → AMF PDUSessionResourceModify
 # over N2. So this flow REQUIRES the modify (no not_triggered terminal): a
 # 45s wait then `failed` on timeout, terminal `modified` only, plus a check
@@ -96,10 +96,10 @@ states:
             params:
               # THE SLICE DIFFERENTIATOR, AND IT MUST BE WRITTEN IN DECIMAL.
               #
-              # 66051 IS 0x010203. The lab dpf seeds its SM policy on
+              # 66051 IS 0x010203. The lab PCF seeds its SM policy on
               # {sst:1, sd:010203}; without a matching SD the establishment
-              # carries the 0xFFFFFF "no SD" sentinel, dpf 403s
-              # SLICE_NOT_PROVISIONED, dmf warns-and-defaults with no
+              # carries the 0xFFFFFF "no SD" sentinel, PCF 403s
+              # SLICE_NOT_PROVISIONED, SMF warns-and-defaults with no
               # SmPolicyID, the AF app-session binding finds nothing (500
               # PDU_SESSION_NOT_AVAILABLE) and the modify below never fires.
               #

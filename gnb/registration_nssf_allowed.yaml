@@ -1,7 +1,7 @@
 # 5G UE initial registration with NSSF-derived Allowed NSSAI assertion.
 #
 # Lab contract (deploy/lab docker-compose):
-#   - dpf seed subscribed NSSAI (dpf/seed.go):
+#   - UDR seed subscribed NSSAI (udr/seed.go):
 #       singleNssais        {1-000001, 1-000002}   ← the full subscription
 #       defaultSingleNssais {1-000001}             ← the DEFAULT subset
 #   - nssf -slices: 1-000001,1-000002,1-010203
@@ -10,7 +10,7 @@
 #     none. Per TS 23.501 §5.15.5.2.1 an absent Requested NSSAI selects the
 #     DEFAULT subscribed S-NSSAIs, not the full subscription — so
 #       allowed = default-subscribed ∩ configured = {1-000001}
-#     which is one slice, not two. dmf/amf/nssf.go leaves requestedNssai empty
+#     which is one slice, not two. amf/nssf.go leaves requestedNssai empty
 #     precisely so the NSSF applies that rule, and the NSSF producer implements
 #     it (nssf/handlers.go resolveSubscription + the pinning unit test
 #     nssf/server_test.go TestRegistration_EmptyRequested_DefaultIndication).
@@ -23,7 +23,7 @@
 #
 # This suite MUST still fail if NSSF is down/ignored, and the SD check is what
 # carries that now: AMF static fallback is a single sst=1 slice with NO SD
-# (dmf -sst 1, no -sd), so `sd == 1` below distinguishes an NSSF-derived
+# (amf -sst 1, no -sd), so `sd == 1` below distinguishes an NSSF-derived
 # Allowed NSSAI from the fallback. The length no longer discriminates on its
 # own — both are length 1 — so do not drop the SD assertion.
 #

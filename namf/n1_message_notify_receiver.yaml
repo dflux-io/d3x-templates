@@ -5,7 +5,7 @@
 # subscription's n1NotifyCallbackUri.
 #
 # The notification body is multipart/related (an N1MessageNotification JSON
-# root referencing a vnd.3gpp.5gnas part by ContentId — dmf
+# root referencing a vnd.3gpp.5gnas part by ContentId — tinycore/amf
 # notify_hooks.go:buildN1MessageNotify). Runik's REST listener surfaces the raw
 # body as rest.body; JSON-path resolution misses on a multipart body, so assert
 # via `contains` over the stringified body (the multipart boundary, the JSON

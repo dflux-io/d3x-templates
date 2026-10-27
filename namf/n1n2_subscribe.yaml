@@ -4,9 +4,9 @@
 # to /ue-contexts/{ueContextId}/n1-n2-messages/subscriptions with an
 # n1NotifyCallbackUri; the AMF replies 201 + the minted subscription id and,
 # on each subsequent DL N1 delivery for that UE, POSTs an N1MessageNotify to
-# the callback URI (design Flow 2; dmf amf_handlers.go:N1N2MessageSubscribe).
+# the callback URI (design Flow 2; tinycore/amf/amf_handlers.go:N1N2MessageSubscribe).
 #
-# Uses the `rest` protocol (NOT `sbi`): dmf's Namf is plain HTTP/1.1; the rest
+# Uses the `rest` protocol (NOT `sbi`): the AMF's Namf is plain HTTP/1.1; the rest
 # transport's http1 option speaks it (sbi forces HTTP/2 → frame mismatch).
 #
 # NOT ORCHESTRATED BY ANY HARNESS TODAY. The header used to claim that
@@ -18,7 +18,7 @@
 # never substituted by anything — it was a literal `CALLBACK_URI` sitting in an
 # `n1NotifyCallbackUri`, which is not a URI in any sense a producer could dial.
 #
-# It is a real absolute URI now (xp-210). The dmf refuses a destination that
+# It is a real absolute URI now (xp-210). The AMF refuses a destination that
 # could never have been DELIVERED, and a template that is not currently run is
 # exactly the kind of thing that gets run six months from now by somebody who
 # assumes it works. The address matches the sibling amf_statuschange_subscribe
@@ -26,7 +26,7 @@
 # rest-listen port — so wiring it up later means substituting a real IP, not
 # discovering the field is unusable.
 #
-# ueContextId is the dash-less SUPI (dmf supiFromUeCtxID key).
+# ueContextId is the dash-less SUPI (amf supiFromUeCtxID key).
 
 kind: flow
 name: namf_n1n2_subscribe

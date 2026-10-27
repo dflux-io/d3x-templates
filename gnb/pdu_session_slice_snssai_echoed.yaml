@@ -50,7 +50,7 @@
 # names snssai_SST 1 / snssai_SD 1. The N1 half does NOT: the PDU SESSION
 # ESTABLISHMENT ACCEPT carries NO S-NSSAI IE at all (projected as -1), so a UE
 # that asked for a slice is never told which slice it got. tinycore's accept
-# builder (buildPDUSessionEstablishmentAccept, tinycore/dmf/smf/bridge.go) sets
+# builder (buildPDUSessionEstablishmentAccept, tinycore/smf/accept.go) sets
 # SelectedPduSessionType, SelectedSscMode, SessionAmbr, AuthorizedQosRules,
 # AllowedSscMode, PduAddress and Dnn — and no SNssai. This row FAILS on
 # tinycore against the "shall" above, and that failure is the result.

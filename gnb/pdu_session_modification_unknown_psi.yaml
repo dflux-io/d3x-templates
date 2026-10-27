@@ -1,6 +1,6 @@
 # PDU Session Modification Request for a PSI the AMF has no routing context for.
 #
-# tinycore/dmf/amf/ul_nas_sm_test.go
+# tinycore/amf/ul_nas_sm_test.go
 # TestULNASTransport_ModificationRequestUnknownPsi_NotForwarded: the request
 # is sent back with 5GMM cause #90 (TS 24.501 §5.4.5.3.2 case e) and does not
 # create a session. The AMF keys that decision on the nested 5GSM message

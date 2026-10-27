@@ -95,7 +95,7 @@
 # TINYCORE'S ANSWER IS THE REJECT. Its SMF answers this UE-requested PDU SESSION
 # MODIFICATION REQUEST with a PDU SESSION MODIFICATION REJECT, 5GSM cause #32
 # "service option not supported", under the UE's PTI
-# (tinycore/dmf/split_5gsm_dispatch_test.go TestSplitModificationRequestAnsweredBySmf).
+# (tinycore/e2e TestSplitModificationRequestAnsweredBySmf).
 # `modification_rejected` is a pass when that cause is #32 and the PTI matches.
 # A reject with any other cause fails the cause check. Silence times out to
 # `failed`. REG-350's claim — a MODIFICATION COMMAND whose PTI is the one the UE

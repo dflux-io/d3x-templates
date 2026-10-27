@@ -5,17 +5,17 @@
 # POSTs AMFStatusChangeNotify to the subscription's amfStatusUri on a status
 # transition (amf.SetStatus).
 #
-# Uses the `rest` protocol (NOT `sbi`): dmf's Namf server is plain HTTP/1.1
-# (dmf/server.go: bare http.Server, no h2c), while Runik's sbi client forces
+# Uses the `rest` protocol (NOT `sbi`): the AMF's Namf server is plain HTTP/1.1
+# (amf/server.go: bare http.Server, no h2c), while Runik's sbi client forces
 # HTTP/2 → "frame too large / looked like an HTTP/1.1 header". The rest
 # transport's http1 option (config lab-namf-rest.yaml) speaks HTTP/1.1.
 #
 # This flow covers the subscription CRUD half (POST 201 + Location). The
-# NOTIFY leg is NOT exercised in the lab: dmf only calls amf.SetStatus on
-# graceful shutdown (dmf/server.go:490), which would tear the lab down — so
+# NOTIFY leg is NOT exercised in the lab: the AMF only calls amf.SetStatus on
+# graceful shutdown (amf/server.go), which would tear the lab down — so
 # faking a trigger is dishonest. The notify fan-out is covered authoritatively
-# by the Go test dmf/notify_hooks_test.go:70 (TestAMFStatusChangeNotify). See
-# d3x-core docs/dmf/sanity-tests.md §Coverage-to-rebuild.
+# by the Go test amf/notify_hooks_test.go (TestAMFStatusChangeNotify). See
+# d3x-core tinycore/docs/sanity-tests.md §Coverage-to-rebuild.
 #
 # Orchestrated by scripts/e2e-gnb-run.sh step 05-namf-callbacks.
 
