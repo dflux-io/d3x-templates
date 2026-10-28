@@ -9,20 +9,43 @@
 # context as another SUPI's peer. This is that shape: the path names SUPI-B;
 # the consumer is the SMF that was just accepted for SUPI-A.
 #
+# TWO CONSUMERS, TWO BINDINGS
+# ---------------------------
+# SMF-A and SMF-B have to be two different callers ON THE WIRE, not only in
+# the body. The smfInstanceId in a body is the caller's own claim, and a UDM
+# that checks ownership never trusts it. It records the caller identity the
+# transport or the token PROVED (TS 33.501 §13.4.1). So SMF-B sends through
+# its own binding, `udm_smf_b`, and SMF-A through `udm`. Both bindings point at
+# the same UDM, with different credentials. In an OAuth2 core that means two
+# nf_instance_ids, so two token subjects; under mTLS it means two client
+# certificates. See tinycore/deploy/lab/config/lab-pentest-sbi.yaml.
+#
+# A config without a `udm_smf_b` binding cannot send leg 1. The flow then ends
+# `failed` in wait_reg_b, which is setup and reads inconclusive (fires_on is
+# wait_release). If the config gives `udm_smf_b` the SAME credential as `udm`,
+# the flow measures nothing: SMF-A then IS the registrant, and a 2xx is
+# correct.
+#
 # WHAT IS ON THE WIRE
 # -------------------
 # 1. PUT …/imsi-001010000000002/registrations/smf-registrations/15
-#    as SMF-B (smfInstanceId …bbbb). Creates SUPI-B's registration, so a later
-#    2xx is the release being applied and not a 404 for an empty row.
-#    SUPI-B is the lab's second subscriber (imsi-001010000000002). An
-#    unprovisioned SUPI fails this leg; that is setup, not the finding.
+#    as SMF-B (peer udm_smf_b, smfInstanceId …bbbb). Creates SUPI-B's
+#    registration, so a later 2xx is the release being applied and not a 404
+#    for an empty row. SUPI-B is the lab's second subscriber
+#    (imsi-001010000000002). An unprovisioned SUPI fails this leg; that is
+#    setup, not the finding.
 # 2. PUT …/imsi-001010000000001/registrations/smf-registrations/15
-#    as SMF-A (smfInstanceId 11111111-2222-3333-4444-555555555555), the same
-#    peer id the other UDM flows use. A 2xx here is "this consumer may touch
-#    SUPI-A". pduSessionId 15 is not the compliance flow's session 1.
-# 3. DELETE …/imsi-001010000000002/registrations/smf-registrations/15.
-#    The path names SUPI-B. The consumer is SMF-A from step 2. DELETE has no
-#    body (TS 29.503 §5.3.2.4.4); the SUPI is only in the path.
+#    as SMF-A (peer udm, smfInstanceId 11111111-2222-3333-4444-555555555555),
+#    the same peer id the other UDM flows use. A 2xx here is "this consumer
+#    may touch SUPI-A". pduSessionId 15 is not the compliance flow's session 1.
+# 3. DELETE …/imsi-001010000000002/registrations/smf-registrations/15
+#    as SMF-A (peer udm). The path names SUPI-B; the consumer is SMF-A from
+#    step 2. DELETE has no body (TS 29.503 §5.3.2.4.4); the SUPI is only in the
+#    path.
+#
+# Every send names its peer. A send without one goes to the binding that
+# answered last, which after leg 1 is udm_smf_b. That would make SMF-B delete
+# its own registration.
 #
 # SBI_Request already carries the SUPI in the path. No new Runik send-param.
 #
@@ -70,7 +93,7 @@ states:
         actions:
           - type: send
             message: SBI_Request
-            peer: udm
+            peer: udm_smf_b
             message_body: |
               {
                 "method": "PUT",
@@ -98,6 +121,7 @@ states:
             expected: 300
           - type: send
             message: SBI_Request
+            peer: udm
             message_body: |
               {
                 "method": "PUT",
@@ -125,6 +149,7 @@ states:
             expected: 300
           - type: send
             message: SBI_Request
+            peer: udm
             message_body: |
               {
                 "method": "DELETE",
