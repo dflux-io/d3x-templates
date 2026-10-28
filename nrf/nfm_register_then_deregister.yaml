@@ -7,6 +7,9 @@
 #
 # Producer profile is the "minimal SMF" fixture from
 # docs/nrf/sanity-tests.md §2.6.0 (d3x-core).
+#
+# Typed SBI: every send goes to `peer: nrf`, the env's `role: nrf` NF on an
+# sbi transport (the REST flows in this directory use `peer: nrf-peer`).
 
 kind: flow
 name: nrf_nfm_register_then_deregister
@@ -25,7 +28,7 @@ states:
         actions:
           - type: send
             message: Nnrf_NFManagement_RegisterNFInstance
-            peer: nrf-peer
+            peer: nrf
             message_body: |
               {
                 "body": {
@@ -53,7 +56,7 @@ states:
             store: nfInstanceId
           - type: send
             message: Nnrf_NFManagement_GetNFInstance
-            peer: nrf-peer
+            peer: nrf
 
   fetching:
     transitions:
@@ -74,7 +77,7 @@ states:
             expected: SMF
           - type: send
             message: Nnrf_NFManagement_UpdateNFInstance
-            peer: nrf-peer
+            peer: nrf
             message_body: |
               {
                 "headers": {"Content-Type": "application/json-patch+json"},
@@ -88,13 +91,16 @@ states:
       - event: sbi.Nnrf_NFManagement_UpdateNFInstance_Answer
         target: deregistering
         actions:
+          # TS 29.510 §5.2.2.3.2: a heart-beat is answered 204 No Content, or
+          # 200 OK with the full profile. The PATCH restates nfStatus only, so
+          # tinycore answers 204; either is conformant.
           - type: check
             field: sbi.status
-            op: equals
-            expected: 200
+            op: in
+            expected: [200, 204]
           - type: send
             message: Nnrf_NFManagement_DeregisterNFInstance
-            peer: nrf-peer
+            peer: nrf
 
   deregistering:
     transitions:
