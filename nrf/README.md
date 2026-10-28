@@ -57,7 +57,7 @@ summarizes what's runnable.
 | `scripts/nrf-oauth-enforced.sh` | OAuth2 enforcement (OAUTH-ENF-01) | `oauth_required_mode.yaml` |
 | `scripts/nrf-concurrency.sh` | concurrent-request burst N=100 (CONC-01/02/04/06/07) | 4 `conc_*.yaml`, each burst ×100 on memory + sqlite |
 
-**Lab configs** live with Runik (`runik/config/lab-nrf.yaml` in the d3x suite, default `:8080` REST binding) plus per-class variants `lab-nrf-persistence.yaml`, `lab-nrf-longrun.yaml`, `lab-nrf-mtls.yaml` (`:8443` TLS), `lab-nrf-notify.yaml` (`:39999` rest-listen). The shell workers listed above also live in that suite (`runik/scripts/nrf-*.sh`), not in this repository.
+**Lab configs** live with Runik (`runik/config/lab-nrf.yaml` in the d3x suite, default `:8080`; two bindings to the same NRF: `nrf-peer`, `role: external` on a REST transport for the REST flows, and `nrf`, `role: nrf` on an SBI transport for the typed-SBI flows `nrf_nfm_register_then_deregister`, `nrf_nfm_register_201_location` and `nrf_disc_empty_result`, which send to `peer: nrf`) plus per-class variants `lab-nrf-persistence.yaml`, `lab-nrf-longrun.yaml`, `lab-nrf-mtls.yaml` (`:8443` TLS), `lab-nrf-notify.yaml` (`:39999` rest-listen). The shell workers listed above also live in that suite (`runik/scripts/nrf-*.sh`), not in this repository.
 
 ---
 

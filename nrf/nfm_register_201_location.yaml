@@ -30,7 +30,7 @@ states:
         actions:
           - type: send
             message: Nnrf_NFManagement_RegisterNFInstance
-            peer: nrf-peer
+            peer: nrf
             message_body: |
               {
                 "body": {
@@ -65,7 +65,7 @@ states:
             op: not_empty
           - type: send
             message: Nnrf_NFManagement_RegisterNFInstance
-            peer: nrf-peer
+            peer: nrf
             message_body: |
               {
                 "body": {
@@ -90,7 +90,7 @@ states:
             expected: 200
           - type: send
             message: Nnrf_NFManagement_DeregisterNFInstance
-            peer: nrf-peer
+            peer: nrf
 
   cleaning_up:
     transitions:

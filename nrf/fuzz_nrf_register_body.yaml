@@ -22,7 +22,7 @@ description: Wire-level fuzz of the Nnrf_NFManagement register request body agai
 category: robustness
 type: client
 protocol: rest
-nf: nrf
+nf: external
 
 initial_state: idle
 final_states:

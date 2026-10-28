@@ -27,7 +27,7 @@ states:
         actions:
           - type: send
             message: Nnrf_NFDiscovery_SearchNFInstances
-            peer: nrf-peer
+            peer: nrf
             message_body: |
               {
                 "query": {"target-nf-type": "NWDAF", "requester-nf-type": "AMF"}
