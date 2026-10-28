@@ -92,10 +92,13 @@ states:
       - event: rest.Heartbeat_Answer
         target: waiting_to_verify
         actions:
+          # TS 29.510 §5.2.2.3.2: a heart-beat is answered 204 No Content, or
+          # 200 OK with the full profile. The PATCH restates nfStatus only, so
+          # tinycore answers 204; either is conformant.
           - type: check
             field: rest.status
-            op: equals
-            expected: 200
+            op: in
+            expected: [200, 204]
 
   # Wait past the first monitor tick (t≈20). Without the PATCH the NF
   # would be SUSPENDED by now; with it, it must still be REGISTERED.
