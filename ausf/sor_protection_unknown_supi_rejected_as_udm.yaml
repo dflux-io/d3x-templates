@@ -11,7 +11,13 @@
 # unknown-SUPI check. It asserts the 404 that check answers: a 403 from the
 # NF-type guard (the plain flow's answer to a rogue AMF) no longer passes here.
 # The plain flow (peer `ausf`, any 4xx) stays in ausf-security, which also runs
-# against cores with no OAuth2. Keep the two in step.
+# against cores with no OAuth2.
+#
+# The body carries the steering list as `steeringContainer`, the SorInfo member
+# TS 29.509 defines. The plain flow's `steeringInfoList` is no SorInfo member,
+# so an AUSF reading the body sees no steering payload and answers 400
+# MANDATORY_IE_MISSING before it looks the SUPI up (measured on tinycore,
+# 2026-10-28); that 400 is not the unknown-SUPI answer this probe is about.
 
 kind: flow
 name: ausf_sor_protection_unknown_supi_rejected_as_udm
@@ -40,7 +46,7 @@ states:
                 "method": "POST",
                 "path": "/nausf-sorprotection/v1/imsi-001019999999999/ue-sor",
                 "body": {
-                  "steeringInfoList": [
+                  "steeringContainer": [
                     {"plmnId": {"mcc": "001", "mnc": "01"}}
                   ],
                   "ackInd": false

@@ -7,8 +7,10 @@
 # SMF sees the creator modifying its own context. This copy sends the modify
 # through `smf_amf_b`, a binding a config gives a DIFFERENT AMF credential
 # (tinycore/deploy/lab/config/lab-pentest-sbi.yaml), so the probe is what it
-# says: another AMF re-using the ref. The body still names a servingNfId and
-# a SUPI that belong to neither AMF. pentest-sbi runs this variant; the plain
+# says: another AMF re-using the ref. Its modify names no servingNfId (it does
+# not claim an AMF change; a servingNfId it cannot prove would be refused for
+# that alone), so only the SMF's tie between the context and its creator can
+# refuse it. pentest-sbi runs this variant; the plain
 # flow stays for cores with no OAuth2 (and for the Runik finding corpus).
 # Keep the two in step.
 #
@@ -22,8 +24,8 @@
 #    (servingNfId 00000000-0000-0000-0000-000000000001, pduSessionId 42).
 # 2. extract sbi.headers.Location -> smContextRef (same store: pattern as
 #    ausf_ueauth_5g_aka_confirmation).
-# 3. POST {smContextRef}/modify as a different consumer: different servingNfId
-#    and a different supi in the body. The path is the stolen ref.
+# 3. POST {smContextRef}/modify as AMF-B through smf_amf_b, with no
+#    servingNfId and a different supi in the body. The path is the stolen ref.
 #
 # This flow does NOT require new Runik send-params.
 #
@@ -124,7 +126,6 @@ states:
                 "headers": {"Content-Type": "application/json"},
                 "body": {
                   "supi": "imsi-001010000000999",
-                  "servingNfId": "ffffffff-ffff-ffff-ffff-ffffffffffff",
                   "upCnxState": "DEACTIVATED"
                 }
               }
