@@ -1,0 +1,41 @@
+# gNBs only: NG Setup to every configured AMF, then hold the NG associations
+# for the run, with no UE procedure at all.
+#
+#   rk run-flow -flow gnb_hold -templates . -c <gnbs.yaml> -repetitions 1 -timeout 700s
+#
+# WHAT THIS IS FOR. Measuring what the RAN sees of an AMF event (a failover, a
+# rolling upgrade, an address move) on a core that cannot register UEs: an AMF
+# deployed without its AUSF/UDM/SMF, as d3x tinycore/scripts/amf-ha-kind-run.sh
+# does on a laptop-sized kind cluster. Runik reconnects a lost association with
+# its usual backoff and repeats NG Setup; the harness reads "AMF association
+# lost" and "AMF connection live" from Runik's log. The single "UE" does
+# nothing but wait, so the run lasts as long as `hold`.
+
+kind: flow
+name: gnb_hold
+description: NG Setup, then hold the NG associations for 10 minutes with no UE procedure
+detail: |
+  Every configured gNB runs NG Setup towards its AMF before the flow starts.
+  The flow's one UE sends nothing: it waits 600 s and ends. While it waits,
+  Runik keeps the associations up and re-establishes (and re-runs NG Setup
+  on) any that the AMF side drops. Used to measure what the RAN sees of an
+  AMF failover or rolling upgrade without registering UEs.
+category: resilience
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - done
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: hold
+  hold:
+    on_timeout: { duration: 600s, target: done }
+final_checks:
+  - name: the hold ran to its end
+    metric: final_state_counts.done
+    op: equals
+    value: 1
