@@ -1,0 +1,209 @@
+# A UE that registered and opened a PDU session on one AMF of an
+# active/standby pair resumes on the other one, after a failover, with a
+# Service Request: no re-authentication, its PDU session reactivated.
+#
+#   rk run-flow -flow amf_ha_resume -templates . -c <gnbs.yaml> -s <subs.yaml> \
+#       -repetitions 200 -rate 20 -timeout 180s
+#
+# WHAT THIS IS FOR. tinycore's AMF HA acceptance tests A-1 to A-6
+# (d3x/plan/amf-ha.md) inject a fault into the active AMF while this flow's
+# UEs sit in CM-IDLE, and read the result per UE. The harness is
+# d3x/tinycore/scripts/amf-ha-run.sh; it times the fault against `hold` below.
+# The flow itself never touches the core: it registers, goes idle, waits, and
+# then asks to be served again.
+#
+# THE TIMELINE OF ONE UE.
+#   1. Registration (5G-AKA, SMC), PDU session 1, then the gNB releases the UE
+#      to CM-IDLE (UEContextReleaseRequest). The registration's
+#      AUTHENTICATION REQUEST is the only one this UE should ever see.
+#   2. `hold`: CM-IDLE for 45 s. The harness injects the fault in this window,
+#      once every UE is in it (1000 UEs at 50/s take about 25 s to register):
+#      the gNB's NG association drops and Runik reconnects it (NG Setup again,
+#      transport.go Reconnect, 1 s backoff doubling).
+#   3. A SERVICE REQUEST with PDU session 1 in its uplink data status, on a
+#      new RAN-UE-NGAP-ID. Accepted means the new active AMF found the UE's
+#      context (rehydrated from the shared store) and its session (the SMF
+#      never noticed the failover).
+#   4. Retries. A Service Request answered by nobody (sent on an association
+#      whose AMF is gone, before the gNB noticed), or one that could not be
+#      sent at all (the gNB is reconnecting: Runik posts an Error event, "no
+#      live AMFs"), is retried every 3 s up to 12 times (36 s), the way a UE
+#      retries on T3517. A late UE is slow, not failed.
+#
+# TERMINAL STATES, ONE PER ANSWER, so the per-state counts in the report are
+# the measurement:
+#   resumed          Service Accept with PDU session 1 reactivated. PASS.
+#   reauthenticated  the AMF answered with an AUTHENTICATION REQUEST: it had
+#                    lost the UE's security context. Counted, and a FAIL.
+#   service_rejected a Service Reject (#9 most likely: the AMF does not know
+#                    the 5G-S-TMSI). FAIL.
+#   failed           anything else, including registration failing before the
+#                    fault (a broken lab, not a failover result).
+#
+# The SERVICE REQUEST's time is recorded per UE in the trace (event
+# `ServiceRequest` tx) and the Service Accept's arrival likewise; the harness
+# reads them for the UE recovery percentiles.
+
+kind: flow
+name: amf_ha_resume
+description: Register, PDU session, CM-IDLE, survive an AMF active/standby failover, resume with a Service Request (no re-authentication)
+detail: |
+  Registration with 5G-AKA, PDU session 1, then CM-IDLE via a gNB-initiated
+  UE context release. The UE holds in CM-IDLE for 45 s, during which a test
+  harness fails the active AMF over to its standby. Then the UE sends a
+  SERVICE REQUEST with PDU session 1 in its uplink data status on a new
+  RAN-UE-NGAP-ID and must get a Service Accept that reactivates the session,
+  with no AUTHENTICATION REQUEST in between: the standby rehydrated the UE's
+  5GMM and NAS security context from the shared store, and the SMF kept the
+  session. Retries every 3 s, 12 times, while the gNB reconnects.
+category: resilience
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - resumed
+  - reauthenticated
+  - service_rejected
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+  wait_auth_request:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_session
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+  wait_session:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          - { type: send, message: UEContextReleaseRequest }
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_session
+  wait_release_command:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: hold
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_command
+  # CM-IDLE. The failover happens here.
+  hold:
+    on_timeout:
+      duration: 45s
+      target: wait_service_answer
+      actions:
+        - { type: ngap_realloc }
+        - type: send
+          message: ServiceRequestNasContainer
+          params:
+            uplink_data_status_psi: "1"
+            service_type: 2
+  wait_service_answer:
+    on_timeout:
+      duration: 3s
+      target: retry_1
+      actions: &resend
+        - { type: ngap_realloc }
+        - type: send
+          message: ServiceRequestNasContainer
+          params:
+            uplink_data_status_psi: "1"
+            service_type: 2
+    transitions: &answers
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: resumed
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: send, message: InitialContextSetupResponse }
+      - event: NASDownlinkTransport.ServiceAccept
+        target: resumed
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+      - event: InitialContextSetupRequest
+        target: resumed
+        actions:
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: send, message: InitialContextSetupResponse }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: reauthenticated
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceReject
+            - InitialContextSetupRequest.ServiceReject
+        target: service_rejected
+      # The Service Request could not be sent: the gNB has no live AMF
+      # association yet. Stay; the state's timer sends it again.
+      - event: Error
+        target: _self
+  retry_1:  { on_timeout: { duration: 3s, target: retry_2,  actions: *resend }, transitions: *answers }
+  retry_2:  { on_timeout: { duration: 3s, target: retry_3,  actions: *resend }, transitions: *answers }
+  retry_3:  { on_timeout: { duration: 3s, target: retry_4,  actions: *resend }, transitions: *answers }
+  retry_4:  { on_timeout: { duration: 3s, target: retry_5,  actions: *resend }, transitions: *answers }
+  retry_5:  { on_timeout: { duration: 3s, target: retry_6,  actions: *resend }, transitions: *answers }
+  retry_6:  { on_timeout: { duration: 3s, target: retry_7,  actions: *resend }, transitions: *answers }
+  retry_7:  { on_timeout: { duration: 3s, target: retry_8,  actions: *resend }, transitions: *answers }
+  retry_8:  { on_timeout: { duration: 3s, target: retry_9,  actions: *resend }, transitions: *answers }
+  retry_9:  { on_timeout: { duration: 3s, target: retry_10, actions: *resend }, transitions: *answers }
+  retry_10: { on_timeout: { duration: 3s, target: retry_11, actions: *resend }, transitions: *answers }
+  retry_11: { on_timeout: { duration: 3s, target: retry_12, actions: *resend }, transitions: *answers }
+  retry_12: { on_timeout: { duration: 3s, target: failed }, transitions: *answers }
+final_checks:
+  # The harness also checks final_state_counts.resumed equals the number of
+  # UEs it started (-repetitions), from the JSON report.
+  - name: at least one UE resumed with a Service Accept that reactivated PDU session 1
+    metric: final_state_counts.resumed
+    op: greater_or_equal
+    value: 1
+  - name: no UE was re-authenticated after the failover
+    metric: final_state_counts.reauthenticated
+    op: equals
+    value: 0
+  - name: no UE got a Service Reject
+    metric: final_state_counts.service_rejected
+    op: equals
+    value: 0
+  - name: no UE ended anywhere else
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
