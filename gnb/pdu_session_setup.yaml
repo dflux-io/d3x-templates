@@ -133,8 +133,16 @@ states:
             message: InitialContextSetupResponse
           - type: send
             message: RegistrationComplete
+          # The request asks for a DNS server address in its Extended
+          # protocol configuration options (container 0x000D, TS 24.008
+          # §10.5.6.3) and goes out under PTI 5 (the enricher's default):
+          # Runik ignores an Accept that does not echo it (TS 24.501 §7.3.1)
+          # and counts a failed check, so the PDU address checks below also
+          # prove the PTI came back.
           - type: send
             message: PDUSessionEstablishmentRequest
+            params:
+              epco_dns: ipv4
 
   wait_pdu_session_accept:
     on_timeout:
@@ -174,6 +182,11 @@ states:
           - { type: check, field: ue.PduAddress, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
           - { type: check, field: ue.PduAddress, op: not_contains, expected: '0.0.0.0' }
           - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          # …and it answered the DNS request: at least one DNS Server IPv4
+          # Address container in the Accept's ePCO (TS 24.501 §6.4.1.3). A
+          # UE with an address and no resolver has no usable session on a core
+          # that runs no DHCPv4, which is the d3x core.
+          - { type: check, field: ue.Params.pdu_accept_epco_dns_ipv4_count, op: greater_than, expected: 0 }
 
           # Pilot wiring (#241): message_body template pulls the value
           # stashed in wait_auth_request (ue.Params.pilot_amf_id). The TX
@@ -289,13 +302,13 @@ final_checks:
     metric: rx_events.ErrorIndication
     op: equals
     value: 0
-  # The 15 `check` actions on the path above. A template that stops
+  # The 16 `check` actions on the path above. A template that stops
   # asserting — a check deleted, a branch taken that skips them — moves this
   # number, and nothing else in the report would have said so.
-  - name: all 15 declared checks ran
+  - name: all 16 declared checks ran
     metric: checks_total
     op: equals
-    value: 15
+    value: 16
   - name: and none of them failed
     metric: checks_failed
     op: equals
