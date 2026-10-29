@@ -20,7 +20,7 @@ detail: |
   Runik keeps the associations up and re-establishes (and re-runs NG Setup
   on) any that the AMF side drops. Used to measure what the RAN sees of an
   AMF failover or rolling upgrade without registering UEs.
-category: resilience
+category: load
 type: client
 protocol: ngap
 nf: gnb
