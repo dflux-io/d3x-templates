@@ -1,0 +1,64 @@
+# Nausf_UPUProtection — unknown SUPI (security / negative).
+# 3GPP TS 29.509 §6.3.7.3 (404); TS 33.501 §6.15.
+# Runik POSTs ue-upu for a SUPI the AUSF has no security context / subscriber for.
+# The AUSF must REJECT with 404 + ProblemDetails and STAY UP.
+#
+# THE UDM VARIANT. TS 29.509 §4.1 makes the UDM the consumer of
+# Nausf_UPUProtection, so an AUSF that checks the caller's NF type answers any
+# other consumer 403 before it looks the SUPI up. This copy sends through the
+# `ausf_udm` binding, which a config gives a UDM credential
+# (tinycore/deploy/lab/config/lab-pentest-sbi.yaml), so the probe reaches the
+# unknown-SUPI check. It asserts the 404 that check answers: a 403 from the
+# NF-type guard (the plain flow's answer to a rogue AMF) no longer passes here.
+# The plain flow (peer `ausf`, any 4xx) stays in ausf-security, which also runs
+# against cores with no OAuth2. Keep the two in step.
+
+kind: flow
+name: ausf_upu_protection_unknown_supi_rejected_as_udm
+description: POST ue-upu for an unknown SUPI is rejected 404 (sent as the UDM); AUSF stays up
+category: negative
+type: client
+protocol: sbi
+nf: ausf
+
+initial_state: idle
+final_states:
+  - rejected
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_response
+        actions:
+          - type: send
+            message: SBI_Request
+            peer: ausf_udm
+            message_body: |
+              {
+                "method": "POST",
+                "path": "/nausf-upuprotection/v1/imsi-001019999999999/ue-upu",
+                "body": {
+                  "upuDataList": [
+                    {"secPacket": "ABEiM0RVZneImaq7zN3u/w=="}
+                  ],
+                  "upuAckInd": false
+                }
+              }
+
+  wait_response:
+    on_timeout:
+      duration: 8s
+      target: failed
+    transitions:
+      - event: sbi.SBI_Request_Answer
+        target: rejected
+        actions:
+          - type: check
+            field: sbi.status
+            op: equals
+            expected: 404
+          - type: check
+            field: sbi.body.cause
+            op: exists
