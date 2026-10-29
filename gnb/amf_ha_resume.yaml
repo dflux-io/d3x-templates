@@ -207,3 +207,11 @@ final_checks:
     metric: final_state_counts.failed
     op: equals
     value: 0
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

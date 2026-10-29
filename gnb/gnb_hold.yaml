@@ -34,8 +34,13 @@ states:
         target: hold
   hold:
     on_timeout: { duration: 600s, target: done }
-final_checks:
-  - name: the hold ran to its end
-    metric: final_state_counts.done
-    op: equals
-    value: 1
+
+# NO `final_checks` BLOCK, AND THE REASON IS NOT LAZINESS.
+#
+# This flow is a measurement instrument, not a conformance row: it sends no
+# UE procedure and asserts nothing about the core, so any final_checks would
+# be either unfalsifiable (`done == 1` is reached by waiting) or a claim the
+# flow cannot make. What it measures, the RAN's view of an AMF failover, is
+# read by the harness (d3x tinycore/scripts/amf-ha-kind-run.sh) from Runik's
+# association log lines, not from this flow's verdict. It is listed in d3x
+# runik/engine declaredDecliners() for that reason.
