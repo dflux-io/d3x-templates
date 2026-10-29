@@ -93,16 +93,19 @@ states:
   # undeliverable: NASNonDeliveryIndication echoes the received NAS PDU
   # byte-exact (the enricher pulls it from the last DL NAS). Long timeout so
   # the orchestrator can fire the curl trigger after registration settles.
-  # The 06-nas-non-delivery curl trigger ships a session-less DL NAS that
-  # decodes to a 5GMM Configuration Update Command (NAS type 0x54), so the
-  # resolved event is NASDownlinkTransport.ConfigurationUpdateCommand. The
-  # enricher echoes the received PDU verbatim regardless of NAS type.
+  # The 06-nas-non-delivery curl trigger ships an opaque UE-policy container
+  # (n1MessageClass UPDP), which the AMF wraps in a DL NAS TRANSPORT with
+  # payload container type UE_POLICY, so the resolved event is
+  # NASDownlinkTransport.DLNASTransport.UEPolicyContainer. (It was a raw 5GMM
+  # Configuration Update Command until the AMF started refusing 5GMM N1 parts
+  # from consumers, d3x prod/sbi-security-smf-ha.) The enricher echoes the
+  # received PDU verbatim regardless of NAS type.
   wait_dl_nas:
     on_timeout:
       duration: 60s
       target: failed
     transitions:
-      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+      - event: NASDownlinkTransport.DLNASTransport.UEPolicyContainer
         target: non_delivered
         actions:
           - type: check
@@ -165,8 +168,8 @@ final_checks:
     metric: rx_events.NASDownlinkTransport.AuthenticationRequest
     op: greater_or_equal
     value: 1
-  - name: a CONFIGURATION UPDATE COMMAND arrived
-    metric: rx_events.NASDownlinkTransport.ConfigurationUpdateCommand
+  - name: the triggered DL NAS TRANSPORT (UE-policy container) arrived
+    metric: rx_events.NASDownlinkTransport.DLNASTransport.UEPolicyContainer
     op: greater_or_equal
     value: 1
   - name: a SECURITY MODE COMMAND arrived
