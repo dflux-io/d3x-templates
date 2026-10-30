@@ -17,11 +17,19 @@
 # by the Go test amf/notify_hooks_test.go (TestAMFStatusChangeNotify). See
 # d3x-core tinycore/docs/sanity-tests.md §Coverage-to-rebuild.
 #
+# The guamiList names the lab AMF's own GUAMI: PLMN 001-01 (-plmn in the lab
+# compose file) and AMF id AAAAAA (the AMF's default; the lab sets no
+# -amf-id). The AMF notifies a subscription only for GUAMIs it serves
+# (amf/notify_hooks.go onAmfStatusChange), so a guamiList naming another AMF
+# is a subscription that can never be notified. d3x-core's
+# TestLabStatusChangeTemplateNamesTheLabGuami (tinycore/amf) reads this file
+# and the lab compose file and fails when they disagree.
+#
 # Orchestrated by scripts/e2e-gnb-run.sh step 05-namf-callbacks.
 
 kind: flow
 name: namf_amf_statuschange_subscribe
-description: POST /namf-comm/v1/subscriptions (AMFStatusChange) — assert 201 + Location.
+description: POST /namf-comm/v1/subscriptions (AMFStatusChange) for the lab AMF's GUAMI — assert 201 + Location + the GUAMI stored.
 category: functional
 type: client
 protocol: rest
@@ -49,7 +57,7 @@ states:
                 "body": {
                   "amfStatusUri": "http://10.55.0.99:39997/amf-status-notify",
                   "guamiList": [
-                    { "plmnId": { "mcc": "001", "mnc": "01" }, "amfId": "020040" }
+                    { "plmnId": { "mcc": "001", "mnc": "01" }, "amfId": "AAAAAA" }
                   ]
                 }
               }
@@ -60,7 +68,7 @@ states:
       target: failed
     transitions:
       - event: rest.AMFStatusSubscribe_Answer
-        target: completed
+        target: settle
         actions:
           - type: check
             field: rest.status
@@ -69,5 +77,40 @@ states:
           - type: check
             field: rest.headers.Location
             op: not_empty
+          - type: check
+            field: rest.body.guamiList.0.amfId
+            op: equals
+            expected: "AAAAAA"
+
+  # The checks above sit one transition before the terminal: a UE whose check
+  # fails stops in the transition's target, so with the checks on the way into
+  # `completed` a failed run would still count as having ended there.
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: completed
 
   failed: {}
+
+# END-OF-FLOW ASSERTIONS — what this flow claims, said by the flow.
+final_checks:
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+  - name: one AMFStatusSubscribe POST went out
+    metric: msg_types.tx.rest.AMFStatusSubscribe
+    op: equals
+    value: 1
+  - name: an AMFStatusSubscribe answer arrived
+    metric: rx_events.rest.AMFStatusSubscribe_Answer
+    op: greater_or_equal
+    value: 1
+  - name: all 3 declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0
