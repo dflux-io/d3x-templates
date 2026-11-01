@@ -1,0 +1,43 @@
+# gNB ↔ AMF ↔ SMF emergency-services suite — one UE, one execution per flow.
+#
+# Drives the TS 23.501 §5.16.4 / TS 24.501 §5.5.1.2/§6.4.1 emergency procedures
+# gNB-side against a full core whose AMF is configured for emergency service
+# (-emergency -emergency-dnn sos -emergency-allow-unauth imei) and whose SMF
+# serves the emergency DNN (-emergency-dnn sos):
+#
+#   1. emergency_registration_and_pdu — an authenticated UE registers with 5GS
+#      registration type = emergency and establishes an emergency PDU session
+#      (initial emergency request) on the emergency DNN.
+#   2. emergency_pdu_normal_ue        — a normally-registered UE establishes an
+#      emergency PDU session; the request type, not the registration, makes it
+#      emergency.
+#
+# The unauthenticated (IMEI-only) acceptance, the refusal when unauthenticated
+# emergency is not allowed, and the 5GMM cause of that refusal are covered by
+# the AMF unit tests (tinycore/amf/emergency_test.go) — they need the AMF with
+# a different -emergency-allow-unauth / -emergency setting than the lab's, and
+# a UE that runs NULL (NIA0/NEA0) NAS security, neither of which a single lab
+# topology provides.
+#
+# Run:
+#   ./bin/rk run-suite -suite gnb-emergency \
+#       -templates <templates-dir> -c <lab.yaml> -s <subscribers.yaml> -trace
+kind: suite
+name: gnb-emergency
+description: Emergency services — authenticated emergency registration + emergency PDU, and a normal UE's emergency PDU.
+steps:
+  - name: emergency_registration_and_pdu
+    flow: emergency_registration_and_pdu
+    repetitions: 1
+    timeout: 60s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: established
+
+  - name: emergency_pdu_normal_ue
+    flow: emergency_pdu_normal_ue
+    repetitions: 1
+    timeout: 60s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established

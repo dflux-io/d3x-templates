@@ -1,0 +1,118 @@
+# Emergency registration (authenticated) + emergency PDU session.
+#
+# A UE with valid credentials performs an EMERGENCY registration (5GS
+# registration type = emergency, TS 24.501 §5.5.1.2) against an AMF configured
+# for emergency service (-emergency -emergency-dnn), and then establishes an
+# EMERGENCY PDU session (UL NAS TRANSPORT request type = "initial emergency
+# request", §9.11.3.47). The SMF runs the session on the emergency DNN with no
+# subscription check and the emergency ARP/5QI (TS 23.501 §5.16.4).
+#
+# The authenticated path is identical to an ordinary registration up to the
+# REGISTRATION ACCEPT — AKA runs, a NAS security context is activated — so the
+# only new behaviour exercised here is (a) the AMF accepting registration_type
+# = emergency and setting the Emergency registered bit, and (b) the emergency
+# PDU session establishing end to end. The unauthenticated path and the
+# refused-when-not-allowed path are covered by the AMF unit tests
+# (tinycore/amf/emergency_test.go), which do not need a second lab topology.
+kind: flow
+name: emergency_registration_and_pdu
+description: Authenticated emergency registration then an emergency PDU session (initial emergency request), established end to end (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { registration_type: 4, follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          # The emergency PDU session: request type "initial emergency request".
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { emergency: true } }
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `established` — emergency registration and emergency PDU session both succeeded
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionEstablishmentRequest)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 4
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived for the emergency session
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+  - name: all declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0
