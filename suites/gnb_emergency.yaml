@@ -2,29 +2,30 @@
 #
 # Drives the TS 23.501 §5.16.4 / TS 24.501 §5.5.1.2/§6.4.1 emergency procedures
 # gNB-side against a full core whose AMF is configured for emergency service
-# (-emergency -emergency-dnn sos -emergency-allow-unauth imei) and whose SMF
-# serves the emergency DNN (-emergency-dnn sos):
+# (-emergency -emergency-dnn internet, -emergency-allow-unauth none — the lab
+# default) and whose SMF serves the emergency DNN (-emergency-dnn internet; the
+# lab reuses its one DNN/UPF pool, and an emergency session on it is never
+# charged):
 #
 #   1. emergency_registration_and_pdu — an authenticated UE registers with 5GS
-#      registration type = emergency and establishes an emergency PDU session
-#      (initial emergency request) on the emergency DNN.
+#      registration type = emergency (Emergency registered, EMC=1) and
+#      establishes an emergency PDU session with the emergency 5QI / ARP.
 #   2. emergency_pdu_normal_ue        — a normally-registered UE establishes an
 #      emergency PDU session; the request type, not the registration, makes it
 #      emergency.
+#   3. emergency_unauth_refused       — an IMEI-only emergency registration is
+#      refused #5, because this AMF does not allow unauthenticated emergency.
 #
-# The unauthenticated (IMEI-only) acceptance, the refusal when unauthenticated
-# emergency is not allowed, and the 5GMM cause of that refusal are covered by
-# the AMF unit tests (tinycore/amf/emergency_test.go) — they need the AMF with
-# a different -emergency-allow-unauth / -emergency setting than the lab's, and
-# a UE that runs NULL (NIA0/NEA0) NAS security, neither of which a single lab
-# topology provides.
+# The unauthenticated-ALLOWED case needs the AMF with -emergency-allow-unauth
+# =imei and is its own suite, gnb-emergency-unauth (e2e-gnb-run.sh recreates
+# the AMF for it).
 #
 # Run:
 #   ./bin/rk run-suite -suite gnb-emergency \
 #       -templates <templates-dir> -c <lab.yaml> -s <subscribers.yaml> -trace
 kind: suite
 name: gnb-emergency
-description: Emergency services — authenticated emergency registration + emergency PDU, and a normal UE's emergency PDU.
+description: Emergency services — authenticated emergency registration + emergency PDU, a normal UE's emergency PDU, and an IMEI-only emergency registration refused #5.
 steps:
   - name: emergency_registration_and_pdu
     flow: emergency_registration_and_pdu
@@ -41,3 +42,11 @@ steps:
     stop_on_failure: false
     success_when:
       at_least_one_final_state: established
+
+  - name: emergency_unauth_refused
+    flow: emergency_unauth_refused
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: refused

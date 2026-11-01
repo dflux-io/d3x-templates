@@ -1,0 +1,126 @@
+# Unauthenticated (IMEI-only) emergency registration + emergency PDU session.
+#
+# A UE without valid credentials presents only its IMEI in an EMERGENCY
+# registration (TS 24.501 §5.5.1.2.2). An AMF that allows unauthenticated
+# emergency service for PEI-only UEs (amf -emergency-allow-unauth=imei) grants
+# it WITHOUT AKA (TS 23.501 §5.16.4.1, TS 33.501 §10.2.2): a SECURITY MODE
+# COMMAND under the NULL algorithms NIA0/NEA0, which this UE — and only a UE
+# that asked for emergency registration — takes into use (ue.Params
+# .null_security). Then:
+#
+#   - the REGISTRATION ACCEPT says "Emergency registered";
+#   - the emergency PDU session (initial emergency request) establishes with
+#     the emergency 5QI / ARP, keyed at the SMF by the PEI (no SUPI);
+#   - an ORDINARY PDU session request (initial request) from the same UE is
+#     sent back unforwarded, 5GMM cause #90 — a UE registered for emergency
+#     services is restricted to them (TS 23.501 §5.16.4.1). An AMF that served
+#     it would be handing an unauthenticated UE an ordinary session.
+#
+# Runs only against an AMF with -emergency-allow-unauth=imei: e2e-gnb-run.sh
+# recreates the lab AMF that way for this suite (gnb-emergency-unauth) and
+# puts it back to the default (none) afterwards.
+kind: flow
+name: emergency_unauth_imei
+description: IMEI-only emergency registration under NULL NAS security, an emergency PDU session, and an ordinary PDU session refused #90 (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - restricted
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_security_mode
+        actions:
+          - { type: send, message: InitialUEMessage, params: { registration_type: 4, identity: imei, follow_on_request: true } }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      # No AKA: the AMF goes straight to a NULL Security Mode Command.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.Params.null_security, op: equals, expected: true }
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: equals, expected: 1 }
+          - { type: check, field: nas.selected_nas_security_algorithms_ciphering, op: equals, expected: 1 }
+          - { type: send, message: SecurityModeComplete }
+      - { event: NASDownlinkTransport.AuthenticationRequest, target: failed }
+      - { event: NASDownlinkTransport.RegistrationReject, target: failed }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: check, field: nas.emergency_registered, op: equals, expected: true }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { emergency: true, pdu_session_id: 1 } }
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_ordinary_refused
+        actions:
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          # The emergency QoS (TS 23.501 §5.16.4.6) on the N2 QoS flow the gNB is
+          # asked to set up: 5QI 5 (IMS signalling, the SMF default), ARP
+          # priority 1 with pre-emption capability and NOT pre-emptable. An
+          # emergency session served as an ordinary one (the DNN's 5QI 9 / ARP 8)
+          # fails here.
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.qos_flow_setup_request_list.qos_flow_setup_request_items.0.qos_flow_level_qos_parameters.qos_characteristics.non_dynamic_5qi.five_qi, op: equals, expected: 5 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.qos_flow_setup_request_list.qos_flow_setup_request_items.0.qos_flow_level_qos_parameters.allocation_and_retention_priority.priority_level, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.qos_flow_setup_request_list.qos_flow_setup_request_items.0.qos_flow_level_qos_parameters.allocation_and_retention_priority.pre_emption_capability, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.qos_flow_setup_request_list.qos_flow_setup_request_items.0.qos_flow_level_qos_parameters.allocation_and_retention_priority.pre_emption_vulnerability, op: equals, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # An ORDINARY session from the same, emergency-registered UE.
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 2 } }
+
+  wait_ordinary_refused:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+        target: restricted
+        actions:
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 90 }
+          - { type: check, field: nas.pdu_session_id, op: equals, expected: 2 }
+      # The ordinary session established: the restriction does not hold.
+      - { event: PDUSessionResourceSetupRequest, target: failed }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `restricted` — unauthenticated emergency service granted, and restricted to emergency
+    metric: final_state_counts.restricted
+    op: equals
+    value: 1
+  - name: no AUTHENTICATION REQUEST — the IMEI-only UE was not asked to run AKA
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: equals
+    value: 0
+  - name: one PDU SESSION RESOURCE SETUP RESPONSE was sent (the emergency session only)
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: all declared checks ran
+    metric: checks_total
+    op: equals
+    value: 13
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0
