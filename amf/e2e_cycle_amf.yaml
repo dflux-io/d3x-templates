@@ -8,10 +8,15 @@
 #     idle/connected round trip (AN release, SERVICE REQUEST reactivating the
 #     session);
 #   gnb/e2e_cycle.yaml — the same signalling without the round trip, plus
-#     user-plane traffic through the session. Its user-plane leg needs a GTP-U
-#     peer on the UPF N3 address this flow announces (upf_n3_addr below), and
-#     this flow terminates none: until one answers there, that gNB flow fails
-#     at its pkt_rx check and this one waits it out in `connected`.
+#     user-plane traffic through the session. Its user-plane leg needs a UPF
+#     on the N3 address this flow announces. Declare one in this AMF's env —
+#     a `role: upf` NF on a gtpu transport with a `reflector:` block — and
+#     the inline SMF grants every session on it and installs each session's
+#     tunnel there (UL TEID → the gNB's DL TEID from the setup response),
+#     removing it on release (runik/engine/enrichers_amf_upf.go). With no UPF
+#     in the env the session is announced on 127.0.0.1 and nothing answers:
+#     that gNB flow fails at its pkt_rx check and this one waits it out in
+#     `connected`.
 #
 # THE SHAPE IS A HUB. Registration ends in `connected`, and every UE-initiated
 # procedure leaves from there and comes back to it, so one flow answers either
@@ -108,8 +113,9 @@ states:
           - { type: check, field: ue.Params.amf_pdu_pti, op: greater_than, expected: 0 }
           - type: send
             message: PDUSessionEstablishmentAccept
+            # No upf_n3_addr: the inline SMF picks the env's UPF (see the
+            # header), so the address the gNB is told is the one listening.
             params:
-              upf_n3_addr: 127.0.0.1
               ue_ip_pool: 10.45.0.0/16
       - event: NASUplinkTransport.ULNASTransport.PDUSessionReleaseRequest
         target: wait_release_response
