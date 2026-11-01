@@ -3,7 +3,8 @@
 #
 # One Gx session, end to end: CCR INITIAL at establishment, one CCR UPDATE,
 # CCR TERMINATION at release — each answered by a CCA with Result-Code 2001
-# that carries back the CC-Request-Type it answers. Unlike the SCP-echo flows
+# that carries back the CC-Request-Type and CC-Request-Number (0, 1, 2:
+# increasing within the session, RFC 4006 §8.2) it answers. Unlike the SCP-echo flows
 # (diameter_gx_ccr_cca_init / _terminate), it expects real answers: point it
 # at a PCRF, or at diameter_gx_pcrf_ccr_responder in a second rk process.
 #
@@ -49,6 +50,10 @@ states:
             field: CC-Request-Type
             op: equals
             expected: 1
+          - type: check
+            field: CC-Request-Number
+            op: equals
+            expected: 0
           - type: send
             message: CCRUpdate
 
@@ -68,6 +73,10 @@ states:
             field: CC-Request-Type
             op: equals
             expected: 2
+          - type: check
+            field: CC-Request-Number
+            op: equals
+            expected: 1
           - type: send
             message: CCRTerminate
 
@@ -87,6 +96,10 @@ states:
             field: CC-Request-Type
             op: equals
             expected: 3
+          - type: check
+            field: CC-Request-Number
+            op: equals
+            expected: 2
 
   settle:
     on_timeout:
@@ -111,7 +124,7 @@ final_checks:
     metric: msg_types.tx.diameter.CCR
     op: greater_or_equal
     value: 3
-  - name: every CCA carried Result-Code 2001 and the CC-Request-Type it answers
+  - name: every CCA carried Result-Code 2001 and the CC-Request-Type / -Number it answers
     metric: checks_failed
     op: equals
     value: 0
