@@ -232,11 +232,14 @@ any_state_transitions:
 # floor, because a retransmission the spec permits must not fail a run that otherwise
 # did what it claimed.
 final_checks:
+  # PER UE: a `value` beside `value_metric: flows_started` is a multiplier, so each
+  # count below is per UE and the block holds for one UE and for a fleet alike.
   # THE TERMINAL, and now the row's whole claim about the core.
   - name: the flow reached `clean` — the core answered the de-registration
     metric: final_state_counts.clean
     op: equals
     value: 1
+    value_metric: flows_started
   # What this flow sent. Exact: each of these is a `send` action on the
   # path to the terminal above, so a count that moved means the flow did
   # not walk the path it claims to have walked.
@@ -244,14 +247,17 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: one INITIAL CONTEXT SETUP RESPONSE was sent
     metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest, DeregistrationRequest)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
     value: 5
+    value_metric: flows_started
   # What the core sent, by the identity of the message rather than its outer
   # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
   # a permitted retransmission must not fail a run that got where it claims.
@@ -262,14 +268,17 @@ final_checks:
     metric: rx_events.NASDownlinkTransport.AuthenticationRequest
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: a SECURITY MODE COMMAND arrived
     metric: rx_events.NASDownlinkTransport.SecurityModeCommand
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
     metric: rx_events.InitialContextSetupRequest.RegistrationAccept
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   # THE FLOOR, and it is a second assertion about the core's answer rather than
   # bookkeeping. Four checks run in the registration preamble; the fifth exists
   # ONLY on the DEREGISTRATION ACCEPT transition and on the UE CONTEXT RELEASE
@@ -280,6 +289,7 @@ final_checks:
     metric: checks_total
     op: greater_or_equal
     value: 5
+    value_metric: flows_started
   - name: and none of them failed
     metric: checks_failed
     op: equals

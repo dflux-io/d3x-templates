@@ -276,14 +276,18 @@ any_state_transitions:
 # these flows can loop through a waiting state, and a floor cannot manufacture a failure
 # the way an equality can.
 final_checks:
+  # PER UE: a `value` beside `value_metric: flows_started` is a multiplier, so each
+  # count below is per UE and the block holds for one UE and for a fleet alike.
   - name: the flow reached `rejected` — the terminal this row claims
     metric: final_state_counts.rejected
     op: equals
     value: 1
+    value_metric: flows_started
   - name: the run asserted something on the messages it saw
     metric: checks_total
     op: greater_or_equal
     value: 6
+    value_metric: flows_started
   - name: and no assertion failed
     metric: checks_failed
     op: equals

@@ -323,10 +323,13 @@ any_state_transitions:
 # floor, because a retransmission the spec permits must not fail a run that otherwise
 # did what it claimed.
 final_checks:
+  # PER UE: a `value` beside `value_metric: flows_started` is a multiplier, so each
+  # count below is per UE and the block holds for one UE and for a fleet alike.
   - name: the flow reached `connected`
     metric: final_state_counts.connected
     op: equals
     value: 1
+    value_metric: flows_started
   # What this flow sent. Exact: each of these is a `send` action on the
   # path to the terminal above, so a count that moved means the flow did
   # not walk the path it claims to have walked.
@@ -334,26 +337,32 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, ServiceRequest)
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 2
+    value_metric: flows_started
   - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, RegistrationComplete, SecurityModeComplete)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
     value: 4
+    value_metric: flows_started
   - name: two PDU SESSION RESOURCE SETUP RESPONSE messages went out
     metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
     op: equals
     value: 2
+    value_metric: flows_started
   - name: one UE CONTEXT RELEASE COMPLETE was sent
     metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: one UE CONTEXT RELEASE REQUEST was sent
     metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
     op: equals
     value: 1
+    value_metric: flows_started
   # What the core sent, by the identity of the message rather than its outer
   # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
   # a permitted retransmission must not fail a run that got where it claims.
@@ -361,22 +370,27 @@ final_checks:
     metric: rx_events.InitialContextSetupRequest.RegistrationAccept
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: an AUTHENTICATION REQUEST arrived
     metric: rx_events.NASDownlinkTransport.AuthenticationRequest
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: a SECURITY MODE COMMAND arrived
     metric: rx_events.NASDownlinkTransport.SecurityModeCommand
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: two PDU SESSION RESOURCE SETUP REQUEST messages arrived
     metric: rx_events.PDUSessionResourceSetupRequest
     op: greater_or_equal
     value: 2
+    value_metric: flows_started
   - name: a UE CONTEXT RELEASE COMMAND arrived
     metric: rx_events.UEContextReleaseCommand
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   # Several routes reach `connected` with different numbers of checks
   # (13..15); 13 is the shortest one, so it is the floor that still proves
   # an assertion was made on the messages this run saw.
@@ -384,6 +398,7 @@ final_checks:
     metric: checks_total
     op: greater_or_equal
     value: 13
+    value_metric: flows_started
   - name: and none of them failed
     metric: checks_failed
     op: equals

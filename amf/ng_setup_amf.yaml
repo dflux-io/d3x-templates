@@ -1,0 +1,65 @@
+# AMF-side NG Setup responder (TS 38.413 §8.7.1) — the network half of
+# gnb/ng_setup.yaml.
+#
+# The AMF transport answers an association's FIRST NG SETUP REQUEST itself:
+# that is admission, and it happens before any flow sees the gNB. gnb/ng_setup
+# then runs NG Setup as a procedure, on the association already up, and
+# §8.7.1.2 has the AMF answer that one too. This flow takes it: Runik spawns a
+# context for the non-UE-associated request because this flow's initial state
+# names it, the checks assert what the gNB must carry (§9.2.6.1: Global RAN
+# Node ID, Supported TA List, Default Paging DRX — all mandatory), and the
+# flow sends the NG SETUP RESPONSE the AMF's config describes (AMF name,
+# served GUAMI, relative capacity).
+#
+# Without this flow running, an AMF flow that does not name NGSetupRequest
+# still has the transport answer a repeated NG SETUP REQUEST; this flow is how
+# the answer becomes something Runik asserts.
+#
+# One context per NG SETUP REQUEST, so final_checks are per request, against
+# flows_started.
+
+kind: flow
+name: ng_setup_amf
+description: "AMF-side NG Setup: assert the request's mandatory IEs, answer with NG SETUP RESPONSE (YAML)"
+category: functional
+type: server
+protocol: ngap
+nf: amf
+initial_state: idle
+final_states:
+  - answered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: NGSetupRequest
+        target: answered
+        actions:
+          - { type: check, field: global_ran_node_id, op: ie_present }
+          - { type: check, field: supported_ta_list.length, op: greater_or_equal, expected: 1 }
+          - type: send
+            message: NGSetupResponse
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: every NG SETUP REQUEST was answered
+    metric: final_state_counts.answered
+    op: equals
+    value_metric: flows_started
+  - name: one NG SETUP RESPONSE per request
+    metric: msg_types.tx.ngap.NGAP_NG_SETUP_RESPONSE
+    op: equals
+    value_metric: rx_events.NGSetupRequest
+  - name: both checks ran for every request
+    metric: checks_total
+    op: equals
+    value: 2
+    value_metric: flows_started
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

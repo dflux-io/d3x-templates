@@ -158,10 +158,13 @@ any_state_transitions:
 # floor, because a retransmission the spec permits must not fail a run that otherwise
 # did what it claimed.
 final_checks:
+  # PER UE: a `value` beside `value_metric: flows_started` is a multiplier, so each
+  # count below is per UE and the block holds for one UE and for a fleet alike.
   - name: the flow reached `released`
     metric: final_state_counts.released
     op: equals
     value: 1
+    value_metric: flows_started
   # REG-175's own words: "no DeregistrationAccept arrives". Counted on the
   # identity of the NAS message, so it holds whichever state was waiting.
   - name: no DEREGISTRATION ACCEPT arrived (TS 24.501 §5.5.2.2.2 — none for a switch-off)
@@ -175,14 +178,17 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: one INITIAL UE MESSAGE was sent
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, RegistrationComplete, SecurityModeComplete)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
     value: 4
+    value_metric: flows_started
   # What the core sent, by the identity of the message rather than its outer
   # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
   # a permitted retransmission must not fail a run that got where it claims.
@@ -190,14 +196,17 @@ final_checks:
     metric: rx_events.InitialContextSetupRequest.RegistrationAccept
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: an AUTHENTICATION REQUEST arrived
     metric: rx_events.NASDownlinkTransport.AuthenticationRequest
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: a SECURITY MODE COMMAND arrived
     metric: rx_events.NASDownlinkTransport.SecurityModeCommand
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   # Several routes reach `released` with different numbers of checks
   # (4..5); 4 is the shortest one, so it is the floor that still proves
   # an assertion was made on the messages this run saw.
@@ -205,6 +214,7 @@ final_checks:
     metric: checks_total
     op: greater_or_equal
     value: 4
+    value_metric: flows_started
   - name: and none of them failed
     metric: checks_failed
     op: equals

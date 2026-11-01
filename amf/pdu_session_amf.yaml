@@ -1,0 +1,182 @@
+# AMF-side PDU session establishment responder (TS 24.501 §6.4.1, TS 38.413
+# §8.2.1, TS 23.502 §4.3.2.2.1), with the SMF inline.
+#
+# The network half of gnb/pdu_session_setup.yaml: a full registration (5G-AKA,
+# NAS security, REGISTRATION ACCEPT in INITIAL CONTEXT SETUP REQUEST — the same
+# states as amf/registration_full_amf.yaml), then the UE's PDU SESSION
+# ESTABLISHMENT REQUEST answered by a PDU SESSION RESOURCE SETUP REQUEST whose
+# item carries
+#
+#   N2 SM information — the PDU Session Resource Setup Request Transfer: UL
+#     NG-U tunnel (UPF N3 address + UL TEID), PDU session type IPv4, one QoS
+#     flow (5QI 9, ARP 8), PDU session AMBR;
+#   NAS-PDU — a DL NAS TRANSPORT holding the 5GSM PDU SESSION ESTABLISHMENT
+#     ACCEPT: PDU address from the UE pool, default QoS rule, session AMBR,
+#     S-NSSAI and DNN of the request, an ePCO DNS server, under the request's
+#     PSI and PTI.
+#
+# and the gNB's PDU SESSION RESOURCE SETUP RESPONSE, whose downlink TEID is
+# recorded (ue.Params.gnb_dl_teid — the user-plane peer a later GTP-U leg needs).
+#
+# There is no SMF behind it: the AMF flow grants the session itself. The UPF
+# endpoint and pool are params on the send below (enrichers_amf_session.go has
+# the full list); change them there, not in Runik.
+#
+#   rk run-flow -flow pdu_session_amf -templates . -c amf.yaml -s subscribers.yaml
+#   rk run-flow -flow pdu_session_setup -templates . -c gnb.yaml -s subscribers.yaml
+#
+# Requires subscribers on the AMF side (-s), as registration_full_amf does.
+#
+# final_checks are written per UE, against flows_started, so they hold for one
+# UE and for a fleet alike (`-repetitions N` on both sides).
+
+kind: flow
+name: pdu_session_amf
+description: "AMF-side registration + PDU session establishment, SMF inline (YAML)"
+detail: |
+  Server-mode AMF flow:
+
+    InitialUEMessage(RegistrationRequest)         → AuthenticationRequest
+    AuthenticationResponse                        → SecurityModeCommand
+    SecurityModeComplete                          → RegistrationAccept (InitialContextSetupRequest)
+    InitialContextSetupResponse + RegistrationComplete
+    ULNASTransport(PDUSessionEstablishmentRequest) → PDUSessionResourceSetupRequest
+                                                     (N2 SM transfer + NAS PDUSessionEstablishmentAccept)
+    PDUSessionResourceSetupResponse               → established (gNB DL TEID recorded)
+category: functional
+type: server
+protocol: ngap
+nf: amf
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: InitialUEMessage.RegistrationRequest
+        target: wait_auth_response
+        actions:
+          - type: send
+            message: AuthenticationRequest
+
+  wait_auth_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.AuthenticationResponse
+        target: wait_security_mode_complete
+        actions:
+          - { type: check, field: ue.Params.auth_result, op: equals, expected: xres-match }
+          - type: send
+            message: SecurityModeCommand
+
+  wait_security_mode_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.SecurityModeComplete
+        target: wait_context_setup_response
+        actions:
+          - type: send
+            message: RegistrationAccept
+
+  # The gNB acknowledges the context setup and completes the registration in
+  # one burst; both are mandatory, their order is not asserted (see
+  # registration_full_amf.yaml).
+  wait_context_setup_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: wait_registration_complete
+      - event: NASUplinkTransport.RegistrationComplete
+        target: wait_context_setup_response_after_complete
+
+  wait_registration_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.RegistrationComplete
+        target: wait_pdu_session_request
+
+  wait_context_setup_response_after_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: wait_pdu_session_request
+
+  wait_pdu_session_request:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.ULNASTransport.PDUSessionEstablishmentRequest
+        target: wait_setup_response
+        actions:
+          # A UE-requested transaction: a PDU session identity (1..15) and a
+          # PTI (1..254) both assigned (TS 24.501 §6.4.1.2, §9.4, §9.6).
+          - { type: check, field: ue.Params.amf_pdu_session_id, op: greater_than, expected: 0 }
+          - { type: check, field: ue.Params.amf_pdu_pti, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionEstablishmentAccept
+            params:
+              upf_n3_addr: 127.0.0.1
+              ue_ip_pool: 10.45.0.0/16
+
+  wait_setup_response:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupResponse
+        target: established
+        actions:
+          # TS 38.413 §8.2.1.2: the response names the session set up and,
+          # in its transfer, the DL NG-U endpoint the UPF must send to.
+          - { type: check, field: pdu_session_resource_setup_list.0.pdu_session_id, op: equals, expected: '{{ue.Params.amf_pdu_session_id}}' }
+          - { type: check, field: ue.Params.gnb_dl_teid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.Params.gnb_dl_addr, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: check, field: ue.Params.gnb_dl_addr, op: not_contains, expected: '0.0.0.0' }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — per UE, so the right-hand side is flows_started
+# rather than a constant: one UE or a fleet, every UE must have walked the path.
+final_checks:
+  - name: every UE reached `established`
+    metric: final_state_counts.established
+    op: equals
+    value_metric: flows_started
+  # What this flow sent: one context setup (the REGISTRATION ACCEPT) and one
+  # PDU session resource setup per UE.
+  - name: one INITIAL CONTEXT SETUP REQUEST per UE
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_REQUEST
+    op: equals
+    value_metric: flows_started
+  - name: one PDU SESSION RESOURCE SETUP REQUEST per UE
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_REQUEST
+    op: equals
+    value_metric: flows_started
+  # What the UE side sent, by message identity. Floors: a retransmission is
+  # permitted.
+  - name: a REGISTRATION COMPLETE arrived from every UE
+    metric: rx_events.NASUplinkTransport.RegistrationComplete
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: a PDU SESSION ESTABLISHMENT REQUEST arrived from every UE
+    metric: rx_events.NASUplinkTransport.ULNASTransport.PDUSessionEstablishmentRequest
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: a PDU SESSION RESOURCE SETUP RESPONSE arrived from every UE
+    metric: rx_events.PDUSessionResourceSetupResponse
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: and the gNB reported no ERROR INDICATION
+    metric: rx_events.ErrorIndication
+    op: equals
+    value: 0
+  - name: seven checks per UE ran (the path above has one route)
+    metric: checks_total
+    op: equals
+    value: 7
+    value_metric: flows_started
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

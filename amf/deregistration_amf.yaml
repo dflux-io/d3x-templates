@@ -1,0 +1,153 @@
+# AMF-side UE-originated de-registration responder (TS 24.501 §5.5.2.2,
+# TS 23.502 §4.2.2.3.2, TS 38.413 §8.3.3).
+#
+# The network half of gnb/deregistration.yaml (and of
+# gnb/ue_context_release_amf_initiated.yaml, which drives the same exchange and
+# asserts the release command's UE NGAP IDs): a full registration — the states
+# of amf/registration_full_amf.yaml — then the UE's DEREGISTRATION REQUEST
+# answered with
+#
+#   DEREGISTRATION ACCEPT (UE originating) on a DL NAS TRANSPORT, protected
+#     under the UE's context (§5.5.2.2.2), and
+#   UE CONTEXT RELEASE COMMAND, cause nas/deregister (TS 38.413 §9.3.1.2) —
+#     the AMF-initiated release of the N2 connection (TS 23.502 §4.2.2.3.2
+#     step 7),
+#
+# and the gNB's UE CONTEXT RELEASE COMPLETE ends it.
+#
+# NOT FOR SWITCH-OFF. A switch-off de-registration gets NO accept (§5.5.2.2.2),
+# and a flow cannot branch on the request's contents; this flow checks the
+# request was a normal one and fails otherwise, rather than answering a
+# switch-off with an accept.
+#
+# final_checks are per UE, against flows_started (see pdu_session_amf.yaml).
+
+kind: flow
+name: deregistration_amf
+description: "AMF-side registration + UE-originated de-registration: accept, UE context release (YAML)"
+detail: |
+  Server-mode AMF flow:
+
+    InitialUEMessage(RegistrationRequest) → AuthenticationRequest
+    AuthenticationResponse                → SecurityModeCommand
+    SecurityModeComplete                  → RegistrationAccept (InitialContextSetupRequest)
+    InitialContextSetupResponse + RegistrationComplete
+    DeregistrationRequest                 → DeregistrationAccept + UEContextReleaseCommand(nas/deregister)
+    UEContextReleaseComplete              → deregistered
+category: functional
+type: server
+protocol: ngap
+nf: amf
+initial_state: idle
+final_states:
+  - deregistered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: InitialUEMessage.RegistrationRequest
+        target: wait_auth_response
+        actions:
+          - type: send
+            message: AuthenticationRequest
+
+  wait_auth_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.AuthenticationResponse
+        target: wait_security_mode_complete
+        actions:
+          - { type: check, field: ue.Params.auth_result, op: equals, expected: xres-match }
+          - type: send
+            message: SecurityModeCommand
+
+  wait_security_mode_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.SecurityModeComplete
+        target: wait_context_setup_response
+        actions:
+          - type: send
+            message: RegistrationAccept
+
+  wait_context_setup_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: wait_registration_complete
+      - event: NASUplinkTransport.RegistrationComplete
+        target: wait_context_setup_response_after_complete
+
+  wait_registration_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.RegistrationComplete
+        target: wait_deregistration_request
+
+  wait_context_setup_response_after_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: wait_deregistration_request
+
+  wait_deregistration_request:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.DeregistrationRequest
+        target: wait_release_complete
+        actions:
+          # A normal de-registration is the one an accept answers.
+          - { type: check, field: ue.Params.amf_dereg_switch_off, op: equals, expected: false }
+          - type: send
+            message: DeregistrationAcceptUEOrig
+          - type: send
+            message: UEContextReleaseCommand
+            params:
+              cause_group: nas
+              cause: 2 # deregister
+
+  wait_release_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseComplete
+        target: deregistered
+        actions:
+          # The complete answers the connection the command released.
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.RanUeNgapId}}' }
+          - { type: check, field: amf_ue_ngap_id, op: equals, expected: '{{ue.AmfUeNgapId}}' }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: every UE reached `deregistered`
+    metric: final_state_counts.deregistered
+    op: equals
+    value_metric: flows_started
+  - name: one UE CONTEXT RELEASE COMMAND per UE
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMMAND
+    op: equals
+    value_metric: flows_started
+  - name: one INITIAL CONTEXT SETUP REQUEST per UE
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_REQUEST
+    op: equals
+    value_metric: flows_started
+  - name: a DEREGISTRATION REQUEST arrived from every UE
+    metric: rx_events.NASUplinkTransport.DeregistrationRequest
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: a UE CONTEXT RELEASE COMPLETE arrived from every UE
+    metric: rx_events.UEContextReleaseComplete
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: four checks per UE ran (the path above has one route)
+    metric: checks_total
+    op: equals
+    value: 4
+    value_metric: flows_started
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

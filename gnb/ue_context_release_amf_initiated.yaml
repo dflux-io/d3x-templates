@@ -225,6 +225,8 @@ any_state_transitions:
 # floor, because a retransmission the spec permits must not fail a run that otherwise
 # did what it claimed.
 final_checks:
+  # PER UE: a `value` beside `value_metric: flows_started` is a multiplier, so each
+  # count below is per UE and the block holds for one UE and for a fleet alike.
   # THE TERMINAL, AND WHAT IT DOES NOT PROVE ON ITS OWN. Every path to `released` in
   # this flow ends on a TIMER — the absence window is the point of the row — so this pin
   # says "the flow got as far as the window and nothing knocked it out", and the message
@@ -233,6 +235,7 @@ final_checks:
     metric: final_state_counts.released
     op: equals
     value: 1
+    value_metric: flows_started
   # What this flow sent. Exact: each of these is a `send` action on the
   # path to the terminal above, so a count that moved means the flow did
   # not walk the path it claims to have walked.
@@ -240,18 +243,22 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: one INITIAL UE MESSAGE was sent
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, RegistrationComplete, SecurityModeComplete)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
     value: 4
+    value_metric: flows_started
   - name: one UE CONTEXT RELEASE COMPLETE was sent
     metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMPLETE
     op: equals
     value: 1
+    value_metric: flows_started
   # What the core sent, by the identity of the message rather than its outer
   # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
   # a permitted retransmission must not fail a run that got where it claims.
@@ -259,18 +266,22 @@ final_checks:
     metric: rx_events.InitialContextSetupRequest.RegistrationAccept
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: an AUTHENTICATION REQUEST arrived
     metric: rx_events.NASDownlinkTransport.AuthenticationRequest
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: a SECURITY MODE COMMAND arrived
     metric: rx_events.NASDownlinkTransport.SecurityModeCommand
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: a UE CONTEXT RELEASE COMMAND arrived
     metric: rx_events.UEContextReleaseCommand
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   # The six `check` actions on the path above. A template that stops
   # asserting — a check deleted, a branch taken that skips them — moves this
   # number, and nothing else in the report would have said so.
@@ -278,6 +289,7 @@ final_checks:
     metric: checks_total
     op: equals
     value: 6
+    value_metric: flows_started
   - name: and none of them failed
     metric: checks_failed
     op: equals

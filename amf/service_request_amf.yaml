@@ -1,0 +1,249 @@
+# AMF-side AN release + SERVICE REQUEST responder (TS 24.501 §5.6.1, TS 23.502
+# §4.2.6 and §4.2.3.2, TS 38.413 §8.3.2/§8.3.3/§8.3.1).
+#
+# The network half of
+#
+#   gnb/service_request.yaml — register, AN release, SERVICE REQUEST
+#     (signalling), no PDU session;
+#   gnb/service_request_nas_container_uplink_data_status.yaml — the same with a
+#     PDU session established first and a SERVICE REQUEST whose Uplink data
+#     status (inside the ciphered NAS message container, §4.4.6) asks for it
+#     back.
+#
+# After the registration (the states of amf/registration_full_amf.yaml) the UE
+# either asks for a PDU session first — answered as in amf/pdu_session_amf.yaml
+# — or goes straight to the AN release. Either way:
+#
+#   UE CONTEXT RELEASE REQUEST (gNB) → UE CONTEXT RELEASE COMMAND, cause
+#     radio_network/user-inactivity; UE CONTEXT RELEASE COMPLETE → CM-IDLE.
+#     The gNB's DL tunnel is forgotten here (§4.2.6), so only a reactivation
+#     can name it again.
+#   INITIAL UE MESSAGE (SERVICE REQUEST) on a NEW RAN UE NGAP ID — Runik finds
+#     the stored context by the 5G-S-TMSI the REGISTRATION ACCEPT issued and
+#     allocates a new AMF UE NGAP ID for the new connection —
+#     → INITIAL CONTEXT SETUP REQUEST carrying the SERVICE ACCEPT and the KgNB
+#     derived from that SERVICE REQUEST's uplink NAS COUNT. When the request
+#     named sessions in its Uplink data status, they ride the context setup
+#     (PDU Session Resource Setup List CxtReq) and the accept carries the PDU
+#     session reactivation result.
+#   INITIAL CONTEXT SETUP RESPONSE → service_accepted. On the session path it
+#     must name the gNB's new DL tunnel: that is the reactivation.
+#
+# final_checks are per UE, against flows_started (see pdu_session_amf.yaml);
+# the two paths differ in PDU session messages, so those are floors of 0 here
+# and asserted on the transitions instead.
+
+kind: flow
+name: service_request_amf
+description: "AMF-side registration, AN release and SERVICE REQUEST (with PDU session reactivation) (YAML)"
+detail: |
+  Server-mode AMF flow:
+
+    InitialUEMessage(RegistrationRequest) → … → RegistrationAccept (InitialContextSetupRequest)
+    [ULNASTransport(PDUSessionEstablishmentRequest) → PDUSessionResourceSetupRequest → Response]
+    UEContextReleaseRequest               → UEContextReleaseCommand (radio_network/user-inactivity)
+    UEContextReleaseComplete              → CM-IDLE
+    InitialUEMessage(ServiceRequest)      → ServiceAccept (InitialContextSetupRequest, KgNB from the SR COUNT,
+                                            sessions of the Uplink data status reactivated)
+    InitialContextSetupResponse           → service_accepted
+category: functional
+type: server
+protocol: ngap
+nf: amf
+initial_state: idle
+final_states:
+  - service_accepted
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: InitialUEMessage.RegistrationRequest
+        target: wait_auth_response
+        actions:
+          - type: send
+            message: AuthenticationRequest
+
+  wait_auth_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.AuthenticationResponse
+        target: wait_security_mode_complete
+        actions:
+          - { type: check, field: ue.Params.auth_result, op: equals, expected: xres-match }
+          - type: send
+            message: SecurityModeCommand
+
+  wait_security_mode_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.SecurityModeComplete
+        target: wait_context_setup_response
+        actions:
+          - type: send
+            message: RegistrationAccept
+
+  wait_context_setup_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: wait_registration_complete
+      - event: NASUplinkTransport.RegistrationComplete
+        target: wait_context_setup_response_after_complete
+
+  wait_registration_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.RegistrationComplete
+        target: registered
+
+  wait_context_setup_response_after_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: registered
+
+  # CM-CONNECTED, no PDU session yet.
+  registered:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.ULNASTransport.PDUSessionEstablishmentRequest
+        target: wait_setup_response
+        actions:
+          - { type: check, field: ue.Params.amf_pdu_session_id, op: greater_than, expected: 0 }
+          - { type: check, field: ue.Params.amf_pdu_pti, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionEstablishmentAccept
+            params:
+              upf_n3_addr: 127.0.0.1
+      - event: UEContextReleaseRequest
+        target: wait_release_complete
+        actions:
+          - type: send
+            message: UEContextReleaseCommand
+            params:
+              cause_group: radio_network
+              cause: 20 # user-inactivity
+
+  wait_setup_response:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupResponse
+        target: connected_with_session
+        actions:
+          - { type: check, field: ue.Params.gnb_dl_teid, op: greater_than, expected: 0 }
+
+  connected_with_session:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: UEContextReleaseRequest
+        target: wait_release_complete_with_session
+        actions:
+          - type: send
+            message: UEContextReleaseCommand
+            params:
+              cause_group: radio_network
+              cause: 20 # user-inactivity
+
+  wait_release_complete:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseComplete
+        target: idle_registered
+
+  wait_release_complete_with_session:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: UEContextReleaseComplete
+        target: idle_with_session
+        actions:
+          # The release took the gNB's N3 endpoint with it (TS 23.502 §4.2.6).
+          - { type: check, field: ue.Params.gnb_dl_teid, op: equals, expected: null }
+
+  # CM-IDLE, RM-REGISTERED. The SERVICE REQUEST comes on a new NG connection.
+  idle_registered:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: InitialUEMessage.ServiceRequest
+        target: wait_service_context_setup_response
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 76 }
+          - type: send
+            message: ServiceAccept
+
+  idle_with_session:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: InitialUEMessage.ServiceRequest
+        target: wait_reactivation_response
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 76 }
+          # The Uplink data status named the session to bring back.
+          - { type: check, field: ue.Params.amf_service_reactivate_count, op: greater_than, expected: 0 }
+          - type: send
+            message: ServiceAccept
+
+  wait_service_context_setup_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: service_accepted
+        actions:
+          # Answers the NEW connection: the RAN UE NGAP ID the SERVICE REQUEST
+          # came on and the AMF UE NGAP ID allocated for it.
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.RanUeNgapId}}' }
+          - { type: check, field: amf_ue_ngap_id, op: equals, expected: '{{ue.AmfUeNgapId}}' }
+
+  wait_reactivation_response:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: service_accepted
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.RanUeNgapId}}' }
+          - { type: check, field: amf_ue_ngap_id, op: equals, expected: '{{ue.AmfUeNgapId}}' }
+          # The reactivated session's DL tunnel, from the PDU Session Resource
+          # Setup Response List of this response (TS 38.413 §9.2.2.2).
+          - { type: check, field: pdu_session_resource_setup_list_cxt_res.0.pdu_session_id, op: equals, expected: '{{ue.Params.amf_pdu_session_id}}' }
+          - { type: check, field: ue.Params.gnb_dl_teid, op: greater_than, expected: 0 }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: every UE reached `service_accepted`
+    metric: final_state_counts.service_accepted
+    op: equals
+    value_metric: flows_started
+  # Two context setups per UE (REGISTRATION ACCEPT, SERVICE ACCEPT): one per
+  # UE of each, by the event that triggered it.
+  - name: a SERVICE REQUEST arrived from every UE
+    metric: rx_events.InitialUEMessage.ServiceRequest
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: one UE CONTEXT RELEASE COMMAND per UE
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_COMMAND
+    op: equals
+    value_metric: flows_started
+  - name: a UE CONTEXT RELEASE REQUEST arrived from every UE
+    metric: rx_events.UEContextReleaseRequest
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: a UE CONTEXT RELEASE COMPLETE arrived from every UE
+    metric: rx_events.UEContextReleaseComplete
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: as many INITIAL CONTEXT SETUP RESPONSES as requests
+    metric: rx_events.InitialContextSetupResponse
+    op: greater_or_equal
+    value_metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_REQUEST
+  - name: at least four checks per UE ran (the no-session route; the session route runs 11)
+    metric: checks_total
+    op: greater_or_equal
+    value: 4
+    value_metric: flows_started
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

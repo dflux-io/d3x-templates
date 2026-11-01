@@ -1,0 +1,238 @@
+# The core side of a whole UE life: register, PDU sessions, AN release and
+# SERVICE REQUEST, PDU session release, deregistration — Runik playing the AMF
+# (with the SMF inline) for Runik as gNB.
+#
+# Pairs with
+#
+#   gnb/e2e_cycle_signalling.yaml — the control-plane cycle, including the
+#     idle/connected round trip (AN release, SERVICE REQUEST reactivating the
+#     session);
+#   gnb/e2e_cycle.yaml — the same signalling without the round trip, plus
+#     user-plane traffic through the session. Its user-plane leg needs a GTP-U
+#     peer on the UPF N3 address this flow announces (upf_n3_addr below), and
+#     this flow terminates none: until one answers there, that gNB flow fails
+#     at its pkt_rx check and this one waits it out in `connected`.
+#
+# THE SHAPE IS A HUB. Registration ends in `connected`, and every UE-initiated
+# procedure leaves from there and comes back to it, so one flow answers either
+# gNB flow above and any order of the procedures they run:
+#
+#   connected —PDU SESSION ESTABLISHMENT REQUEST→ setup request → response → connected
+#   connected —UE CONTEXT RELEASE REQUEST→ release command → complete → idle
+#   idle      —SERVICE REQUEST (new NG connection)→ SERVICE ACCEPT (ICS) → response → connected
+#   connected —PDU SESSION RELEASE REQUEST→ release command → response → connected
+#   connected —DEREGISTRATION REQUEST→ accept + UE context release → complete → deregistered
+#
+# Each answer is the one the single-procedure AMF flows send (pdu_session_amf,
+# service_request_amf, deregistration_amf); see those for the clauses.
+#
+# final_checks are per UE, against flows_started, and assert only what both
+# pairings do: registration, one PDU session established and released, the
+# deregistration. The idle round trip — including that the SERVICE REQUEST's
+# context setup brought the session's DL tunnel back — is asserted on its
+# transitions, so this flow requires a UE that goes idle to hold a session.
+
+kind: flow
+name: e2e_cycle_amf
+description: "AMF-side full UE cycle: registration, PDU session, AN release + service request, session release, deregistration (YAML)"
+detail: |
+  Server-mode AMF flow for a whole UE lifecycle, SMF inline. A hub state,
+  `connected`, answers every UE-initiated procedure and returns to itself;
+  the de-registration ends the flow.
+category: functional
+type: server
+protocol: ngap
+nf: amf
+initial_state: idle
+final_states:
+  - deregistered
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: InitialUEMessage.RegistrationRequest
+        target: wait_auth_response
+        actions:
+          - type: send
+            message: AuthenticationRequest
+
+  wait_auth_response:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.AuthenticationResponse
+        target: wait_security_mode_complete
+        actions:
+          - { type: check, field: ue.Params.auth_result, op: equals, expected: xres-match }
+          - type: send
+            message: SecurityModeCommand
+
+  wait_security_mode_complete:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.SecurityModeComplete
+        target: wait_context_setup_response
+        actions:
+          - type: send
+            message: RegistrationAccept
+
+  wait_context_setup_response:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: wait_registration_complete
+      - event: NASUplinkTransport.RegistrationComplete
+        target: wait_context_setup_response_after_complete
+
+  wait_registration_complete:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.RegistrationComplete
+        target: connected
+
+  wait_context_setup_response_after_complete:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: connected
+
+  # CM-CONNECTED. Generous: gnb/e2e_cycle.yaml spends its user-plane window
+  # (up to 120s) here.
+  connected:
+    on_timeout: { duration: 150s, target: failed }
+    transitions:
+      - event: NASUplinkTransport.ULNASTransport.PDUSessionEstablishmentRequest
+        target: wait_setup_response
+        actions:
+          - { type: check, field: ue.Params.amf_pdu_session_id, op: greater_than, expected: 0 }
+          - { type: check, field: ue.Params.amf_pdu_pti, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionEstablishmentAccept
+            params:
+              upf_n3_addr: 127.0.0.1
+              ue_ip_pool: 10.45.0.0/16
+      - event: NASUplinkTransport.ULNASTransport.PDUSessionReleaseRequest
+        target: wait_release_response
+        actions:
+          - { type: check, field: ue.Params.amf_release_pdu_session_id, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionReleaseCommand
+      # A UE that answers the release command at 5GSM too (TS 24.501 §6.4.3.3).
+      - event: NASUplinkTransport.ULNASTransport.PDUSessionReleaseComplete
+        target: connected
+      - event: UEContextReleaseRequest
+        target: wait_an_release_complete
+        actions:
+          - type: send
+            message: UEContextReleaseCommand
+            params:
+              cause_group: radio_network
+              cause: 20 # user-inactivity
+      - event: NASUplinkTransport.DeregistrationRequest
+        target: wait_dereg_release_complete
+        actions:
+          - { type: check, field: ue.Params.amf_dereg_switch_off, op: equals, expected: false }
+          - type: send
+            message: DeregistrationAcceptUEOrig
+          - type: send
+            message: UEContextReleaseCommand
+            params:
+              cause_group: nas
+              cause: 2 # deregister
+
+  wait_setup_response:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupResponse
+        target: connected
+        actions:
+          - { type: check, field: pdu_session_resource_setup_list.0.pdu_session_id, op: equals, expected: '{{ue.Params.amf_pdu_session_id}}' }
+          - { type: check, field: ue.Params.gnb_dl_teid, op: greater_than, expected: 0 }
+
+  wait_release_response:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: PDUSessionReleaseResponse
+        target: connected
+        actions:
+          - { type: check, field: pdu_session_resource_release_list.0.pdu_session_id, op: equals, expected: '{{ue.Params.amf_release_pdu_session_id}}' }
+
+  wait_an_release_complete:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: UEContextReleaseComplete
+        target: cm_idle
+
+  # CM-IDLE, RM-REGISTERED: the SERVICE REQUEST arrives on a new NG connection.
+  cm_idle:
+    on_timeout: { duration: 30s, target: failed }
+    transitions:
+      - event: InitialUEMessage.ServiceRequest
+        target: wait_service_context_setup_response
+        actions:
+          - { type: check, field: nas.header.message_type, op: equals, expected: 76 }
+          - type: send
+            message: ServiceAccept
+
+  wait_service_context_setup_response:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: InitialContextSetupResponse
+        target: connected
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.RanUeNgapId}}' }
+          - { type: check, field: amf_ue_ngap_id, op: equals, expected: '{{ue.AmfUeNgapId}}' }
+          # The reactivation: the AN release forgot the gNB's DL tunnel, so a
+          # value here is the one this response's CxtRes list just named.
+          - { type: check, field: ue.Params.gnb_dl_teid, op: greater_than, expected: 0 }
+
+  wait_dereg_release_complete:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: UEContextReleaseComplete
+        target: deregistered
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: '{{ue.RanUeNgapId}}' }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: every UE reached `deregistered`
+    metric: final_state_counts.deregistered
+    op: equals
+    value_metric: flows_started
+  - name: a PDU SESSION ESTABLISHMENT REQUEST arrived from every UE
+    metric: rx_events.NASUplinkTransport.ULNASTransport.PDUSessionEstablishmentRequest
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: every establishment request was answered with a setup request
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_REQUEST
+    op: equals
+    value_metric: rx_events.NASUplinkTransport.ULNASTransport.PDUSessionEstablishmentRequest
+  - name: a PDU SESSION RELEASE REQUEST arrived from every UE
+    metric: rx_events.NASUplinkTransport.ULNASTransport.PDUSessionReleaseRequest
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: every release request was answered with a release command
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_COMMAND
+    op: equals
+    value_metric: rx_events.NASUplinkTransport.ULNASTransport.PDUSessionReleaseRequest
+  - name: a DEREGISTRATION REQUEST arrived from every UE
+    metric: rx_events.NASUplinkTransport.DeregistrationRequest
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: a context setup (the REGISTRATION ACCEPT) went to every UE
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_REQUEST
+    op: greater_or_equal
+    value_metric: flows_started
+  - name: at least eight checks per UE ran (register, one session established and released, deregister)
+    metric: checks_total
+    op: greater_or_equal
+    value: 8
+    value_metric: flows_started
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -155,22 +155,28 @@ any_state_transitions:
 # Counts are derived from the FSM, not measured — no core was contacted in the
 # change that added this block.
 final_checks:
+  # PER UE: a `value` beside `value_metric: flows_started` is a multiplier, so each
+  # count below is per UE and the block holds for one UE and for a fleet alike.
   - name: the UE ended registered
     metric: final_state_counts.registered
     op: equals
     value: 1
+    value_metric: flows_started
   - name: one INITIAL UE MESSAGE was sent
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 1
+    value_metric: flows_started
   - name: three NAS uplinks went out (AUTH RESPONSE, SECURITY MODE COMPLETE, REGISTRATION COMPLETE)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
     value: 3
+    value_metric: flows_started
   - name: the context setup was answered
     metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
     op: equals
     value: 1
+    value_metric: flows_started
   # The three downlinks REG-100 names, each asserted by its own identity.
   # Floors, not equals: TS 24.501 §5.4.1.3.7 / §5.4.2.7 let the AMF retransmit
   # on T3560 expiry, and a run that registered after one retransmission
@@ -179,14 +185,17 @@ final_checks:
     metric: rx_events.NASDownlinkTransport.AuthenticationRequest
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: a SECURITY MODE COMMAND arrived
     metric: rx_events.NASDownlinkTransport.SecurityModeCommand
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   - name: the REGISTRATION ACCEPT arrived inside an INITIAL CONTEXT SETUP REQUEST
     metric: rx_events.InitialContextSetupRequest.RegistrationAccept
     op: greater_or_equal
     value: 1
+    value_metric: flows_started
   # …and the registration was not refused along the way. A REGISTRATION REJECT
   # is an NGAP_NAS_DOWNLINK_TRANSPORT like any other, so the old block counted
   # it as evidence of success. An rx_events key that did not occur reads 0
@@ -200,6 +209,7 @@ final_checks:
     metric: checks_total
     op: equals
     value: 6
+    value_metric: flows_started
   - name: none of them failed
     metric: checks_failed
     op: equals

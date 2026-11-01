@@ -1,0 +1,341 @@
+# The whole signalling life of a UE, in one flow: register, open a PDU session,
+# go idle (AN release), come back with a SERVICE REQUEST that reactivates the
+# session, release the session, deregister.
+#
+#   ./bin/rk run-flow -flow e2e_cycle_signalling -templates . \
+#       -c gnb.yaml -s subscribers.yaml -repetitions 10 -rate 2 -timeout 90s
+#
+# WHAT THIS IS FOR. The control-plane twin of e2e_cycle.yaml. That flow passes
+# user-plane traffic through the session and so needs a UPF (or a GTP-U
+# reflector) answering on N3; this one carries no user-plane leg and adds the
+# idle/connected round trip e2e_cycle does not do. It is the gNB half of
+# amf/e2e_cycle_amf.yaml — Runik playing the core for Runik — and runs against
+# any core as a fleet exercise in the same sense as e2e_cycle: bound to no
+# REG-id, a failure here says "something in the cycle broke", and the register
+# rows say which thing.
+#
+# THE SESSION COMES BACK ONE OF TWO WAYS, both conformant (TS 23.502 §4.2.3.2
+# step 12). Either the INITIAL CONTEXT SETUP REQUEST that carries the SERVICE
+# ACCEPT also carries the session (PDU Session Resource Setup List CxtReq — the
+# context setup response then names this gNB's DL tunnel), or a separate PDU
+# SESSION RESOURCE SETUP REQUEST follows it. A flow cannot branch on whether an
+# IE was present, so after the accept it waits a short window for the separate
+# request and proceeds without it when none comes. On both routes the SERVICE
+# ACCEPT must say the session was reactivated (reactivation result psi_1 = 0,
+# TS 24.501 §5.6.1.4.1), which is the claim that does not depend on the route.
+#
+# FINAL CHECKS ARE PER UE (`value` × flows_started), so -repetitions N runs are
+# judged by the same block as one UE.
+#
+# TIMEOUTS ARE FLEET TIMEOUTS, looser than the single-procedure templates, as in
+# e2e_cycle.yaml. Pace the fleet with -rate rather than tightening them.
+
+kind: flow
+name: e2e_cycle_signalling
+description: Full UE signalling lifecycle — register, PDU session, AN release, service request with reactivation, session release, deregister
+detail: |
+  A single UE state machine covering the control-plane lifecycle:
+
+    1. Registration (TS 23.502 §4.2.2.2.2) — 5G-AKA, NAS security mode,
+       Initial Context Setup, Registration Complete.
+    2. PDU session establishment (TS 23.502 §4.3.2) — UE address, UPF uplink
+       F-TEID, the gNB's downlink TEID in the setup response.
+    3. AN release (TS 23.502 §4.2.6) — UE Context Release Request / Command /
+       Complete: CM-IDLE, still registered.
+    4. Service Request (TS 24.501 §5.6.1) on a new NG connection, the Uplink
+       data status (in the ciphered NAS message container, §4.4.6) asking for
+       the session back; Service Accept with the reactivation result.
+    5. UE-requested PDU session release (TS 24.501 §6.4.3).
+    6. UE-initiated deregistration (TS 24.501 §5.5.2) and UE Context Release.
+
+  Composed from the states of pdu_session_setup, service_request_nas_container_uplink_data_status,
+  e2e_cycle and deregistration.
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - completed
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: extract
+            field: ue.RanUeNgapId
+            store: pre_release_ran_ue_ngap_id
+          - type: send
+            message: InitialUEMessage
+            # Uplink NAS is pending after registration (TS 24.501 §9.11.3.7).
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - { type: send, message: PDUSessionEstablishmentRequest, params: { pdu_session_id: 1 } }
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 25s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_cmd
+        actions:
+          # `greater_than 0`, not `not_empty`: these are raw uint32s (see e2e_cycle.yaml).
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - { type: check, field: ue.PduAddress, op: regex, expected: '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' }
+          - { type: send, message: PDUSessionResourceSetupResponse }
+          - { type: send, message: UEContextReleaseRequest }
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_pdu_session_accept
+
+  wait_release_cmd:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: wait_service_answer
+        actions:
+          - { type: send, message: UEContextReleaseComplete }
+          - { type: ngap_realloc }
+          - type: send
+            message: ServiceRequestNasContainer
+            params:
+              uplink_data_status_psi: "1"
+              service_type: 2
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_release_cmd
+
+  wait_service_answer:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.ServiceAccept
+        target: wait_separate_setup
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          # On the new connection: a new RAN UE NGAP ID (ngap_realloc).
+          - { type: check, field: ran_ue_ngap_id, op: equals, expected: "{{ue.RanUeNgapId}}" }
+          - { type: check, field: ran_ue_ngap_id, op: greater_than, expected: "{{ue.Params.pre_release_ran_ue_ngap_id}}" }
+          - { type: send, message: InitialContextSetupResponse }
+      - event: NASDownlinkTransport.ServiceAccept
+        target: wait_required_setup
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+      # The setup may overtake a SERVICE ACCEPT on DL NAS TRANSPORT.
+      - event: PDUSessionResourceSetupRequest
+        target: wait_late_service_accept
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: send, message: PDUSessionResourceSetupResponse }
+      - event: InitialContextSetupRequest
+        target: wait_late_service_accept
+        actions:
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: send, message: InitialContextSetupResponse }
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceReject
+            - InitialContextSetupRequest.ServiceReject
+        target: failed
+
+  wait_late_service_accept:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.ServiceAccept
+        target: wait_release_command
+        actions:
+          - { type: check, field: nas.pdu_session_reactivation_result, op: ie_present }
+          - { type: check, field: nas.pdu_session_reactivation_result.psi_1, op: equals, expected: 0 }
+          - { type: send, message: PDUSessionReleaseRequest }
+      - event:
+          or:
+            - NASDownlinkTransport.ServiceReject
+            - InitialContextSetupRequest.ServiceReject
+        target: failed
+
+  # The context setup either carried the session or a separate setup follows.
+  wait_separate_setup:
+    on_timeout:
+      duration: 3s
+      target: wait_release_command
+      actions:
+        # No separate setup came, so the context setup must have carried the
+        # session (PDU Session Resource Setup List CxtReq).
+        - { type: check, field: ue.Params.cxt_setup_session_count, op: greater_than, expected: 0 }
+        - { type: send, message: PDUSessionReleaseRequest }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: send, message: PDUSessionResourceSetupResponse }
+          - { type: send, message: PDUSessionReleaseRequest }
+
+  # A SERVICE ACCEPT on DL NAS TRANSPORT reactivates nothing by itself.
+  wait_required_setup:
+    on_timeout: { duration: 12s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: send, message: PDUSessionResourceSetupResponse }
+          - { type: send, message: PDUSessionReleaseRequest }
+      - event: InitialContextSetupRequest
+        target: wait_release_command
+        actions:
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_setup_list_cxt_req.0.pdu_session.connection_info.remote_teid, op: greater_than, expected: 0 }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: PDUSessionReleaseRequest }
+
+  wait_release_command:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      # The NGAP PDU SESSION RESOURCE RELEASE COMMAND carries a DL NAS TRANSPORT
+      # wrapping the 5GSM PDU SESSION RELEASE COMMAND.
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: wait_dereg_accept
+        actions:
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: greater_or_equal, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
+          # 211 = 0xD3 PDU SESSION RELEASE COMMAND.
+          - { type: check, field: nas.payload_container.n1_sm_message.header.message_type, op: equals, expected: 211 }
+          - { type: check, field: nas.payload_container.n1_sm_message.header.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+          - { type: send, message: DeregistrationRequest }
+
+  # Accept-then-release or release alone are both in the field (deregistration.yaml).
+  wait_dereg_accept:
+    on_timeout: { duration: 20s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: wait_release
+      - event: UEContextReleaseCommand
+        target: completed
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+
+  wait_release:
+    on_timeout: { duration: 20s, target: completed }
+    transitions:
+      - event: UEContextReleaseCommand
+        target: completed
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, for one UE (the gnb corpus
+# convention; a fleet run is read off final_state_counts.completed against
+# flows_started). Ours are exact, the core's floors.
+final_checks:
+  # PER UE: a `value` beside `value_metric: flows_started` is a multiplier, so each
+  # count below is per UE and the block holds for one UE and for a fleet alike.
+  - name: the flow reached `completed`
+    metric: final_state_counts.completed
+    op: equals
+    value: 1
+    value_metric: flows_started
+  - name: two INITIAL UE MESSAGE messages went out (InitialUEMessage, ServiceRequestNasContainer)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 2
+    value_metric: flows_started
+  - name: one UE CONTEXT RELEASE REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_UE_CONTEXT_RELEASE_REQUEST
+    op: equals
+    value: 1
+    value_metric: flows_started
+  - name: one PDU SESSION RESOURCE RELEASE RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
+    op: equals
+    value: 1
+    value_metric: flows_started
+  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, DeregistrationRequest)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 6
+    value_metric: flows_started
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+    value_metric: flows_started
+  - name: a PDU SESSION RESOURCE SETUP REQUEST arrived
+    metric: rx_events.PDUSessionResourceSetupRequest
+    op: greater_or_equal
+    value: 1
+    value_metric: flows_started
+  - name: a UE CONTEXT RELEASE COMMAND arrived
+    metric: rx_events.UEContextReleaseCommand
+    op: greater_or_equal
+    value: 1
+    value_metric: flows_started
+  - name: a PDU SESSION RELEASE COMMAND arrived (the NAS message inside the NGAP PDU SESSION RELEASE COMMAND)
+    metric: rx_events.PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+    op: greater_or_equal
+    value: 1
+    value_metric: flows_started
+  # The shortest route to `completed` runs 16 checks (context-setup accept,
+  # no separate setup, accept-then-release deregistration).
+  # THE REACTIVATION, by message. Every route a UE can take to `completed`
+  # answers the session twice and the registration once: setup responses +
+  # context setup responses is 3 per UE (registration context setup, first
+  # setup, and the reactivation by context setup OR separate setup — 4 when a
+  # core does both), however the routes split across a fleet. Without a
+  # reactivation it is 2.
+  - name: the session was set up again after the SERVICE REQUEST (setup + context setup responses, at least 3 per UE)
+    metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_SETUP_RESPONSE
+    plus_metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: greater_or_equal
+    value: 3
+    value_metric: flows_started
+  - name: at least 15 declared checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 15
+    value_metric: flows_started
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0
