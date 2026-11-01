@@ -22,6 +22,11 @@ states:
         actions:
           - type: send
             message: Nausf_UEAuthentication_Authenticate
+            # The client binding to send on, by NF name: d3x
+            # runik/config/lab-sbi.yaml's ausf-peer (sbi-ausf-out). A first send
+            # with no peer has no NF target (no inbound has named one yet)
+            # and fails: sbi.send: no client binding for nf "".
+            peer: ausf-peer
             message_body: |
               {
                 "body": {

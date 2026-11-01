@@ -24,6 +24,11 @@ states:
         actions:
           - type: send
             message: Nudm_SDM_GetSubscriptionData
+            # The client binding to send on, by NF name: d3x
+            # runik/config/lab-sbi.yaml's udm-peer (sbi-out). A first send
+            # with no peer has no NF target (no inbound has named one yet)
+            # and fails: sbi.send: no client binding for nf "".
+            peer: udm-peer
 
   wait_response:
     on_timeout:
