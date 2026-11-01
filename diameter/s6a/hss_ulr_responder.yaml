@@ -1,0 +1,68 @@
+# S6a ULR responder — Runik is the HSS.
+# Update-Location-Request/Answer (3GPP TS 29.272 §7.2.3).
+#
+# The far end for diameter_s6a_mme_ulr: the MME sends ULR, this flow answers
+# ULA with Result-Code 2001 and ULA-Flags 0x1 (separation indication) —
+# EnrichULA, the same answer the SCP-echo flow diameter_s6a_ulr_ula_success
+# builds for its own reflected ULR. No Subscription-Data is returned.
+#
+# Ambient responder, like diameter_s6a_hss_air_responder: one server UE
+# answers every ULR and completes once the MME has been quiet for 5s. Start it
+# first, in its own rk process:
+#
+#   rk run-flow -flow diameter_s6a_hss_ulr_responder -templates . \
+#       -c <d3x>/runik/config/lab-diameter-hss.yaml -timeout 60s
+#   rk run-flow -flow diameter_s6a_mme_ulr -templates . \
+#       -c <d3x>/runik/config/lab-diameter-mme-hss.yaml -subscriber-seed 1
+
+kind: flow
+name: diameter_s6a_hss_ulr_responder
+description: HSS answers every S6a ULR with ULA (Result-Code 2001)
+category: functional
+type: server
+protocol: diameter
+nf: hss
+initial_state: waiting
+final_states: [completed, failed]
+
+states:
+  waiting:
+    on_timeout:
+      duration: 5s
+      target: completed
+    transitions:
+      - event: ULR
+        target: waiting
+        actions:
+          - type: check
+            field: User-Name
+            op: exists
+          # EUTRAN (1004), single registration indication (0x2).
+          - type: check
+            field: RAT-Type
+            op: equals
+            expected: 1004
+          - type: check
+            field: ULR-Flags
+            op: equals
+            expected: 2
+          - type: send
+            message: ULA
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: at least one ULR arrived
+    metric: rx_events.ULR
+    op: greater_or_equal
+    value: 1
+  - name: at least one ULA was sent
+    metric: msg_types.tx.diameter.ULA
+    op: greater_or_equal
+    value: 1
+  - name: every ULR carried User-Name, RAT-Type EUTRAN and ULR-Flags 0x2
+    metric: checks_failed
+    op: equals
+    value: 0

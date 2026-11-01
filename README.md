@@ -69,6 +69,8 @@ rk run-suite -suite pfcp_loopback_upf_dials -templates . -c <d3x>/runik/config/l
 
 To test a real UPF, run the `smf/pfcp_*` side against it; to test a real SMF, the `upf/pfcp_*` side.
 
+`diameter/` holds two kinds of flow: echo flows for an SCP in echo mode, and request/answer pairs — MME↔HSS on S6a, PGW↔PCRF on Gx — that run against a real HSS/PCRF or with Runik on both ends in two rk processes. `diameter/README.md` lists the pairs and how to run them.
+
 `nrf/README.md` is the operational manual for the NRF suites (bring-up, JWT key, persistence / mTLS / concurrency workers).
 
 ## Flows and suites
