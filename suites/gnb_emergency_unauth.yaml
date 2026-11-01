@@ -1,0 +1,25 @@
+# Unauthenticated emergency services — the IMEI-only UE, granted.
+#
+# Needs an AMF configured with -emergency-allow-unauth=imei (TS 23.501
+# §5.16.4.1, TS 33.501 §10.2.2) — NOT the lab default, because it grants
+# service under NULL NAS security. e2e-gnb-run.sh recreates the lab AMF with
+# AMF_EMERGENCY_UNAUTH=imei for this suite only and restores the default after.
+#
+#   1. emergency_unauth_imei — IMEI-only emergency registration under
+#      NIA0/NEA0, an emergency PDU session with the emergency 5QI / ARP, and an
+#      ordinary PDU session request from the same UE refused #90.
+#
+# Run:
+#   ./bin/rk run-suite -suite gnb-emergency-unauth \
+#       -templates <templates-dir> -c <lab.yaml> -s <subscribers.yaml> -trace
+kind: suite
+name: gnb-emergency-unauth
+description: Unauthenticated (IMEI-only) emergency registration under NULL security, emergency PDU, ordinary PDU refused.
+steps:
+  - name: emergency_unauth_imei
+    flow: emergency_unauth_imei
+    repetitions: 1
+    timeout: 60s
+    stop_on_failure: true
+    success_when:
+      at_least_one_final_state: restricted
