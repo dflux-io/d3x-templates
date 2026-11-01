@@ -1,0 +1,66 @@
+# S6a AIR responder — Runik is the HSS.
+# Authentication-Information-Request/Answer (3GPP TS 29.272 §7.2.5).
+#
+# The far end for diameter_s6a_mme_air: an MME (Runik or real) sends AIR, this
+# flow answers AIA with Result-Code 2001 (EnrichAIA copies Session-Id,
+# Hop-by-Hop and End-to-End from the request). No authentication vectors are
+# returned — the AIA is the S6a exchange, not 4G AKA.
+#
+# Ambient responder: one server UE answers every inbound AIR, re-entering
+# `waiting` each time, and completes once the MME has been quiet for 5s (each
+# re-entry restarts the on_timeout). It is judged on that traffic. HSS and MME
+# are two rk processes — Diameter is one stack per env — so start this side
+# first; it waits for the MME's CER (responder.timeout in the env):
+#
+#   rk run-flow -flow diameter_s6a_hss_air_responder -templates . \
+#       -c <d3x>/runik/config/lab-diameter-hss.yaml -timeout 60s
+#   rk run-flow -flow diameter_s6a_mme_air -templates . \
+#       -c <d3x>/runik/config/lab-diameter-mme-hss.yaml -subscriber-seed 1
+
+kind: flow
+name: diameter_s6a_hss_air_responder
+description: HSS answers every S6a AIR with AIA (Result-Code 2001)
+category: functional
+type: server
+protocol: diameter
+nf: hss
+initial_state: waiting
+final_states: [completed, failed]
+
+states:
+  waiting:
+    on_timeout:
+      duration: 5s
+      target: completed
+    transitions:
+      # The RX event is the dictionary short name + R/A ("AIR"), whatever
+      # enricher built it on the far side.
+      - event: AIR
+        target: waiting
+        actions:
+          - type: check
+            field: User-Name
+            op: exists
+          - type: check
+            field: Visited-PLMN-Id
+            op: exists
+          - type: send
+            message: AIA
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: at least one AIR arrived
+    metric: rx_events.AIR
+    op: greater_or_equal
+    value: 1
+  - name: at least one AIA was sent
+    metric: msg_types.tx.diameter.AIA
+    op: greater_or_equal
+    value: 1
+  - name: every AIR carried User-Name and Visited-PLMN-Id
+    metric: checks_failed
+    op: equals
+    value: 0

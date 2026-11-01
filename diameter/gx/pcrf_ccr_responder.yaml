@@ -1,0 +1,71 @@
+# Gx CCR responder — Runik is the PCRF.
+# Credit-Control-Request/Answer (RFC 4006 §3.1, 3GPP TS 29.212 §5.6).
+#
+# The far end for diameter_gx_pgw_ccr_session: the PGW sends CCR INITIAL,
+# UPDATE and TERMINATION on one Gx session, and this flow answers each with a
+# CCA (Result-Code 2001) that mirrors the request's CC-Request-Type and
+# CC-Request-Number (EnrichCCA) — the answer half of the SCP-echo flows
+# diameter_gx_ccr_cca_init / _terminate. No Charging-Rule-Install is returned.
+#
+# Every CCR arrives as the event `CCR`, whatever its type: the request type is
+# an AVP, not a command. One transition answers all three; the PGW side
+# asserts each CCA carries back the type it asked with.
+#
+# Ambient responder: one server UE answers every CCR and completes once the
+# PGW has been quiet for 5s. Start it first, in its own rk process:
+#
+#   rk run-flow -flow diameter_gx_pcrf_ccr_responder -templates . \
+#       -c <d3x>/runik/config/lab-diameter-pcrf.yaml -timeout 60s
+#   rk run-flow -flow diameter_gx_pgw_ccr_session -templates . \
+#       -c <d3x>/runik/config/lab-diameter-pgw-pcrf.yaml -subscriber-seed 1
+
+kind: flow
+name: diameter_gx_pcrf_ccr_responder
+description: PCRF answers every Gx CCR (INITIAL / UPDATE / TERMINATION) with CCA
+category: functional
+type: server
+protocol: diameter
+nf: pcrf
+initial_state: waiting
+final_states: [completed, failed]
+
+states:
+  waiting:
+    on_timeout:
+      duration: 5s
+      target: completed
+    transitions:
+      - event: CCR
+        target: waiting
+        actions:
+          - type: check
+            field: CC-Request-Type
+            op: exists
+          # EUTRAN IP-CAN (5).
+          - type: check
+            field: IP-CAN-Type
+            op: equals
+            expected: 5
+          - type: check
+            field: Subscription-Id
+            op: exists
+          - type: send
+            message: CCA
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: at least one CCR arrived
+    metric: rx_events.CCR
+    op: greater_or_equal
+    value: 1
+  - name: at least one CCA was sent
+    metric: msg_types.tx.diameter.CCA
+    op: greater_or_equal
+    value: 1
+  - name: every CCR carried CC-Request-Type, IP-CAN-Type EUTRAN and Subscription-Id
+    metric: checks_failed
+    op: equals
+    value: 0

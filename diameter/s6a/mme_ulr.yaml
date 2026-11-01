@@ -1,0 +1,64 @@
+# S6a ULR toward an HSS — Runik is the MME.
+# Update-Location-Request/Answer (3GPP TS 29.272 §7.2.3).
+#
+# Unlike diameter_s6a_ulr_ula_success (the 4-step echo through an SCP), this
+# flow expects a real answer: ULR out, ULA back with Result-Code 2001. Point
+# it at an HSS, or at diameter_s6a_hss_ulr_responder in a second rk process.
+#
+# User-Name is the UE's IMSI, so the run needs subscribers: -s,
+# -gen-subscriber, or -subscriber-seed.
+
+kind: flow
+name: diameter_s6a_mme_ulr
+description: MME sends S6a ULR and expects ULA Result-Code 2001 from the HSS
+category: functional
+type: client
+protocol: diameter
+nf: mme
+initial_state: idle
+final_states: [completed, failed]
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ula
+        actions:
+          - type: send
+            message: ULR
+
+  wait_ula:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: ULA
+        target: completed
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# Count-free, so the same claim holds at -repetitions 1 and at 10k.
+final_checks:
+  - name: every UE completed
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: at least one UE completed
+    metric: final_state_counts.completed
+    op: greater_or_equal
+    value: 1
+  - name: a ULA arrived
+    metric: rx_events.ULA
+    op: greater_or_equal
+    value: 1
+  - name: every ULA carried Result-Code 2001
+    metric: checks_failed
+    op: equals
+    value: 0

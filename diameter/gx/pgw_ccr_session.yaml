@@ -1,0 +1,117 @@
+# Gx credit-control session toward a PCRF — Runik is the PGW (PCEF).
+# Credit-Control-Request/Answer (RFC 4006 §3.1, 3GPP TS 29.212 §4.5).
+#
+# One Gx session, end to end: CCR INITIAL at establishment, one CCR UPDATE,
+# CCR TERMINATION at release — each answered by a CCA with Result-Code 2001
+# that carries back the CC-Request-Type it answers. Unlike the SCP-echo flows
+# (diameter_gx_ccr_cca_init / _terminate), it expects real answers: point it
+# at a PCRF, or at diameter_gx_pcrf_ccr_responder in a second rk process.
+#
+# All three CCRs share the UE's Session-Id. Subscription-Id is the UE's IMSI,
+# so the run needs subscribers: -s, -gen-subscriber, or -subscriber-seed.
+#
+# Each check sits one transition before the terminal (settle), so a failed
+# check is never counted as having reached `completed` — and checks_failed
+# below says so either way.
+
+kind: flow
+name: diameter_gx_pgw_ccr_session
+description: PGW runs a Gx session (CCR-I, CCR-U, CCR-T) and expects a CCA 2001 for each from the PCRF
+category: functional
+type: client
+protocol: diameter
+nf: pgw
+initial_state: idle
+final_states: [completed, failed]
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_cca_initial
+        actions:
+          - type: send
+            message: CCRInit
+
+  wait_cca_initial:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CCA
+        target: wait_cca_update
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+          - type: check
+            field: CC-Request-Type
+            op: equals
+            expected: 1
+          - type: send
+            message: CCRUpdate
+
+  wait_cca_update:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CCA
+        target: wait_cca_terminate
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+          - type: check
+            field: CC-Request-Type
+            op: equals
+            expected: 2
+          - type: send
+            message: CCRTerminate
+
+  wait_cca_terminate:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: CCA
+        target: settle
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+          - type: check
+            field: CC-Request-Type
+            op: equals
+            expected: 3
+
+  settle:
+    on_timeout:
+      duration: 10ms
+      target: completed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# Count-free, so the same claim holds at -repetitions 1 and at 10k.
+final_checks:
+  - name: every UE completed its session
+    metric: final_state_counts.failed
+    op: equals
+    value: 0
+  - name: at least one UE completed its session
+    metric: final_state_counts.completed
+    op: greater_or_equal
+    value: 1
+  - name: three CCRs went out per session (INITIAL, UPDATE, TERMINATION)
+    metric: msg_types.tx.diameter.CCR
+    op: greater_or_equal
+    value: 3
+  - name: every CCA carried Result-Code 2001 and the CC-Request-Type it answers
+    metric: checks_failed
+    op: equals
+    value: 0
