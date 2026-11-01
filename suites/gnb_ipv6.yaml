@@ -12,10 +12,17 @@
 #   3. pdu_session_ipv4         — IPv4 requested: the IPv4-only session is
 #      unchanged next to IPv6 on the same DNN (no regression).
 #
-# The /64 itself reaches the UE in the UPF's Router Advertisement on the
-# session's tunnel; the lab UPF is `-datapath stub` and carries no user plane,
-# so RA / ping6 are covered by the d3x Go e2e tests against the real
-# userspace datapath and by scripts/upf-datapath-run.sh, not here.
+# Then the USER PLANE, which needs a UPF that forwards (the d3x lab recreates
+# its UPF with the userspace datapath for this suite, and puts a data network
+# host on N6 — gnb.uplane.target_addr / target_addr6):
+#
+#   4. ipv6_ra_ping6        — the UPF's Router Advertisement on the session's
+#      tunnel (M=0 O=0, a /64 with L=0 A=1, TS 29.061 §11.2.1.3.4) configures
+#      the UE's address from the accept's interface identifier, and ICMPv6
+#      echo to the data network round-trips.
+#   5. ipv6_udp6            — UDP over IPv6 from that address is echoed back.
+#   6. ipv4v6_dual_stack    — an IPv4v6 session carries BOTH families on its
+#      one tunnel: ICMP over IPv4 and ICMPv6 each round-trip.
 #
 # Run:
 #   ./bin/rk run-suite -suite gnb-ipv6 \
@@ -23,7 +30,7 @@
 
 kind: suite
 name: gnb-ipv6
-description: IPv6 and IPv4v6 PDU sessions granted on an IPv6-capable DNN, IPv4 unchanged.
+description: IPv6 and IPv4v6 PDU sessions granted on an IPv6-capable DNN, IPv4 unchanged, and their user plane (RA, ping6, UDP over IPv6, both families on IPv4v6).
 steps:
   - name: pdu_session_ipv6_granted
     flow: pdu_session_ipv6_granted
@@ -48,3 +55,27 @@ steps:
     stop_on_failure: false
     success_when:
       at_least_one_final_state: established
+
+  - name: ipv6_ra_ping6
+    flow: pdu_session_ipv6_ra_ping6
+    repetitions: 1
+    timeout: 40s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: user_plane_verified
+
+  - name: ipv6_udp6
+    flow: pdu_session_ipv6_udp6
+    repetitions: 1
+    timeout: 40s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: user_plane_verified
+
+  - name: ipv4v6_dual_stack
+    flow: pdu_session_ipv4v6_dual_stack_traffic
+    repetitions: 1
+    timeout: 40s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: user_plane_verified

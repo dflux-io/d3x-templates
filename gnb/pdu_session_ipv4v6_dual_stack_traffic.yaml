@@ -1,0 +1,131 @@
+# IPv4v6 PDU session USER PLANE: BOTH families reach the data network over
+# the one session tunnel.
+#
+# TS 23.501 §5.8.2.2.1 / TS 24.501 §6.4.1.3: an IPv4v6 session carries an IPv4
+# address AND an IPv6 interface identifier in its PDU address IE; the IPv6
+# /64 comes in the UPF's Router Advertisement. The UE then has two addresses on
+# one PDU session and the UPF serves both: the downlink matched by the IPv4
+# address and by the /64, the uplink source checked against either.
+#
+# The report splits the tunnel's traffic by family (pkt_tx4 / pkt_rx4 /
+# pkt_tx6 / pkt_rx6), so "both families made it through" is asserted as two
+# facts, not inferred from a total one family alone could have produced. The
+# targets are gnb.uplane.target_addr and target_addr6 (the d3x lab's `dn` on
+# N6 answers both).
+kind: flow
+name: pdu_session_ipv4v6_dual_stack_traffic
+description: IPv4v6 PDU session user plane — ICMP echo over IPv4 AND ICMPv6 echo from the RA-configured address both round-trip to the data network on the one session tunnel (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - user_plane_verified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # PDU session type IE = "IPv4v6" (TS 24.501 §9.11.4.11 value 3).
+              pdu_session_type: 3
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_window
+        actions:
+          - { type: check, field: ue.Params.pdu_accept_selected_pdu_session_type, op: equals, expected: 3 }
+          - { type: check, field: ue.PduAddress, op: not_empty }
+          # The interface identifier the UE will build both its link-local and
+          # its global address from (TS 24.501 §9.11.4.10).
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv6_iid_len, op: equals, expected: 8 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # Both halves at once: ICMP from the IPv4 address to target_addr,
+          # and (after the RA) ICMPv6 from <RA prefix>::<iid> to target_addr6.
+          - { type: uplane_start, params: { duration: 4s, protocol: icmp } }
+
+  uplane_window:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: user_plane_verified
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # The IPv6 half was configured from an RA with the accept's
+          # interface identifier.
+          - { type: check, field: ue.UplaneReport.ra_rx, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.UplaneReport.ra_prefix_len, op: equals, expected: 64 }
+          - { type: check, field: ue.UplaneReport.ipv6_addr_iid, op: equals, expected: "{{ue.Params.pdu_accept_pdu_address_ipv6_iid}}" }
+          # ---- IPv4 through the UPF and back. ----
+          - { type: check, field: ue.UplaneReport.pkt_tx4, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UplaneReport.pkt_rx4, op: greater_than, expected: 0 }
+          # ---- IPv6 through the UPF and back, on the same tunnel. ----
+          - { type: check, field: ue.UplaneReport.pkt_tx6, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UplaneReport.pkt_rx6, op: greater_than, expected: 0 }
+          # The totals are the two families and nothing else.
+          - { type: check, field: ue.UplaneReport.pkt_rx, op: greater_or_equal, expected: 2 }
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `user_plane_verified`
+    metric: final_state_counts.user_plane_verified
+    op: equals
+    value: 1
+  - name: the run asserted both families
+    metric: checks_total
+    op: greater_or_equal
+    value: 16
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0
