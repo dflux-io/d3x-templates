@@ -1,0 +1,129 @@
+# PDU session establishment requesting PDU session type "IPv6" on a DNN that
+# serves IPv6 — the Accept must GRANT IPv6, not downgrade or reject.
+#
+# The lenient sibling pdu_session_setup_ipv6 accepts either outcome (it probes
+# a core whose DNN may be IPv4-only). This flow is for a core configured with
+# an IPv6 prefix pool on the DNN (the d3x lab: SMF -ue-pool internet=<v6>/48,
+# docs/smf/ipv6.md) and holds it to the IPv6 grant.
+#
+# Clauses:
+#
+#   TS 24.501 §6.4.1.3: "If the selected PDU session type is 'IPv6', the SMF
+#   shall include the PDU address IE in the PDU SESSION ESTABLISHMENT ACCEPT
+#   message and shall set the PDU address IE to an interface identifier for the
+#   IPv6 link local address, allocated to the UE in the PDU session." The /64
+#   itself is not in the Accept: the UE learns it from the Router Advertisement
+#   (TS 23.501 §5.8.2.2.1).
+#
+#   TS 24.501 §9.11.4.10: the interface identifier is 8 octets.
+#
+#   TS 24.008 §10.5.6.3 (via TS 24.501 §9.11.4.6): DNS Server IPv6 Address
+#   containers (0x0003) answer an IPv6 session; an IPv6-only session gets no
+#   IPv4 DNS server — it has no IPv4 route to one.
+#
+# HARNESS NOTE — the accept's IEs are read from ue.Params (see
+# pdu_session_setup_ipv4v6.yaml for why): exposePduSessionAcceptParams
+# (runik/engine/enrichers_pdu_session_accept.go).
+kind: flow
+name: pdu_session_ipv6_granted
+description: PDU session establishment requesting IPv6 on an IPv6 DNN — the Accept grants IPv6 with an interface identifier and IPv6 DNS (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - established
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # PDU session type IE = "IPv6" (TS 24.501 §9.11.4.11 value 2).
+              pdu_session_type: 2
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: established
+        actions:
+          - { type: check, field: pdu_session_resource_setup_request_items.0.nas_pdu, op: ie_present }
+          # Granted as requested: no #50/#51 (-1 == the 5GSM cause IE is absent).
+          - { type: check, field: ue.Params.pdu_accept_5gsm_cause, op: equals, expected: -1 }
+          - { type: check, field: ue.Params.pdu_accept_selected_pdu_session_type, op: equals, expected: 2 }
+          # The PDU address IE: type IPv6, an 8-octet interface identifier, no IPv4.
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_type, op: equals, expected: 2 }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv6_iid_len, op: equals, expected: 8 }
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv4, op: equals, expected: "" }
+          # IPv6 DNS for an IPv6 session, and no IPv4 one.
+          - { type: check, field: ue.Params.pdu_accept_epco_dns_ipv6_count, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.Params.pdu_accept_epco_dns_ipv4_count, op: equals, expected: 0 }
+          # The N2 setup transfer announces the session as IPv6 (TS 38.413
+          # §9.3.1.52: ipv6 = 1).
+          - { type: check, field: pdu_session_resource_setup_request_items.0.pdu_session.type.pdu_session_type, op: equals, expected: 1 }
+          - { type: check, field: ue.PduSessionId, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `established` — IPv6 was granted
+    metric: final_state_counts.established
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 14
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

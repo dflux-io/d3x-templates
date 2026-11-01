@@ -1,0 +1,50 @@
+# gNB ↔ AMF ↔ SMF IPv6 / IPv4v6 PDU session suite.
+#
+# For a core whose DNN serves IPv6 (the d3x lab: the SMF carries an IPv6 /48
+# prefix pool for "internet" and IPv6 DNS servers, docs/smf/ipv6.md). Each step
+# registers one UE and establishes one PDU session:
+#
+#   1. pdu_session_ipv6_granted — IPv6 requested: IPv6 granted, an 8-octet
+#      interface identifier in the PDU address IE, IPv6 DNS only, the N2
+#      transfer says IPv6 (TS 24.501 §6.4.1.3).
+#   2. pdu_session_ipv4v6       — IPv4v6 requested: IPv4v6 granted with BOTH an
+#      IPv4 address and an interface identifier, no #50/#51.
+#   3. pdu_session_ipv4         — IPv4 requested: the IPv4-only session is
+#      unchanged next to IPv6 on the same DNN (no regression).
+#
+# The /64 itself reaches the UE in the UPF's Router Advertisement on the
+# session's tunnel; the lab UPF is `-datapath stub` and carries no user plane,
+# so RA / ping6 are covered by the d3x Go e2e tests against the real
+# userspace datapath and by scripts/upf-datapath-run.sh, not here.
+#
+# Run:
+#   ./bin/rk run-suite -suite gnb-ipv6 \
+#       -templates <templates-dir> -c <lab-gnb.yaml> -s <subscribers.yaml> -trace
+
+kind: suite
+name: gnb-ipv6
+description: IPv6 and IPv4v6 PDU sessions granted on an IPv6-capable DNN, IPv4 unchanged.
+steps:
+  - name: pdu_session_ipv6_granted
+    flow: pdu_session_ipv6_granted
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
+
+  - name: pdu_session_ipv4v6
+    flow: pdu_session_setup_ipv4v6
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
+
+  - name: pdu_session_ipv4
+    flow: pdu_session_setup
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: established
