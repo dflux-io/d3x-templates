@@ -225,6 +225,12 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_COMMAND
     op: equals
     value_metric: rx_events.NASUplinkTransport.ULNASTransport.PDUSessionReleaseRequest
+  # The UE answers the 5GSM release command (TS 24.501 §6.4.3.3); the paired
+  # gnb cycles send it.
+  - name: every release command was answered with a PDU SESSION RELEASE COMPLETE
+    metric: rx_events.NASUplinkTransport.ULNASTransport.PDUSessionReleaseComplete
+    op: greater_or_equal
+    value_metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_COMMAND
   - name: a DEREGISTRATION REQUEST arrived from every UE
     metric: rx_events.NASUplinkTransport.DeregistrationRequest
     op: greater_or_equal

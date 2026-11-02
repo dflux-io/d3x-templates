@@ -50,7 +50,8 @@ detail: |
     3. User-plane traffic — ICMP echo encapsulated in GTP-U over the established
        N3 tunnel, for the configured duration.
     4. UE-requested PDU session release (TS 24.501 §6.4.3) — release request,
-       release command, resource release response.
+       release command, resource release response, PDU SESSION RELEASE
+       COMPLETE.
     5. UE-initiated deregistration (TS 24.501 §5.5.2) — deregistration request,
        then UE Context Release.
 
@@ -226,6 +227,12 @@ states:
           - { type: check, field: nas.payload_container.n1_sm_message.header.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
           - type: send
             message: PDUSessionResourceReleaseResponse
+          # The UE answers the 5GSM command too (TS 24.501 §6.4.3.3), in an
+          # integrity-protected UL NAS TRANSPORT. Without it Open5GS 2.8.0's SMF
+          # kept the session waiting for the N1 half while the deregistration
+          # released it: AMF->SMF SBI timeouts and an ERROR INDICATION.
+          - type: send
+            message: PDUSessionReleaseComplete
           - type: send
             message: DeregistrationRequest
 
@@ -303,10 +310,10 @@ final_checks:
     op: equals
     value: 1
     value_metric: flows_started
-  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+  - name: seven NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, PDUSessionEstablishmentRequest, PDUSessionReleaseComplete, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
-    value: 6
+    value: 7
     value_metric: flows_started
   - name: one PDU SESSION RESOURCE RELEASE RESPONSE was sent
     metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE

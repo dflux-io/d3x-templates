@@ -45,7 +45,8 @@ detail: |
     4. Service Request (TS 24.501 §5.6.1) on a new NG connection, the Uplink
        data status (in the ciphered NAS message container, §4.4.6) asking for
        the session back; Service Accept with the reactivation result.
-    5. UE-requested PDU session release (TS 24.501 §6.4.3).
+    5. UE-requested PDU session release (TS 24.501 §6.4.3): the network's
+       release command answered with PDU SESSION RELEASE COMPLETE.
     6. UE-initiated deregistration (TS 24.501 §5.5.2) and UE Context Release.
 
   Composed from the states of pdu_session_setup, service_request_nas_container_uplink_data_status,
@@ -238,6 +239,11 @@ states:
           - { type: check, field: nas.payload_container.n1_sm_message.header.message_type, op: equals, expected: 211 }
           - { type: check, field: nas.payload_container.n1_sm_message.header.pdu_session_id, op: equals, expected: '{{ue.PduSessionId}}' }
           - { type: send, message: PDUSessionResourceReleaseResponse }
+          # The UE answers the 5GSM command too (TS 24.501 §6.4.3.3), in an
+          # integrity-protected UL NAS TRANSPORT. Without it Open5GS 2.8.0's SMF
+          # kept the session waiting for the N1 half while the deregistration
+          # released it: AMF->SMF SBI timeouts and an ERROR INDICATION.
+          - { type: send, message: PDUSessionReleaseComplete }
           - { type: send, message: DeregistrationRequest }
 
   # Accept-then-release or release alone are both in the field (deregistration.yaml).
@@ -291,10 +297,10 @@ final_checks:
     op: equals
     value: 1
     value_metric: flows_started
-  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, DeregistrationRequest)
+  - name: seven NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, PDUSessionReleaseComplete, DeregistrationRequest)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
-    value: 6
+    value: 7
     value_metric: flows_started
   - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
     metric: rx_events.InitialContextSetupRequest.RegistrationAccept
