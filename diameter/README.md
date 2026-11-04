@@ -16,6 +16,19 @@ in a second process:
 | MME | `diameter_s6a_mme_air` | HSS `diameter_s6a_hss_air_responder` | S6a AIR → AIA 2001 |
 | MME | `diameter_s6a_mme_ulr` | HSS `diameter_s6a_hss_ulr_responder` | S6a ULR → ULA 2001 |
 | PGW | `diameter_gx_pgw_ccr_session` | PCRF `diameter_gx_pcrf_ccr_responder` | Gx CCR-I / CCR-U / CCR-T → CCA 2001, CC-Request-Type mirrored |
+| PGW | `diameter_gx_pgw_ccr_rar_session` | PCRF `diameter_gx_pcrf_ccr_rar_responder` | Gx CCR-I → CCA, PCRF RAR → RAA 2001, CCR-U, CCR-T |
+
+Runik as the PCRF keeps every Gx session it serves (Session-Id, last
+CC-Request-Number) and holds the PGW to the order: a CCR-UPDATE or
+CCR-TERMINATION on no live session is answered 5002
+DIAMETER_UNKNOWN_SESSION_ID, a second CCR-INITIAL on a live one 5012, a
+CC-Request-Number that does not increase is counted, a RAR goes only to a live
+session and its RAA must answer one. Every outcome is a `gx_*` metric of the
+PCRF's report (`gx_violations` is the sum of the order violations,
+`gx_sessions_open` what is still open); both PCRF flows assert
+`gx_violations equals 0`. A PCRF flow that must act on one CC-Request-Type
+names the typed event `CCR.Initial` / `CCR.Update` / `CCR.Termination` /
+`CCR.Event`; a flow that names none gets every CCR as `CCR`.
 
 The responders are ambient: one server context answers every request and
 re-enters `waiting`, and the flow completes once its peer has been quiet for

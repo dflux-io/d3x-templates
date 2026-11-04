@@ -1,0 +1,107 @@
+# Gx CCR responder that also pushes a policy update — Runik is the PCRF.
+# Credit-Control-Request/Answer (RFC 4006 §3.1, 3GPP TS 29.212 §4.5.1) and
+# Re-Auth-Request/Answer (TS 29.212 §4.5.2, §5.6.4-5.6.5).
+#
+# The far end for diameter_gx_pgw_ccr_rar_session. Like
+# diameter_gx_pcrf_ccr_responder it answers every CCR with a CCA that mirrors
+# CC-Request-Type and CC-Request-Number, and after each CCR-INITIAL it sends a
+# RAR on the session that CCR opened, which the PGW answers with an RAA.
+#
+# The INITIAL has its own transition because it names the typed event
+# `CCR.Initial`: Runik dispatches a CCR as CCR.<Type> (Initial, Update,
+# Termination, Event) to a flow that names that event, and as plain `CCR`
+# otherwise, so the UPDATE and TERMINATION still take the `CCR` transition.
+#
+# Runik keeps every Gx session this PCRF serves and judges the order (see
+# diameter_gx_pcrf_ccr_responder): a CCR on no live session is answered 5002,
+# a GxRAR is only sent to a live session (the send fails otherwise), and an
+# RAA must answer a RAR Runik sent. Every outcome is a gx_* metric, asserted
+# below: no violation, every session that opened was terminated, every RAR
+# answered 2001.
+#
+# Ambient responder: start it first, in its own rk process:
+#
+#   rk run-flow -flow diameter_gx_pcrf_ccr_rar_responder -templates . \
+#       -c <d3x>/runik/config/lab-diameter-pcrf.yaml -timeout 60s
+#   rk run-flow -flow diameter_gx_pgw_ccr_rar_session -templates . \
+#       -c <d3x>/runik/config/lab-diameter-pgw-pcrf.yaml -subscriber-seed 1
+
+kind: flow
+name: diameter_gx_pcrf_ccr_rar_responder
+description: PCRF answers every Gx CCR with CCA and sends a RAR on each session after its CCR-INITIAL
+category: functional
+type: server
+protocol: diameter
+nf: pcrf
+initial_state: waiting
+final_states: [completed, failed]
+
+states:
+  waiting:
+    on_timeout:
+      duration: 5s
+      target: completed
+    transitions:
+      - event: CCR.Initial
+        target: waiting
+        actions:
+          - type: check
+            field: IP-CAN-Type
+            op: equals
+            expected: 5
+          - type: check
+            field: Subscription-Id
+            op: exists
+          - type: send
+            message: CCA
+          - type: send
+            message: GxRAR
+      - event: CCR
+        target: waiting
+        actions:
+          - type: check
+            field: CC-Request-Type
+            op: exists
+          - type: send
+            message: CCA
+      - event: RAA
+        target: waiting
+        actions:
+          - type: check
+            field: Result-Code
+            op: equals
+            expected: 2001
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: at least one CCR-INITIAL arrived
+    metric: rx_events.CCR.Initial
+    op: greater_or_equal
+    value: 1
+  - name: every CCR kept its session's order
+    metric: gx_violations
+    op: equals
+    value: 0
+  - name: every session that opened was terminated
+    metric: gx_sessions_open
+    op: equals
+    value: 0
+  - name: at least one RAR went to a live session
+    metric: gx_rar_sent
+    op: greater_or_equal
+    value: 1
+  - name: every RAR was answered
+    metric: gx_raa_received
+    op: equals
+    value_metric: gx_rar_sent
+  - name: every RAA carried Result-Code 2001
+    metric: gx_raa_failed
+    op: equals
+    value: 0
+  - name: every CCR carried IP-CAN-Type EUTRAN and Subscription-Id, every RAA 2001
+    metric: checks_failed
+    op: equals
+    value: 0
