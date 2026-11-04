@@ -11,6 +11,13 @@
 # an AVP, not a command. One transition answers all three; the PGW side
 # asserts each CCA carries back the type it asked with.
 #
+# Runik keeps every Gx session this PCRF serves (Session-Id → state and last
+# CC-Request-Number) and holds the PGW to the session order: a CCR-UPDATE or
+# CCR-TERMINATION on no live session (never started, or already terminated)
+# is answered 5002 DIAMETER_UNKNOWN_SESSION_ID, a second CCR-INITIAL on a live
+# session 5012, and a CC-Request-Number that does not increase is counted.
+# Each is a gx_* metric; `gx_violations` is their sum, asserted 0 below.
+#
 # Ambient responder: one server UE answers every CCR and completes once the
 # PGW has been quiet for 5s. Start it first, in its own rk process:
 #
@@ -67,5 +74,9 @@ final_checks:
     value: 1
   - name: every CCR carried CC-Request-Type, IP-CAN-Type EUTRAN and Subscription-Id
     metric: checks_failed
+    op: equals
+    value: 0
+  - name: every CCR kept its session's order (no CCR on an unknown or terminated session, no second INITIAL, CC-Request-Number increasing)
+    metric: gx_violations
     op: equals
     value: 0
