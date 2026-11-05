@@ -53,7 +53,8 @@ detail: |
 
   Sequence: register (auth, security, context setup) -> send
   PDUSessionReleaseRequest and wait briefly for a PDUSessionReleaseCommand
-  (skipped via timeout if there is no session) -> send a normal
+  (skipped via timeout if there is no session; a NAS release command is
+  answered with PDUSessionReleaseComplete) -> send a normal
   DeregistrationRequest -> on a DeregistrationAccept and/or a
   UEContextReleaseCommand reach `clean`, answering the latter with a
   UEContextReleaseComplete.
@@ -146,11 +147,25 @@ states:
         - type: send
           message: DeregistrationRequest
     transitions:
+      # A bare N2 release (no NAS-PDU): the gNB answers on N2 and nothing
+      # reached the UE, so it has no 5GSM command to complete.
       - event: PDUSessionReleaseCommand
         target: wait_release
         actions:
           - type: send
             message: PDUSessionResourceReleaseResponse
+          - type: send
+            message: DeregistrationRequest
+      # With the NAS PDU SESSION RELEASE COMMAND inside, the UE answers it
+      # too (TS 24.501 §6.4.3.3), in an integrity-protected UL NAS TRANSPORT,
+      # before it de-registers.
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: wait_release
+        actions:
+          - type: send
+            message: PDUSessionResourceReleaseResponse
+          - type: send
+            message: PDUSessionReleaseComplete
           - type: send
             message: DeregistrationRequest
 
@@ -253,10 +268,18 @@ final_checks:
     op: equals
     value: 1
     value_metric: flows_started
-  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest, DeregistrationRequest)
+  # Five on the no-session and bare-N2 routes, six when a NAS release command
+  # came back (the UE's PDUSessionReleaseComplete). Per-UE routes differ, so a
+  # floor and a ceiling rather than one number.
+  - name: at least five NAS UPLINK TRANSPORT messages went out per UE (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest, DeregistrationRequest)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
-    op: equals
+    op: greater_or_equal
     value: 5
+    value_metric: flows_started
+  - name: at most six per UE (a PDUSessionReleaseComplete when a NAS release command came back)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: less_or_equal
+    value: 6
     value_metric: flows_started
   # What the core sent, by the identity of the message rather than its outer
   # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:

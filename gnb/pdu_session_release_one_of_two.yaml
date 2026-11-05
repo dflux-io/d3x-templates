@@ -153,13 +153,23 @@ states:
   wait_first_release_command:
     on_timeout: { duration: 15s, target: failed }
     transitions:
-      - event:
-          or:
-            - PDUSessionReleaseCommand
-            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+      # The N2 command carrying the NAS PDU SESSION RELEASE COMMAND: the gNB
+      # answers on N2 and the UE answers the 5GSM command.
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
         target: settle_first_release
         actions:
           # --- THE row: the command names ONLY the session asked for ------
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: 2 }
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+          # The UE answers the 5GSM command too (TS 24.501 §6.4.3.3), in an
+          # integrity-protected UL NAS TRANSPORT.
+          - { type: send, message: PDUSessionReleaseComplete }
+      # A bare N2 command (no NAS-PDU): nothing reached the UE, so it has no
+      # 5GSM command to complete. Same checks; the N2 answer only.
+      - event: PDUSessionReleaseCommand
+        target: settle_first_release
+        actions:
           - { type: check, field: pdu_session_resource_to_release_list.length, op: equals, expected: 1 }
           - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: 2 }
           - { type: send, message: PDUSessionResourceReleaseResponse }
@@ -182,13 +192,23 @@ states:
     # very collapse this row tests for. So the timer is a failure, never a pass.
     on_timeout: { duration: 15s, target: failed }
     transitions:
-      - event:
-          or:
-            - PDUSessionReleaseCommand
-            - PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+      # The N2 command carrying the NAS PDU SESSION RELEASE COMMAND: the gNB
+      # answers on N2 and the UE answers the 5GSM command.
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
         target: both_released
         actions:
           # --- the survivor was really still there ------------------------
+          - { type: check, field: pdu_session_resource_to_release_list.length, op: equals, expected: 1 }
+          - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: 1 }
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+          # The UE answers the 5GSM command too (TS 24.501 §6.4.3.3), in an
+          # integrity-protected UL NAS TRANSPORT.
+          - { type: send, message: PDUSessionReleaseComplete }
+      # A bare N2 command (no NAS-PDU): nothing reached the UE, so it has no
+      # 5GSM command to complete. Same checks; the N2 answer only.
+      - event: PDUSessionReleaseCommand
+        target: both_released
+        actions:
           - { type: check, field: pdu_session_resource_to_release_list.length, op: equals, expected: 1 }
           - { type: check, field: pdu_session_resource_to_release_list.0.pdu_session_id, op: equals, expected: 1 }
           - { type: send, message: PDUSessionResourceReleaseResponse }
@@ -235,10 +255,13 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 1
-  - name: seven NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+  - name: nine NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, two PDUSessionEstablishmentRequest, two PDUSessionReleaseRequest, a PDUSessionReleaseComplete per NAS release command), with a bare N2 release command standing in for its Complete
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    # Exact on either route: a NAS release command adds a PDUSessionReleaseComplete,
+    # a bare N2 one (counted by plus_metric) adds nothing in its place.
+    plus_metric: rx_events.PDUSessionReleaseCommand
     op: equals
-    value: 7
+    value: 9
   - name: two PDU SESSION RESOURCE RELEASE RESPONSE messages went out
     metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
     op: equals

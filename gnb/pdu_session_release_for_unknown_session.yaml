@@ -88,6 +88,15 @@ states:
           - { type: check, field: nas.pdu_session_id, op: equals, expected: 99 }
       - event: PDUSessionReleaseCommand
         target: handled
+      # The same reaction with the NAS PDU SESSION RELEASE COMMAND inside: a
+      # release the UE is told about is answered on both layers — the N2
+      # response, and the 5GSM PDU SESSION RELEASE COMPLETE (TS 24.501
+      # §6.4.3.3) in an integrity-protected UL NAS TRANSPORT.
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: handled
+        actions:
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+          - { type: send, message: PDUSessionReleaseComplete }
       - event: NASDownlinkTransport.5GMMStatus
         target: handled
       - event: ErrorIndication
@@ -109,10 +118,17 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 1
-  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest)
+  # Four on every route but one: a NAS release command adds the UE's
+  # PDUSessionReleaseComplete. The reactions are alternatives, so the
+  # count is a floor and a ceiling rather than one number.
+  - name: at least four NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
-    op: equals
+    op: greater_or_equal
     value: 4
+  - name: at most five (a PDUSessionReleaseComplete when a NAS release command came back)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: less_or_equal
+    value: 5
   - name: the context setup was answered
     metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
     op: equals
