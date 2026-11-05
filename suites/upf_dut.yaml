@@ -22,7 +22,12 @@
 #       -gen-subscriber
 #
 # GATE: association setup (stop_on_failure: true) — with no node-level
-# association there is nothing to learn from the traffic step.
+# association there is nothing to learn from the traffic step. It is the run's
+# ONLY association: a PFCP association is per SMF node (TS 29.244 §6.2.6), so
+# the traffic step's flow sends none and establishes its sessions on this one
+# (the UPF keys it by the env's pfcp.node_id). To load the UPF, raise the
+# traffic step's `repetitions:` and give it a `rate:` — the flow's final_checks
+# are per UE — and it is still one association and N sessions.
 #
 # THE TRAFFIC STEP DECLARES NO success_when, deliberately. A step's
 # success_when overrides the flow's verdict in both directions, and this flow
