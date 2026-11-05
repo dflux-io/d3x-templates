@@ -149,6 +149,12 @@ states:
                   { "pdu_session_id": 99 }
                 ]
               }
+          # The N2 answer is the wrong one on purpose; the UE's 5GSM answer is
+          # not (TS 24.501 §6.4.3.3), in an integrity-protected UL NAS TRANSPORT.
+          # It names the session the NAS command named, so the core's
+          # reaction is to the N2 mismatch alone.
+          - type: send
+            message: PDUSessionReleaseComplete
 
   wait_reaction:
     # Open5GS may silently ignore the mismatched id -> tolerated (documentable).

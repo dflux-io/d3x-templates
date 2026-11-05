@@ -250,6 +250,10 @@ states:
             expected: "{{ue.RanUeNgapId}}"
           - type: send
             message: PDUSessionResourceReleaseResponse
+          # The UE answers the 5GSM command too (TS 24.501 §6.4.3.3), in an
+          # integrity-protected UL NAS TRANSPORT.
+          - type: send
+            message: PDUSessionReleaseComplete
       # TS 38.413 §8.4.2.4 rejections must not become a reason to re-key. A
       # NAS SECURITY MODE COMMAND or a UE CONTEXT MODIFICATION arriving here is
       # the AMF renegotiating AS/NAS security off the back of a target's

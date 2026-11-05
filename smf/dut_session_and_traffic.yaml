@@ -3,11 +3,10 @@
 # The UPF is the only real network function. There is no AMF, no SMF, no core.
 # From this ONE flow Runik simulates both things a UPF talks to:
 #
-#     SMF  ── N4 / PFCP ──►  UPF      association, session establish, session delete, heartbeat
+#     SMF  ── N4 / PFCP ──►  UPF      session establish, session delete, heartbeat
 #     gNB  ── N3 / GTP-U ─►  UPF      ICMP echo from the UE address, inside the tunnel
 #
-# 3GPP TS 29.244 §6.2.6 / §7.4.4 (association), §7.5.2 / §7.5.3 (session
-# establishment), §7.5.6 / §7.5.7 (deletion), §8.2.56 (Outer Header Creation);
+# 3GPP TS 29.244 §7.5.2 / §7.5.3 (session establishment), §7.5.6 / §7.5.7 (deletion), §8.2.56 (Outer Header Creation);
 # TS 29.281 §5.1 (G-PDU).
 #
 # WHAT IT CLAIMS
@@ -34,8 +33,8 @@
 # HOW THE TUNNEL IS WIRED
 # -----------------------
 #   idle          {{$n3_teid}} / {{gnb.n3_addr}} -> gnb_teid, gnb_addr: the gNB's
-#                 downlink F-TEID, allocated before anything is on the wire.
-#   wait_assoc    Session Establishment Request:
+#                 downlink F-TEID, allocated before anything is on the wire;
+#                 Session Establishment Request:
 #                   PDR 1  source ACCESS, F-TEID CHOOSE, outer header removal -> FAR 1 forward to CORE
 #                   PDR 2  source CORE, UE IP CHOOSE (chv4)                   -> FAR 2 forward to ACCESS
 #                          with Outer Header Creation GTP-U/UDP/IPv4 = (gnb_teid, gnb_addr)
@@ -56,6 +55,19 @@
 # Apply Action FORW is flags=2, Outer Header Creation description 256 = 0x0100
 # GTP-U/UDP/IPv4. `teid` / `ipv4_address` are raw octets on the wire and base64
 # in JSON, hence $b64_u32 / $b64_ipv4.
+#
+# ONE ASSOCIATION PER SMF NODE, NOT PER UE
+# -------------------------------------------
+# A PFCP association is node-level (TS 29.244 §6.2.6): a real SMF sets one up
+# per UPF and then only establishes sessions on it. Each UE of this flow is one
+# session, so the flow sends no Association Setup; the suite does, once, in its
+# gate step (smf_pfcp_association_setup) before this one, as suites/upf_dut.yaml
+# does; more UEs are that suite with a larger `repetitions:` (and a `rate:`) on
+# the session step, and still one association. The UPF keys the association
+# by the SMF's Node ID (the env's pfcp.node_id), so it holds for every later
+# step on that env. Run alone (run-flow) against a UPF this Node ID has no
+# association with, every establishment is rejected with cause 72 "No
+# established PFCP Association" (§8.2.1) and the flow fails on its first check.
 #
 # ENV — what this flow needs from it
 # ----------------------------------
@@ -85,10 +97,9 @@
 #
 # RUN
 # ---
-#   rk run-flow -flow upf_dut_session_and_traffic \
-#       -templates . -c config/lab-upf-dut.yaml -gen-subscriber -trace
-#
-# or the suite, suites/upf_dut.yaml.
+# Through a suite, which sets up the association first:
+#   rk run-suite -suite upf_dut -templates . -c config/lab-upf-dut.yaml \
+#       -gen-subscriber -trace
 #
 # PROVEN AGAINST (2026-10-11, see the PR that added this file for the output)
 # -------------------------------------------------------------------------
@@ -100,9 +111,12 @@
 # with the downlink TEID in Outer Header Creation corrupted, and against
 # `-datapath stub`.
 #
-# NOT COVERED: more than one session per run (the TEIDs happened to be 1 and 1
+# NOT COVERED: more than one session per run AS SHIPPED — suites/upf_dut.yaml
+# runs the traffic step with repetitions: 1 (the TEIDs happened to be 1 and 1
 # on a fresh UPF, so a UPF that swapped the two directions' TEIDs would not be
-# caught by a single-session run), IPv6, QER/URR on the forwarding path, and
+# caught by a single-session run; raising repetitions runs N sessions, and its
+# final_checks are per UE, but the TEIDs still pair up 1:1 on a fresh UPF),
+# IPv6, QER/URR on the forwarding path, and
 # any UPF other than tinycore.
 
 kind: flow
@@ -123,28 +137,12 @@ states:
   idle:
     transitions:
       - event: Start
-        target: wait_assoc
+        target: wait_session
         actions:
           - type: extract
             extracts:
               - { value: "{{$n3_teid}}", store: gnb_teid }
               - { value: "{{gnb.n3_addr}}", store: gnb_addr }
-          - type: send
-            message: PFCPAssociationSetupRequest
-            peer: upf
-
-  wait_assoc:
-    on_timeout:
-      duration: 5s
-      target: failed
-    transitions:
-      - event: pfcp.PFCPAssociationSetupResponse
-        target: wait_session
-        actions:
-          - type: check
-            field: pfcp.cause
-            op: equals
-            expected: "Request accepted"
           - type: send
             message: PFCPSessionEstablishmentRequest
             message_body: |
@@ -311,57 +309,58 @@ any_state_transitions:
 # END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow.
 #
 # `final_states` lists every way this flow can END; only this block says which
-# one it claims. Ours are asserted exactly (every send is one this flow
-# declares); the UPF's with a floor, because a retransmission the spec permits
-# must not fail a run that otherwise did what it claimed.
+# one it claims. Every count is per UE (`value` × flows_started), so the same
+# block holds at 1 UE and at 1000. Ours are asserted exactly (every send is one
+# this flow declares); the UPF's with a floor, because a retransmission the
+# spec permits must not fail a run that otherwise did what it claimed.
 #
 # The user-plane counters are not report metrics, so the forwarding claim is
 # carried by the two `check` actions in `wait_delete` and reaches this block
-# as `checks_failed equals 0` + `checks_total equals 10`: a run that never got
-# that far executes fewer than ten checks and fails here even with none red.
-# A run that fails the gate never sends the heartbeat and never reaches
+# as `checks_failed equals 0` + `checks_total equals 9` per UE: a UE that never
+# got that far executes fewer than nine checks and fails here even with none
+# red. A UE that fails the gate never sends the heartbeat and never reaches
 # `completed`, so it is red on several of these lines, not one.
 final_checks:
-  - name: the flow reached `completed`
+  - name: every UE reached `completed`
     metric: final_state_counts.completed
     op: equals
     value: 1
-  - name: one PFCP ASSOCIATION SETUP REQUEST was sent
-    metric: msg_types.tx.pfcp.PFCPAssociationSetupRequest
-    op: equals
-    value: 1
-  - name: one PFCP SESSION ESTABLISHMENT REQUEST was sent
+    value_metric: flows_started
+  - name: one PFCP SESSION ESTABLISHMENT REQUEST was sent per UE
     metric: msg_types.tx.pfcp.PFCPSessionEstablishmentRequest
     op: equals
     value: 1
-  - name: one PFCP SESSION DELETION REQUEST was sent
+    value_metric: flows_started
+  - name: one PFCP SESSION DELETION REQUEST was sent per UE
     metric: msg_types.tx.pfcp.PFCPSessionDeletionRequest
     op: equals
     value: 1
-  - name: one PFCP HEARTBEAT REQUEST was sent
+    value_metric: flows_started
+  - name: one PFCP HEARTBEAT REQUEST was sent per UE
     metric: msg_types.tx.pfcp.PFCPHeartbeatRequest
     op: equals
     value: 1
-  - name: a PFCP ASSOCIATION SETUP RESPONSE arrived
-    metric: rx_events.pfcp.PFCPAssociationSetupResponse
-    op: greater_or_equal
-    value: 1
-  - name: a PFCP SESSION ESTABLISHMENT RESPONSE arrived
+    value_metric: flows_started
+  - name: a PFCP SESSION ESTABLISHMENT RESPONSE arrived per UE
     metric: rx_events.pfcp.PFCPSessionEstablishmentResponse
     op: greater_or_equal
     value: 1
-  - name: a PFCP SESSION DELETION RESPONSE arrived
+    value_metric: flows_started
+  - name: a PFCP SESSION DELETION RESPONSE arrived per UE
     metric: rx_events.pfcp.PFCPSessionDeletionResponse
     op: greater_or_equal
     value: 1
-  - name: a PFCP HEARTBEAT RESPONSE arrived
+    value_metric: flows_started
+  - name: a PFCP HEARTBEAT RESPONSE arrived per UE
     metric: rx_events.pfcp.PFCPHeartbeatResponse
     op: greater_or_equal
     value: 1
-  - name: all ten declared checks ran (three N4 causes, five on the Created PDRs, pkt_tx, pkt_rx)
+    value_metric: flows_started
+  - name: nine declared checks ran per UE (two N4 causes, five on the Created PDRs, pkt_tx, pkt_rx)
     metric: checks_total
     op: equals
-    value: 10
+    value: 9
+    value_metric: flows_started
   - name: and none of them failed
     metric: checks_failed
     op: equals

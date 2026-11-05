@@ -244,6 +244,10 @@ states:
             expected: "{{ue.Params.ho_target_ran_ue_id}}"
           - type: send
             message: PDUSessionResourceReleaseResponse
+          # The UE answers the 5GSM command too (TS 24.501 §6.4.3.3), in an
+          # integrity-protected UL NAS TRANSPORT, on the target association.
+          - type: send
+            message: PDUSessionReleaseComplete
 
 any_state_transitions:
   - event: Error
@@ -290,10 +294,10 @@ final_checks:
     metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
     op: equals
     value: 1
-  - name: five NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, RegistrationComplete, SecurityModeComplete)
+  - name: six NAS UPLINK TRANSPORT messages went out (AuthResponse, PDUSessionEstablishmentRequest, PDUSessionReleaseRequest, PDUSessionReleaseComplete, RegistrationComplete, SecurityModeComplete)
     metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
     op: equals
-    value: 5
+    value: 6
   - name: one PDU SESSION RESOURCE RELEASE RESPONSE was sent
     metric: msg_types.tx.ngap.NGAP_PDU_SESSION_RESOURCE_RELEASE_RESPONSE
     op: equals
