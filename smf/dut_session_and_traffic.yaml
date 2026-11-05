@@ -111,7 +111,12 @@
 # with the downlink TEID in Outer Header Creation corrupted, and against
 # `-datapath stub`.
 #
-# NOT COVERED: IPv6, QER/URR on the forwarding path, and
+# NOT COVERED: more than one session per run AS SHIPPED — suites/upf_dut.yaml
+# runs the traffic step with repetitions: 1 (the TEIDs happened to be 1 and 1
+# on a fresh UPF, so a UPF that swapped the two directions' TEIDs would not be
+# caught by a single-session run; raising repetitions runs N sessions, and its
+# final_checks are per UE, but the TEIDs still pair up 1:1 on a fresh UPF),
+# IPv6, QER/URR on the forwarding path, and
 # any UPF other than tinycore.
 
 kind: flow

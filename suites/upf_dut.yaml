@@ -29,6 +29,14 @@
 # traffic step's `repetitions:` and give it a `rate:` — the flow's final_checks
 # are per UE — and it is still one association and N sessions.
 #
+# TEARDOWN: association_release (always_run) releases that association, so
+# the UPF is not left holding it after the run.
+#
+# NOTHING RE-ASSOCIATES, by design for now: a UPF that restarts mid-suite
+# forgets the association (unless it restores it), and every later session
+# step is rejected with cause 72 "No established PFCP Association"
+# (TS 29.244 §8.2.1) — it fails, it does not recover.
+#
 # THE TRAFFIC STEP DECLARES NO success_when, deliberately. A step's
 # success_when overrides the flow's verdict in both directions, and this flow
 # states its whole claim itself (its checks and its final_checks). Left alone,
@@ -54,3 +62,10 @@ steps:
     repetitions: 1
     timeout: 30s
     stop_on_failure: false
+
+  # --- teardown: the SMF node's one association goes away -----------------
+  - name: association_release
+    flow: smf_pfcp_association_release_only
+    repetitions: 1
+    timeout: 10s
+    always_run: true

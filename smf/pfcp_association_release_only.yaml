@@ -1,0 +1,74 @@
+# PFCP Association Release (3GPP TS 29.244 §6.2.6.3 / §7.4.6), and only that.
+#
+# The teardown step of a suite that set up its SMF node's ONE association in
+# an earlier step (smf_pfcp_association_setup) and ran its sessions on it —
+# suites/upf_dut.yaml. Without it the UPF is left holding the association
+# after the run. Runik plays the SMF/CP function; the release is addressed by
+# the env's Node ID, so it releases the association the earlier step set up
+# (the UPF keys it by Node ID, not by source port). Success is an
+# AssociationReleaseResponse with Cause "Request accepted" (§8.2.1).
+#
+# Against a UPF this Node ID has no association with, the answer is cause 72
+# "No established PFCP Association" and the flow fails on its check.
+kind: flow
+name: smf_pfcp_association_release_only
+description: SMF releases its existing PFCP association with the UPF (suite teardown)
+category: functional
+type: client
+protocol: pfcp
+nf: smf
+initial_state: idle
+final_states:
+  - released
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_release
+        actions:
+          - type: send
+            message: PFCPAssociationReleaseRequest
+            peer: upf
+  wait_release:
+    on_timeout:
+      duration: 5s
+      target: failed
+    transitions:
+      - event: pfcp.PFCPAssociationReleaseResponse
+        target: settle
+        actions:
+          - type: check
+            field: pfcp.cause
+            op: equals
+            expected: "Request accepted"
+  # The check sits one transition before the terminal, so a failed one does
+  # not end the UE in `released` (see smf_pfcp_association_release).
+  settle:
+    on_timeout:
+      duration: 100ms
+      target: released
+any_state_transitions:
+  - event: Error
+    target: failed
+final_checks:
+  - name: the flow reached `released`
+    metric: final_state_counts.released
+    op: equals
+    value: 1
+  - name: PFCPAssociationReleaseRequest sent 1x
+    metric: msg_types.tx.pfcp.PFCPAssociationReleaseRequest
+    op: equals
+    value: 1
+  - name: a PFCPAssociationReleaseResponse arrived
+    metric: rx_events.pfcp.PFCPAssociationReleaseResponse
+    op: greater_or_equal
+    value: 1
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: no check failed
+    metric: checks_failed
+    op: equals
+    value: 0
