@@ -1,7 +1,9 @@
 # Nudm_UECM AMF 3GPP-access Update (PATCH) — compliance (multi-step).
 # 3GPP TS 29.503 §6.2.3.3
 #   (PATCH /nudm-uecm/v1/{ueId}/registrations/amf-3gpp-access, Amf3GppAccessRegistrationModification).
-# Register (PUT) then PATCH the registration. Both legs via SBI_Request — unlocked
+# Register (PUT) then PATCH the registration with an
+# Amf3GppAccessRegistrationModification (merge-patch; guami is its one
+# mandatory member), not an RFC 6902 json-patch. Both legs via SBI_Request — unlocked
 # by the new generic SBI message (PATCH was previously unsupported from YAML).
 
 kind: flow
@@ -59,10 +61,13 @@ states:
               {
                 "method": "PATCH",
                 "path": "/nudm-uecm/v1/imsi-001010000000001/registrations/amf-3gpp-access",
-                "headers": {"Content-Type": "application/json-patch+json"},
-                "body": [
-                  {"op": "replace", "path": "/guami/amfId", "value": "020041"}
-                ]
+                "headers": {"Content-Type": "application/merge-patch+json"},
+                "body": {
+                  "guami": {
+                    "plmnId": {"mcc": "001", "mnc": "01"},
+                    "amfId": "020041"
+                  }
+                }
               }
 
   wait_update:

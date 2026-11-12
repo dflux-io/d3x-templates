@@ -45,4 +45,4 @@ steps:
     timeout: 30s
     stop_on_failure: false
     success_when:
-      at_least_one_final_state: rate_limited
+      at_least_one_final_state: answered

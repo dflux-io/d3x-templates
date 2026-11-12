@@ -26,7 +26,10 @@
 # recovery stability, unknown-feature negotiation) run FIRST — they are the
 # gentlest and confirm the UPF is alive and answering. The session-level
 # reject probes (missing F-SEID, no-association establish, dangling PDR/FAR
-# refs, bogus SEID modify/delete) run AFTER. None of these leaves a persistent
+# refs, bogus SEID modify/delete) run AFTER, except the no-association
+# establish, which runs before the unknown-feature probe: that probe's
+# association outlives it, and the UPF accepts any later establishment from
+# Runik's node. None of the other probes leaves a persistent
 # half-state on the UPF (a rejected establish creates no session; a bogus-SEID
 # modify/delete touches a session that does not exist), so ordering among them
 # is about reading the report top-to-bottom, not about state hygiene.
@@ -103,6 +106,17 @@ steps:
     success_when:
       at_least_one_final_state: tolerated
 
+  # Before the first step that associates: an association is node-level and
+  # outlives its flow, so after pfcp_association_setup_unknown_feature the UPF
+  # has one with Runik's node and accepts the establishment.
+  - name: pfcp_session_establish_no_association
+    flow: smf_pfcp_session_establish_no_association
+    repetitions: 1
+    timeout: 30s
+    stop_on_failure: false
+    success_when:
+      at_least_one_final_state: rejected
+
   - name: pfcp_association_setup_unknown_feature
     flow: smf_pfcp_association_setup_unknown_feature
     repetitions: 1
@@ -114,14 +128,6 @@ steps:
   # --- session-level reject probes: assert the spec-correct Cause --------
   - name: pfcp_session_establish_missing_fseid
     flow: smf_pfcp_session_establish_missing_fseid
-    repetitions: 1
-    timeout: 30s
-    stop_on_failure: false
-    success_when:
-      at_least_one_final_state: rejected
-
-  - name: pfcp_session_establish_no_association
-    flow: smf_pfcp_session_establish_no_association
     repetitions: 1
     timeout: 30s
     stop_on_failure: false

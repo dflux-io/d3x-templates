@@ -13,9 +13,9 @@
 # post-delete 404 (UDR-1), the DELETEs (204) and the am-data post-delete 404.
 # The create→AUTHENTICATE→delete leg (the freshly provisioned SUPI generating
 # a real 5G-AKA vector through the AUSF) needs UE-side Milenage crypto and
-# stays Go-gated in tinycore/e2e TestProvision_Auth_Delete_E2E.
+# stays Go-gated in core/e2e TestProvision_Auth_Delete_E2E.
 #
-# Run (script step 11-nudr-provisioning of the d3x-core UDR sanity run (tinycore/scripts)):
+# Run (script step 11-nudr-provisioning of the d3x-core UDR sanity run (core/scripts)):
 #   rk run-suite -suite nudr-provisioning \
 #       -templates <templates-dir> -c <lab-config.yaml> -gen-subscriber -trace
 #

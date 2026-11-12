@@ -2,9 +2,11 @@
 # 3GPP TS 29.500 §6.10; TS 29.502 §6.1.
 #
 # Runik (AMF) POSTs a CreateSMContext whose body carries a grossly oversized field
-# (a multi-kilobyte junk string in an unexpected attribute). A spec-correct SMF
-# must bound request size / reject the malformed-oversized body (4xx, e.g. 400
-# or 413 Payload Too Large) and stay up — it must not exhaust memory or crash.
+# (2 MB of `$padding` in an unexpected attribute). A few kilobytes is not
+# oversized: TS 29.500 has a receiver ignore an unknown attribute, so the SMF
+# rightly accepts such a body. A spec-correct SMF must bound request size and
+# reject the oversized body (4xx, e.g. 400 or 413 Payload Too Large) and stay
+# up — it must not exhaust memory or crash.
 kind: flow
 name: smf_nsmf_smcontext_oversized_payload
 description: AMF CreateSMContext with oversized body — expect 4xx rejection, SMF stays up
@@ -42,7 +44,7 @@ states:
                   "servingNetwork": {"mcc": "001", "mnc": "01"},
                   "anType": "3GPP_ACCESS",
                   "requestType": "INITIAL_REQUEST",
-                  "extSsmContextPad": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                  "extSsmContextPad": "{{$padding 2000000}}"
                 }
               }
 
