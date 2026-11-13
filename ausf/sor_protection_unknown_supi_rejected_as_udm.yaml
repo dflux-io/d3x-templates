@@ -14,10 +14,10 @@
 # against cores with no OAuth2.
 #
 # The body carries the steering list as `steeringContainer`, the SorInfo member
-# TS 29.509 defines. The plain flow's `steeringInfoList` is no SorInfo member,
-# so an AUSF reading the body sees no steering payload and answers 400
-# MANDATORY_IE_MISSING before it looks the SUPI up (measured on tinycore,
-# 2026-10-28); that 400 is not the unknown-SUPI answer this probe is about.
+# TS 29.509 defines. A body without it (`steeringInfoList` is no SorInfo member)
+# gets 400 MANDATORY_IE_MISSING before the AUSF looks the SUPI up (measured on
+# tinycore, 2026-10-28); that 400 is not the unknown-SUPI answer this probe is
+# about.
 
 kind: flow
 name: ausf_sor_protection_unknown_supi_rejected_as_udm

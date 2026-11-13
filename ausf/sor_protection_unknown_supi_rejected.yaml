@@ -30,7 +30,7 @@ states:
                 "method": "POST",
                 "path": "/nausf-sorprotection/v1/imsi-001019999999999/ue-sor",
                 "body": {
-                  "steeringInfoList": [
+                  "steeringContainer": [
                     {"plmnId": {"mcc": "001", "mnc": "01"}}
                   ],
                   "ackInd": false

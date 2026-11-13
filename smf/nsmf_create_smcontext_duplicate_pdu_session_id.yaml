@@ -2,18 +2,18 @@
 # 3GPP TS 29.502 §5.2.2.2 / §6.1.6.3.4.
 #
 # Runik (AMF) issues TWO CreateSMContext POSTs with the SAME supi + pduSessionId.
-# The first may be accepted (201) or rejected for unrelated runtime reasons; the
-# SECOND, naming an already-existing PDU session id for the same SUPI, MUST be
-# rejected by a spec-correct SMF (4xx, ProblemDetails) rather than silently
-# overwriting state — and the SMF must stay up.
+# A second initial request for a PDU session id already in use is not an error
+# the SMF must refuse: TS 24.501 §6.4.1 (abnormal cases on the network side)
+# has the SMF release the existing PDU session locally and proceed with the new
+# one, so 201 is a correct answer, and so is a clean 4xx. What the probe asserts
+# is that the SMF answers the second create without a server error and stays
+# up. Whether the predecessor's state was released is not visible over Nsmf.
 #
-# RUNTIME RISK: the first create also lacks an embedded N1 SM NAS PDU (single
-# JSON, no multipart) so the SMF may already 4xx the first call; either way the
-# security assertion is on the second response being a clean rejection and the
-# core staying live. Terminal set conservatively to 'tolerated'.
+# The first create lacks an embedded N1 SM NAS PDU (single JSON, no multipart),
+# so an SMF may already 4xx it; the assertion is on the second answer.
 kind: flow
 name: smf_nsmf_create_smcontext_duplicate_pdu_session_id
-description: AMF CreateSMContext twice with same pduSessionId — second rejected
+description: AMF CreateSMContext twice with same pduSessionId — the second is answered without a 5xx
 category: negative
 type: client
 protocol: sbi
@@ -94,5 +94,5 @@ states:
         actions:
           - type: check
             field: sbi.status
-            op: greater_than
-            expected: 399
+            op: less_than
+            expected: 500

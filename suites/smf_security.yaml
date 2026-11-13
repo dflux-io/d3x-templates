@@ -30,7 +30,7 @@
 # and expects one clean rejection, leaving no residual context. The flows that
 # can leave the SMF in a half/dirty state for the shared SUPI run LAST:
 #   - duplicate_pdu_session_id: first create may succeed and leave a live SM
-#     context for supi+pduSessionId before the second is rejected.
+#     context for supi+pduSessionId before the second create replaces or refuses it.
 #   - create_replay: first create may succeed and leave a context behind, then
 #     the byte-identical replay is sent.
 # Running these last keeps a dangling context from poisoning a following probe
@@ -213,17 +213,20 @@ steps:
     success_when:
       at_least_one_final_state: rejected
 
-  # --- N4/PFCP reject probes (stateless) ---------------------------------
-  - name: pfcp_session_est_missing_mandatory_ie
-    flow: smf_pfcp_session_establish_missing_fseid
+  # --- N4/PFCP reject probes ---------------------------------------------
+  # The no-association probe goes first: the missing-F-SEID flow sets up an
+  # association, which outlives it, and the UPF then accepts an establishment
+  # from Runik's node.
+  - name: pfcp_session_est_no_association
+    flow: smf_pfcp_session_establish_no_association
     repetitions: 1
     timeout: 20s
     stop_on_failure: false
     success_when:
       at_least_one_final_state: rejected
 
-  - name: pfcp_session_est_no_association
-    flow: smf_pfcp_session_establish_no_association
+  - name: pfcp_session_est_missing_mandatory_ie
+    flow: smf_pfcp_session_establish_missing_fseid
     repetitions: 1
     timeout: 20s
     stop_on_failure: false

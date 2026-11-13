@@ -29,7 +29,7 @@ states:
               {
                 "method": "POST",
                 "path": "/nausf-sorprotection/v1/imsi-001010000000001/ue-sor",
-                "raw_body": "{\"steeringInfoList\":[{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"}}]}"
+                "raw_body": "{\"steeringContainer\":[{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"}}]}"
               }
 
   wait_response:

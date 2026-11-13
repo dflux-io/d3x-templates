@@ -127,7 +127,7 @@ final_checks:
   - name: all declared checks ran
     metric: checks_total
     op: equals
-    value: 12
+    value: 13
   - name: and none of them failed
     metric: checks_failed
     op: equals

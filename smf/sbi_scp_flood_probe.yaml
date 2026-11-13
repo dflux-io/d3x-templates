@@ -5,11 +5,14 @@
 # rate-limit filter can return 429 (policy runs before rate-limit; a
 # denied path would short-circuit at 403).
 #
-# Suite step: repetitions: 20, rate: 50, success_when at_least_one
-# final_state rate_limited (see SCP e2e 08-sbi-rate-limit-burst-yields-429).
+# Suite step: repetitions: 20, rate: 50. Each request ends in `answered`,
+# whatever the status: the requests inside the limit's burst are let through
+# (and the UDM answers them, 401 without a token), so a per-request 429 check
+# fails those and the step with them. The claim is over the whole step, in
+# final_checks: every request was answered and at least one was a 429.
 kind: flow
 name: sbi_scp_flood_probe
-description: GET am-data through SCP — expect 429 when flood-limit is installed
+description: GET am-data through SCP at a flood rate — at least one 429 when flood-limit is installed
 category: negative
 type: client
 protocol: sbi
@@ -17,7 +20,7 @@ nf: udm
 
 initial_state: idle
 final_states:
-  - rate_limited
+  - answered
   - failed
 
 states:
@@ -42,9 +45,15 @@ states:
       target: failed
     transitions:
       - event: sbi.SBI_Request_Answer
-        target: rate_limited
-        actions:
-          - type: check
-            field: sbi.status
-            op: equals
-            expected: 429
+        target: answered
+
+final_checks:
+  - name: every request was answered
+    metric: final_state_counts.answered
+    op: equals
+    value: 1
+    value_metric: flows_started
+  - name: the SCP rate-limited at least one request (429)
+    metric: msg_types.rx.sbi.status_429
+    op: greater_or_equal
+    value: 1

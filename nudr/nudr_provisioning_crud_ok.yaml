@@ -19,7 +19,7 @@
 # SCOPE (be honest): this validates the Nudr provisioning WRITE round-trip
 # ONLY. The create→AUTHENTICATE→delete leg (the freshly provisioned SUPI
 # generating a real 5G-AKA vector through the AUSF) is covered by the Go
-# integration test tinycore/e2e TestProvision_Auth_Delete_E2E — it needs the
+# integration test core/e2e TestProvision_Auth_Delete_E2E — it needs the
 # UE-side Milenage crypto Runik AUSF flow doesn't drive here.
 #
 # A fresh SUPI (imsi-001010000000042) not in the canonical seed is used so the
