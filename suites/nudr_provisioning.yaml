@@ -1,7 +1,7 @@
 # Runik -> UDR Nudr runtime subscriber-provisioning SBI suite (UDM-1 + UDR-1).
 #
 # Drives the UDR's Nudr_DataRepository write surface
-# (/nudr-dr/v1/subscription-data/{ueId}/..., TS 29.504/29.505) with Runik
+# (/nudr-dr/v2/subscription-data/{ueId}/..., TS 29.504/29.505) with Runik
 # acting as the SBI provisioner: create a brand-new subscriber
 # (authentication-subscription + provisioned data), read it back through the
 # aggregate provisioned-data resource AND the UDM SDM /nssai leaf (derived

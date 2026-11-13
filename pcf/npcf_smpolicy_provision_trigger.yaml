@@ -76,7 +76,7 @@ states:
             message_body: |
               {
                 "method": "PUT",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000001/provisioned-data/sm-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000001/provisioned-data/sm-data",
                 "headers": {"Content-Type": "application/json"},
                 "body": [
                   {

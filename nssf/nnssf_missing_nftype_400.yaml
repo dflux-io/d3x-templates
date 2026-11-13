@@ -25,7 +25,7 @@ states:
             message_body: |
               {
                 "method": "GET",
-                "path": "/nnssf-nsselection/v1/network-slice-information"
+                "path": "/nnssf-nsselection/v2/network-slice-information"
               }
 
   wait_resp:

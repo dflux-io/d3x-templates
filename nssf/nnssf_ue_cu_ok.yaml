@@ -29,7 +29,7 @@ states:
             message_body: |
               {
                 "method": "GET",
-                "path": "/nnssf-nsselection/v1/network-slice-information",
+                "path": "/nnssf-nsselection/v2/network-slice-information",
                 "query": {
                   "nf-type": "AMF",
                   "slice-info-request-for-ue-cu": "{\"requestedNssai\":[{\"sst\":1,\"sd\":\"000001\"}],\"subscribedNssai\":[{\"subscribedSnssai\":{\"sst\":1,\"sd\":\"000001\"}}]}"

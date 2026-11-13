@@ -6,13 +6,13 @@
 # and assertions as npcf_smpolicy_create_dynamic_ok.
 #
 # Provisioning steps (peer: udr):
-#   1. PUT /nudr-dr/v1/subscription-data/{supi}/provisioned-data/sm-data
+#   1. PUT /nudr-dr/v2/subscription-data/{supi}/provisioned-data/sm-data
 #      → SessionAmbr 200/400 Mbps + 5QI 9 (the AMBR/QoS the decision echoes).
 #      The body is an ARRAY of SessionManagementSubscriptionData (TS 29.505
 #      whole-set replace) — the same shape nudr_provisioning_crud_ok uses. It
 #      was a bare object until 2026-07-28, which the UDR answered 400, so this
 #      step failed inside the PCF sanity 05-pcf-compliance suite.
-#   2. PUT /nudr-dr/v1/policy-data/ues/{supi}/sm-data  (PCF-1, available now)
+#   2. PUT /nudr-dr/v2/policy-data/ues/{supi}/sm-data  (PCF-1, available now)
 #      → SmPolicySnssaiData "01000001" + DNN internet.
 #
 # Then POST /npcf-smpolicycontrol/v1/sm-policies and assert the bare dynamic
@@ -44,7 +44,7 @@ states:
             message_body: |
               {
                 "method": "PUT",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/sm-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/provisioned-data/sm-data",
                 "body": [
                   {
                     "singleNssai": {"sst": 1, "sd": "000001"},
@@ -76,7 +76,7 @@ states:
             message_body: |
               {
                 "method": "PUT",
-                "path": "/nudr-dr/v1/policy-data/ues/imsi-001010000000042/sm-data",
+                "path": "/nudr-dr/v2/policy-data/ues/imsi-001010000000042/sm-data",
                 "body": {
                   "smPolicySnssaiData": {
                     "01000001": {
