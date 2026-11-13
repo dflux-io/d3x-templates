@@ -43,35 +43,30 @@
 # the DELETE cleanup at the end removes any lingering context.
 #
 # Known EXPECTED failures / runtime-risk against a real Open5GS (genuine core
-# gaps or unavoidable Runik crypto gaps — these are the legitimate compliance
+# gaps — these are the legitimate compliance
 # findings this suite exists to surface, NOT flow bugs):
-#   - ausf_ueauth_5g_aka_confirmation: Runik has no 5G-AKA key derivation, so it
-#     cannot compute a correct RES* for the live test vector. The PUT is
-#     structurally valid and the AUSF answers, but the authResult is expected
-#     to be AUTHENTICATION_FAILURE (or a 4xx) rather than _SUCCESS. The flow's
-#     terminal is `completed` = "the AUSF answered the confirmation at all", so
-#     it should still PASS; an AUTHENTICATION_SUCCESS would actually be the
-#     surprising result.
+#   - ausf_ueauth_5g_aka_confirmation: needs the run subscriber (-s) to hold
+#     the core's K/OPc for imsi-001010000000001; Runik derives RES* from the
+#     answer (d3x#1636) and the flow requires AUTHENTICATION_SUCCESS. With
+#     other keys AUTN fails the MAC check and the step fails.
 #   - ausf_ueauth_5g_aka_confirmation_delete (cleanup): the DELETE on the
 #     confirmation sub-resource is OM/operator-facing and frequently
 #     unimplemented; Open5GS may answer 404/405 instead of 204. Terminal
 #     `released` only requires that the AUSF answered the DELETE, but a hard
 #     reject is a core gap to note, not a flow bug.
 #   - ausf_sor_protection_success / ausf_upu_protection_success: both need the
-#     K_AUSF for {supi} to be live in the AUSF (established by a prior
-#     successful primary authentication). With no live K_AUSF for the SUPI a
-#     real core answers 403/404 → these can legitimately FAIL against a
-#     freshly-started Open5GS. Terminal `protected` means the AUSF returned the
-#     protected security info; a 4xx here is a provisioning/core-state gap.
+#     K_AUSF for {supi} to be live in the AUSF, which the
+#     ueauth_5g_aka_confirmation step before them establishes when the run
+#     subscriber (-s) holds the UDR keys for {supi} (d3x#1636). If that step
+#     fails, these answer 404 CONTEXT_NOT_FOUND.
 #
 # First-run results (2026-06-05, Open5GS v2.7.x, Runik as SBI consumer):
 # 3/6 pass. SBI h2c connectivity to the AUSF on 172.22.0.11:7777 is solid.
 # Pass: ueauth_5g_aka_initiate_success (201, authType=5G_AKA),
 # ueauth_suci_concealed_profile_a_success, cleanup. Fail — all genuine
 # runtime/core dependencies, NOT flow bugs:
-#   - ueauth_5g_aka_confirmation: the PUT confirmation needs a RES* computed
-#     from the RAND/AUTN of the auth vector just issued in this same exchange;
-#     a one-shot compliance flow can't derive it, so the AUSF answers 400.
+#   - ueauth_5g_aka_confirmation: Runik could not derive RES* then (it can
+#     since d3x#1636), so the AUSF answered 400.
 #   - sor_protection_success / upu_protection_success: Open5GS Nausf SoR/UPU
 #     protection requires a prior live auth context (and provisioned SoR/UPU
 #     data); against a fresh AUSF these return 400 — a core-state/provisioning
@@ -101,9 +96,10 @@ steps:
     success_when:
       at_least_one_final_state: completed
 
-  # Chained initiate -> PUT 5g-aka-confirmation. Leaves a half-done auth
-  # context; terminal `completed` = the AUSF answered the confirmation at all
-  # (RES* cannot be correctly derived by Runik — see header runtime-risk).
+  # Chained initiate -> PUT 5g-aka-confirmation with the RES* Runik derives
+  # from the answer (d3x#1636): AUTHENTICATION_SUCCESS, and K_AUSF is live in
+  # the AUSF for the SoR/UPU steps below. Needs the run subscriber to hold the
+  # UDR keys of imsi-001010000000001 (-s).
   - name: ueauth_5g_aka_confirmation
     flow: ausf_ueauth_5g_aka_confirmation
     repetitions: 1
@@ -112,7 +108,7 @@ steps:
     success_when:
       at_least_one_final_state: completed
 
-  # --- SoR / UPU protection (independent of the auth context) ------------
+  # --- SoR / UPU protection (need the K_AUSF the confirmation above left) --
   - name: sor_protection_success
     flow: ausf_sor_protection_success
     repetitions: 1

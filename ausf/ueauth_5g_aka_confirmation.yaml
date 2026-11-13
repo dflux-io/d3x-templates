@@ -5,16 +5,16 @@
 # ConfirmationData{resStar} to that resource. Now sendable end-to-end via the
 # generic SBI_Request (arbitrary method PUT + templated path).
 #
-# RUNTIME RISK: Runik has no 5G-AKA key-derivation, so it cannot compute the
-# correct RES* for the live test vector. The PUT is structurally valid and the
-# AUSF will answer, but the authResult is expected to be AUTHENTICATION_FAILURE
-# (or a 4xx) rather than AUTHENTICATION_SUCCESS against a real core. Terminal is
-# kept to `completed` = the AUSF answered the confirmation request at all; the
-# live run distinguishes a genuine runik/core gap from a flow bug.
+# RES*: Runik derives it as the UE would (TS 33.501 Annex A.4) from the
+# 5gAuthData RAND/AUTN of the initiate answer and the UE subscriber K/OPc
+# (-s, or the subscriber seed), into ue.Params.auth_res_star (d3x#1636). The
+# subscriber must be the SUPI the flow names, with the keys the UDR holds;
+# otherwise AUTN fails its MAC check, no RES* is set and the flow fails.
+# A successful run leaves K_AUSF live in the AUSF for the SoR/UPU flows.
 
 kind: flow
 name: ausf_ueauth_5g_aka_confirmation
-description: Initiate 5G-AKA then PUT the 5g-aka-confirmation with a RES* and read the auth result
+description: Initiate 5G-AKA, derive RES* from the answer and PUT the 5g-aka-confirmation; AUTHENTICATION_SUCCESS
 category: functional
 type: client
 protocol: sbi
@@ -66,7 +66,7 @@ states:
                 "method": "PUT",
                 "path": "{{ue.Params.authCtxLocation}}/5g-aka-confirmation",
                 "body": {
-                  "resStar": "00112233445566778899aabbccddeeff"
+                  "resStar": "{{ue.Params.auth_res_star}}"
                 }
               }
 
@@ -80,7 +80,9 @@ states:
         actions:
           - type: check
             field: sbi.status
-            op: exists
+            op: equals
+            expected: 200
           - type: check
             field: sbi.body.authResult
-            op: exists
+            op: equals
+            expected: AUTHENTICATION_SUCCESS
