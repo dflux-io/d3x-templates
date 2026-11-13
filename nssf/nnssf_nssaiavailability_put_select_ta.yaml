@@ -70,7 +70,7 @@ states:
             message_body: |
               {
                 "method": "GET",
-                "path": "/nnssf-nsselection/v1/network-slice-information",
+                "path": "/nnssf-nsselection/v2/network-slice-information",
                 "query": {
                   "nf-type": "AMF",
                   "tai": "{\"plmnId\":{\"mcc\":\"001\",\"mnc\":\"01\"},\"tac\":\"000001\"}",

@@ -52,7 +52,7 @@ states:
             message_body: |
               {
                 "method": "PUT",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/authentication-data/authentication-subscription",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/authentication-data/authentication-subscription",
                 "body": {
                   "permanentKey": "465B5CE8B199B49FAA5F0A2EE238A6BC",
                   "opc": "E8ED289DEBA952E4283B54E88E6183CA",
@@ -81,7 +81,7 @@ states:
             message_body: |
               {
                 "method": "PUT",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/am-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/provisioned-data/am-data",
                 "body": {
                   "gpsis": ["msisdn-14155550042"],
                   "nssai": {
@@ -109,7 +109,7 @@ states:
             message_body: |
               {
                 "method": "PUT",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/smf-selection-subscription-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/provisioned-data/smf-selection-subscription-data",
                 "body": {
                   "subscribedSnssaiInfos": {"01000001": {"dnnInfos": [{"dnn": "internet"}]}}
                 }
@@ -133,7 +133,7 @@ states:
             message_body: |
               {
                 "method": "PUT",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/sm-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/provisioned-data/sm-data",
                 "body": [
                   {
                     "singleNssai": {"sst": 1, "sd": "000001"},
@@ -160,7 +160,7 @@ states:
             message_body: |
               {
                 "method": "GET",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/provisioned-data",
                 "body": {}
               }
 
@@ -220,7 +220,7 @@ states:
             message_body: |
               {
                 "method": "DELETE",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/authentication-data/authentication-subscription",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/authentication-data/authentication-subscription",
                 "body": {}
               }
 
@@ -242,7 +242,7 @@ states:
             message_body: |
               {
                 "method": "DELETE",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/am-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/provisioned-data/am-data",
                 "body": {}
               }
 
@@ -265,7 +265,7 @@ states:
             message_body: |
               {
                 "method": "GET",
-                "path": "/nudr-dr/v1/subscription-data/imsi-001010000000042/provisioned-data/am-data",
+                "path": "/nudr-dr/v2/subscription-data/imsi-001010000000042/provisioned-data/am-data",
                 "body": {}
               }
 
