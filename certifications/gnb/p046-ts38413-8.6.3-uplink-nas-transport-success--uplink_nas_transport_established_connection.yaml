@@ -1,0 +1,258 @@
+# UPLINK NAS TRANSPORT of a NAS message on an established UE-associated logical
+# NG-connection (3GPP TS 38.413 §8.6.3).
+#
+# Clause, operative sentences (retrieved with matrix/scripts/spec-clause.py):
+#
+#   §8.6.3.1 "The Uplink NAS Transport procedure is used when the NG-RAN node has received from
+#            the radio interface a NAS message to be forwarded to the AMF to which a UE-associated
+#            logical NG-connection for the UE exists."
+#
+#   §8.6.3.2 "The NG-RAN node initiates the procedure by sending an UPLINK NAS TRANSPORT message
+#            to the AMF. The NAS-PDU IE contains a UE – AMF message that is transferred without
+#            interpretation in the NG-RAN node."
+#
+# The transported NAS message is a DEREGISTRATION REQUEST (de-registration type = normal, NOT
+# switch off), because TS 24.501 §5.5.2.2.2 makes the answer MANDATORY and unambiguous:
+#
+#   "When the DEREGISTRATION REQUEST message is received by the AMF, the AMF shall send a
+#    DEREGISTRATION ACCEPT message to the UE, if the De-registration type IE does not indicate
+#    'switch off'."
+#
+# so "the AMF ... responds to the enclosed NAS procedure" (REG-273 expected_outcome) becomes a
+# shall, not an implementation choice. The DEREGISTRATION ACCEPT has no NGAP payload of its own,
+# so it necessarily travels in a DOWNLINK NAS TRANSPORT — which is precisely the carrier the row's
+# pass_criterion names. A PDU SESSION ESTABLISHMENT REQUEST would also ride §8.6.3 but its answer
+# comes back inside a PDU SESSION RESOURCE SETUP REQUEST, not a DOWNLINK NAS TRANSPORT, so it
+# cannot satisfy this criterion.
+#
+# NOT PlainUplinkNas. The row's `sendables_required` lists it, but PlainUplinkNas deliberately
+# sends an UNPROTECTED NAS message after security activation (enrichers_gnb_security.go) — a
+# non-conformance probe. TS 24.501 §4.4.5 requires every NAS message after security activation to
+# be integrity protected, so a conformant AMF must DISCARD it; using it here would mean this
+# positive row passes only against a core with a security hole. The `send` actions below therefore
+# use the ordinary secured uplink path (DeregistrationRequest / RegistrationComplete enrichers,
+# both of which emit NGAP UPLINK NAS TRANSPORT).
+#
+# Assertions (REG-273 pass_criterion: "A NAS response to the transported message is received on N1
+# within the budget, carried in DOWNLINK NAS TRANSPORT on the same AP IDs"):
+#   - the response event is NASDownlinkTransport.DeregistrationAccept — the carrier (DOWNLINK NAS
+#     TRANSPORT) and the NAS message identity are both fixed by that event name;
+#   - both AP IDs are compared against values captured EARLIER in the run: the RAN UE NGAP ID
+#     snapshotted before the INITIAL UE MESSAGE was sent, and the AMF UE NGAP ID extracted from
+#     the first downlink. Neither operand is re-read from the message under test;
+#   - nas.security.mac_verified proves the AMF answered under the NAS security context — i.e. the
+#     NAS-PDU we transported really reached the NAS layer and was processed, not merely ACKed at
+#     NGAP level.
+#
+# HARNESS LIMIT that dictates HOW the AMF UE NGAP ID is asserted here (reported with this batch,
+# needs a Go fix): a bare-name NGAP check such as `amf_ue_ngap_id` resolves against
+# ue.NGAP.LastNGAP — the LAST DECODED NGAP message, not the message that raised the dispatched
+# event. ue_enrichment.go already binds the EVENT NAME per message (ctx.RxEvent, "a second
+# downlink arriving before fsm_dispatch runs would overwrite it"), but LastNGAP is still shared
+# UE state. Open5GS emits the UE CONTEXT RELEASE COMMAND ~0.1 ms after the DEREGISTRATION ACCEPT,
+# both are decoded before either is dispatched, and a bare `amf_ue_ngap_id` check on the accept
+# therefore reads the release command — which has no top-level AMF UE NGAP ID IE — and reports
+# `<missing>`. MEASURED, not inferred (open5gs, 2026-08-10). The symmetric case is worse: a bare
+# check can silently PASS against a field read off a different message.
+# `ue.AmfUeNgapId` is used instead because ue_enrichment.go:enrichNgapIds writes it ONLY from a
+# DOWNLINK NAS TRANSPORT / INITIAL CONTEXT SETUP REQUEST / PDU SESSION RESOURCE SETUP REQUEST —
+# never from a UE CONTEXT RELEASE COMMAND — so it still holds the AMF UE NGAP ID off the DOWNLINK
+# NAS TRANSPORT that carried the answer. `ran_ue_ngap_id` is left as a bare check because it is
+# the demux key: every message on this connection, release command included, carries the same
+# value, so the read is stable whichever of the two LastNGAP holds.
+#
+# follow_on_request is set on the INITIAL UE MESSAGE (TS 24.501 §9.11.3.7): this UE has uplink NAS
+# pending after registration, and without the FOR bit the AMF is entitled to release the N1
+# connection as soon as registration completes — leaving no "established UE-associated logical
+# NG-connection" for §8.6.3 to be tested on.
+#
+# Every on_timeout targets `failed`: an AMF that does not answer the transported NAS message
+# inside the budget has failed this row.
+
+kind: flow
+name: uplink_nas_transport_established_connection
+description: UL NAS TRANSPORT of a NAS message on an established connection; assert the NAS answer returns in DL NAS TRANSPORT on the same AP IDs (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - nas_response_received
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Snapshot what WE allocate and put in the INITIAL UE MESSAGE, before
+          # any downlink message exists to read it back from.
+          - type: extract
+            field: ue.RanUeNgapId
+            store: sent_ran_ue_ngap_id
+          - type: send
+            message: InitialUEMessage
+            params:
+              follow_on_request: true
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: extract
+            field: amf_ue_ngap_id
+            store: pilot_amf_id
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - type: check
+            field: ue.SecCtx
+            op: not_empty
+          - type: send
+            message: SecurityModeComplete
+
+  # The UE-associated logical NG-connection §8.6.3.1 requires now exists.
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_nas_response
+        actions:
+          - type: check
+            field: ue.AmfUeNgapId
+            op: not_empty
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+          # The §8.6.3 probe: a NAS message carried in UPLINK NAS TRANSPORT on
+          # the established connection, secured under the active context.
+          - type: send
+            message: DeregistrationRequest
+
+  wait_nas_response:
+    on_timeout:
+      duration: 12s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.DeregistrationAccept
+        target: nas_response_received
+        actions:
+          # "on the same AP IDs" — both sides come from earlier messages.
+          - type: check
+            field: ran_ue_ngap_id
+            op: equals
+            expected: "{{ue.Params.sent_ran_ue_ngap_id}}"
+          # LHS: the AMF UE NGAP ID carried by the DOWNLINK NAS TRANSPORT that
+          # brought the answer. RHS: the one the AMF assigned on this connection,
+          # read out of the AUTHENTICATION REQUEST several messages earlier. Two
+          # different messages — this is not a field compared with itself.
+          - type: check
+            field: ue.AmfUeNgapId
+            op: equals
+            expected: "{{ue.Params.pilot_amf_id}}"
+          # The NAS-PDU reached the NAS layer: the answer is integrity protected
+          # under the context this UE established (TS 24.501 §4.4.5).
+          - type: check
+            field: nas.security.mac_verified
+            op: equals
+            expected: true
+      # Open5GS reallocates the 5G-GUTI right after RegistrationAccept, so a
+      # CONFIGURATION UPDATE COMMAND can overtake the deregistration answer.
+      # It is an unrelated, spec-legal AMF-initiated procedure (TS 24.501
+      # §5.4.4); named here so it is handled rather than silently refused by
+      # the FSM, and so it cannot be mistaken for the response under test.
+      - event: NASDownlinkTransport.ConfigurationUpdateCommand
+        target: wait_nas_response
+        actions:
+          - type: send
+            message: ConfigurationUpdateComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-273).
+#
+# REG-273 — A NAS response to the transported message is received on N1 within the
+# budget, carried in DOWNLINK NAS TRANSPORT on the same AP IDs
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `nas_response_received`
+    metric: final_state_counts.nas_response_received
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  # A CONFIGURATION UPDATE COMMAND arriving here is answered with a
+  # CONFIGURATION UPDATE COMPLETE (wait_nas_response absorbs it), which is a
+  # fourth NAS uplink this flow may or may not send. Floor, not equals.
+  - name: four NAS UPLINK TRANSPORT messages went out (AuthResponse, DeregistrationRequest, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: greater_or_equal
+    value: 4
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a DEREGISTRATION ACCEPT arrived
+    metric: rx_events.NASDownlinkTransport.DeregistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The six `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all six declared checks ran
+    metric: checks_total
+    op: equals
+    value: 6
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,60 @@
+# Unauthenticated emergency registration REFUSED where it is not allowed.
+#
+# A UE without valid credentials presents only its IMEI in an EMERGENCY
+# registration (TS 24.501 §5.5.1.2.2, 5GS mobile identity = IMEI). An AMF that
+# offers emergency service but does NOT grant it to unauthenticated UEs
+# (amf -emergency-allow-unauth=none, the default and the lab's) has nothing to
+# authenticate and no policy to grant it under: REGISTRATION REJECT with 5GMM
+# cause #5 "PEI not accepted" (TS 24.501 §5.5.1.2.5) — never a NULL-security
+# registration, never a hang.
+kind: flow
+name: emergency_unauth_refused
+description: IMEI-only emergency registration against an AMF that does not allow unauthenticated emergency — Registration Reject #5 (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - refused
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reject
+        actions:
+          - { type: send, message: InitialUEMessage, params: { registration_type: 4, identity: imei } }
+
+  wait_reject:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.RegistrationReject
+        target: refused
+        actions:
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 5 }
+      # Any of these is the AMF serving a UE it must refuse.
+      - { event: NASDownlinkTransport.SecurityModeCommand, target: failed }
+      - { event: InitialContextSetupRequest.RegistrationAccept, target: failed }
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `refused` — the IMEI-only emergency registration was rejected
+    metric: final_state_counts.refused
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: the cause check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and it did not fail — the cause was #5 PEI not accepted
+    metric: checks_failed
+    op: equals
+    value: 0

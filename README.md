@@ -41,6 +41,7 @@ rk run-suite \
 | Directory | What it drives |
 |---|---|
 | `gnb/` | NGAP/NAS from a gNB: registration, session, handover, paging, SMS, security, identity |
+| `certifications/gnb/` | Copies of `gnb/` flows that match a row of the gNB black-box certificate. Named by path-row id. Not loaded as separate flows. |
 | `amf/` | Server-mode AMF (Runik *is* the AMF) |
 | `nrf/` | Nnrf NFManagement, Discovery, AccessToken, Bootstrapping, subscriptions |
 | `ausf/` | Nausf UE authentication, SoR/UPU protection |
