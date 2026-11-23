@@ -6,7 +6,7 @@ The original stays in `gnb/`. Runik loads flows by the YAML `name:` field, so th
 A file name is `Pxxx-ts38413-<clause>-<procedure>-<path>--<flow>.yaml`.
 The path-table row is the part before `--`. The flow name is the part after.
 
-195 copies, covering 38 of 165 path rows.
+195 copies, covering 37 of 165 path rows.
 A row with a copy is marked `template` in the Runik column of the path table. That mark means a template exists. It does not mean a core has passed it.
 
 Seven `gnb/` flows have no certificate procedure and were not copied: `amf_ha_resume`, `fuzz_ngap_initial_ue_structural`, `gnb_hold`, `malformed_nas`, `nas_count_start_zero_never_reset`, `no_null_integrity_downgrade_on_existing_context`, `security_key_matches_derived_kgnb`.
@@ -69,7 +69,7 @@ Seven `gnb/` flows have no certificate procedure and were not copied: `amf_ha_re
 | P031 | Handover Resource Allocation | success | `n2_handover_request_security_context_and_caps` | `gnb/n2_handover_request_security_context_and_caps.yaml` | clause 8.4.2 |
 | P029 | Handover Preparation | success | `n2_handover_required_no_pdu_session` | `gnb/n2_handover_required_no_pdu_session.yaml` | clause 8.4.1 |
 | P030 | Handover Preparation | failure | `n2_handover_required_stale_amf_ue_ngap_id` | `gnb/n2_handover_required_stale_amf_ue_ngap_id.yaml` | filename |
-| P048 | Reroute NAS Request | success | `nas_non_delivery` | `gnb/nas_non_delivery.yaml` | clause 8.6.5 |
+| P047 | NAS Non Delivery Indication | success | `nas_non_delivery` | `gnb/nas_non_delivery.yaml` | clause 8.6.5 |
 | P056 | NG Reset | success | `ng_reset` | `gnb/ng_reset.yaml` | clause 8.7.4 |
 | P056 | NG Reset | success | `ng_reset_partial` | `gnb/ng_reset_partial.yaml` | clause 8.7.4 |
 | P056 | NG Reset | success | `ng_reset_preserves_application_config` | `gnb/ng_reset_preserves_application_config.yaml` | clause 8.7.4 |
@@ -104,7 +104,7 @@ Seven `gnb/` flows have no certificate procedure and were not copied: `amf_ha_re
 | P004 | PDU Session Resource Release | failure | `pdu_session_release_for_unknown_session` | `gnb/pdu_session_release_for_unknown_session.yaml` | filename |
 | P003 | PDU Session Resource Release | success | `pdu_session_release_one_of_two` | `gnb/pdu_session_release_one_of_two.yaml` | clause 8.2.2 |
 | P006 | PDU Session Resource Modify | failure | `pdu_session_release_response_wrong_session_id` | `gnb/pdu_session_release_response_wrong_session_id.yaml` | clause 8.2.3 |
-| P007 | PDU Session Resource Modify Indication | success | `pdu_session_resource_notify_qos_flow_release` | `gnb/pdu_session_resource_notify_qos_flow_release.yaml` | clause 8.2.5 |
+| P009 | PDU Session Resource Notify | success | `pdu_session_resource_notify_qos_flow_release` | `gnb/pdu_session_resource_notify_qos_flow_release.yaml` | clause 8.2.5 |
 | P003 | PDU Session Resource Release | success | `pdu_session_resource_release_command_n2` | `gnb/pdu_session_resource_release_command_n2.yaml` | clause 8.2.2 |
 | P001 | PDU Session Resource Setup | success | `pdu_session_setup` | `gnb/pdu_session_setup.yaml` | clause 8.2.1 |
 | P001 | PDU Session Resource Setup | success | `pdu_session_setup_ipv4v6` | `gnb/pdu_session_setup_ipv4v6.yaml` | filename |
@@ -122,7 +122,7 @@ Seven `gnb/` flows have no certificate procedure and were not copied: `amf_ha_re
 | P046 | Uplink NAS Transport | success | `post_smc_backwards_count_uplink_nas` | `gnb/post_smc_backwards_count_uplink_nas.yaml` | filename |
 | P045 | Downlink NAS Transport | success | `post_smc_bad_mac_uplink_discarded` | `gnb/post_smc_bad_mac_uplink_discarded.yaml` | filename |
 | P045 | Downlink NAS Transport | success | `post_smc_unprotected_uplink_discarded` | `gnb/post_smc_unprotected_uplink_discarded.yaml` | filename |
-| P053 | AMF Configuration Update | success | `ran_config_update` | `gnb/ran_config_update.yaml` | clause 8.7.3 |
+| P051 | RAN Configuration Update | success | `ran_config_update` | `gnb/ran_config_update.yaml` | clause 8.7.3 |
 | P051 | RAN Configuration Update | success | `ran_config_update_omitted_ie_preserves_config` | `gnb/ran_config_update_omitted_ie_preserves_config.yaml` | clause 8.7.2 |
 | P052 | RAN Configuration Update | failure | `ran_config_update_unserved_plmn_refused` | `gnb/ran_config_update_unserved_plmn_refused.yaml` | clause 8.7.2 |
 | P044 | Initial UE Message | success | `registration` | `gnb/registration.yaml` | filename |
@@ -187,12 +187,12 @@ Seven `gnb/` flows have no certificate procedure and were not copied: `amf_ha_re
 | P021 | UE Context Release Request | success | `ue_context_release_request_unknown_amf_ue_ngap_id` | `gnb/ue_context_release_request_unknown_amf_ue_ngap_id.yaml` | clause 8.3.2 |
 | P017 | UE Context Resume | success | `ue_context_resume` | `gnb/ue_context_resume.yaml` | filename |
 | P023 | Connection Establishment Indication | success | `ue_context_resume_request_without_prior_suspend` | `gnb/ue_context_resume_request_without_prior_suspend.yaml` | clause 8.3.6 |
-| P022 | RRC Inactive Transition Report | success | `ue_context_suspend` | `gnb/ue_context_suspend.yaml` | clause 8.3.5 |
+| P015 | UE Context Suspend | success | `ue_context_suspend` | `gnb/ue_context_suspend.yaml` | clause 8.3.5 |
 | P045 | Downlink NAS Transport | success | `ue_policy_delivery` | `gnb/ue_policy_delivery.yaml` | filename |
 | P044 | Initial UE Message | success | `ue_policy_state_indication_in_registration` | `gnb/ue_policy_state_indication_in_registration.yaml` | filename |
 | P045 | Downlink NAS Transport | success | `ue_policy_truncated_updp_ignored` | `gnb/ue_policy_truncated_updp_ignored.yaml` | filename |
 | P045 | Downlink NAS Transport | success | `ue_policy_uplink_no_pcf_association_aborted` | `gnb/ue_policy_uplink_no_pcf_association_aborted.yaml` | filename |
-| P001 | PDU Session Resource Setup | success | `uplane_downlink_pdu_session_container` | `gnb/uplane_downlink_pdu_session_container.yaml` | filename |
+| P132 | Transfer of DL PDU Session Information | success | `uplane_downlink_pdu_session_container` | `gnb/uplane_downlink_pdu_session_container.yaml` | filename |
 | P133 | Transfer of UL PDU Session Information | success | `uplane_mtu_sized_df_probe` | `gnb/uplane_mtu_sized_df_probe.yaml` | filename |
 | P133 | Transfer of UL PDU Session Information | success | `uplane_neighbor_teid` | `gnb/uplane_neighbor_teid.yaml` | filename |
 | P133 | Transfer of UL PDU Session Information | success | `uplane_traffic` | `gnb/uplane_traffic.yaml` | filename |
