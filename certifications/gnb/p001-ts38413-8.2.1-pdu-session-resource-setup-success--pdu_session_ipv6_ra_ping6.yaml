@@ -1,0 +1,156 @@
+# IPv6 PDU session USER PLANE: the UPF's Router Advertisement reaches the UE on
+# the session's tunnel, the UE autoconfigures its address from it, and ICMPv6
+# echo to the data network round-trips through the UPF.
+#
+# Clauses:
+#
+#   TS 23.501 §5.8.2.2.1: for an IPv6 PDU session the UE gets an interface
+#   identifier in the accept and "the /64 IPv6 prefix ... via a Router
+#   Advertisement" from the PSA UPF, which acts as the UE's first-hop router on
+#   the session.
+#
+#   TS 29.061 §11.2.1.3.4 (referenced by TS 29.561 for 5GS): the RA has the M
+#   and O flags clear (no DHCPv6; DNS rides the ePCO) and one Prefix
+#   Information option with the on-link flag CLEAR and the autonomous flag SET.
+#
+#   RFC 4861 §6.1.2: a host accepts an RA only from a link-local source with hop
+#   limit 255 (the Runik UE discards anything else, so ra_rx counts only RAs a
+#   host would act on). RFC 4862 §5.5.3: the global address is the /64 prefix
+#   plus the interface identifier — here the one the PDU address IE carried.
+#
+# What makes the ping meaningful: the UPF drops an uplink packet whose source
+# is outside the session's /64 (anti-spoofing), so a UE that formed the wrong
+# address, or sent before it had one, gets no reply. pkt_rx6 counts only
+# ICMPv6 echo replies from the target, addressed to the UE's global address.
+#
+# The target is gnb.uplane.target_addr6 (the d3x lab: the `dn` host on N6,
+# deploy/lab/docker-compose.n6.yml). A core whose UPF does not forward user
+# plane fails at ra_rx — which is the finding.
+kind: flow
+name: pdu_session_ipv6_ra_ping6
+description: IPv6 PDU session user plane — the UPF's Router Advertisement (M=0 O=0, /64 L=0 A=1) configures the UE's address from the accept's interface identifier, and ICMPv6 echo to the data network round-trips (YAML)
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - user_plane_verified
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: extract, field: amf_ue_ngap_id, store: pilot_amf_id }
+          - { type: send, message: AuthResponse }
+
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_pdu_session_accept
+        actions:
+          - { type: check, field: security_key, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionEstablishmentRequest
+            params:
+              # PDU session type IE = "IPv6" (TS 24.501 §9.11.4.11 value 2).
+              pdu_session_type: 2
+
+  wait_pdu_session_accept:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: PDUSessionResourceSetupRequest
+        target: uplane_window
+        actions:
+          - { type: check, field: ue.Params.pdu_accept_selected_pdu_session_type, op: equals, expected: 2 }
+          # The interface identifier the UE will build both its link-local and
+          # its global address from (TS 24.501 §9.11.4.10).
+          - { type: check, field: ue.Params.pdu_accept_pdu_address_ipv6_iid_len, op: equals, expected: 8 }
+          - { type: check, field: ue.UpfTeid, op: greater_than, expected: 0 }
+          - type: send
+            message: PDUSessionResourceSetupResponse
+            message_body: |
+              { "amf_ue_ngap_id": "{{ue.Params.pilot_amf_id}}" }
+          # The tunnel's IPv6 half: Router Solicitation from fe80::<iid>,
+          # then ICMPv6 echo from <RA prefix>::<iid> to gnb.uplane.target_addr6.
+          - { type: uplane_start, params: { duration: 4s } }
+
+  uplane_window:
+    on_timeout: { duration: 15s, target: failed }
+    transitions:
+      - event: UplaneComplete
+        target: user_plane_verified
+        actions:
+          - { type: check, field: ue.UplaneReport, op: not_empty }
+          # ---- The Router Advertisement. ra_rx counts RAs that passed the
+          # RFC 4861 §6.1.2 host checks; every ra_* path below MISSES unless
+          # one did, so none of them can pass on absence. ----
+          - { type: check, field: ue.UplaneReport.rs_tx, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.UplaneReport.ra_rx, op: greater_or_equal, expected: 1 }
+          - { type: check, field: ue.UplaneReport.ra_prefix_len, op: equals, expected: 64 }
+          # TS 29.061 §11.2.1.3.4: M=0, O=0; prefix L=0, A=1.
+          - { type: check, field: ue.UplaneReport.ra_m_flag, op: equals, expected: 0 }
+          - { type: check, field: ue.UplaneReport.ra_o_flag, op: equals, expected: 0 }
+          - { type: check, field: ue.UplaneReport.ra_l_flag, op: equals, expected: 0 }
+          - { type: check, field: ue.UplaneReport.ra_a_flag, op: equals, expected: 1 }
+          # A router lifetime of 0 would tell the UE not to use the UPF as its
+          # default router (RFC 4861 §4.2): nothing global could be sent.
+          - { type: check, field: ue.UplaneReport.ra_router_lifetime, op: greater_than, expected: 0 }
+          # The global address is the RA prefix with THE ACCEPT'S interface
+          # identifier — field-to-field, both read off the wire.
+          - { type: check, field: ue.UplaneReport.ipv6_addr, op: not_empty }
+          - { type: check, field: ue.UplaneReport.ipv6_addr_iid, op: equals, expected: "{{ue.Params.pdu_accept_pdu_address_ipv6_iid}}" }
+          # ---- ICMPv6 echo through the UPF and back. ----
+          - { type: check, field: ue.UplaneReport.pkt_tx6, op: greater_than, expected: 0 }
+          - { type: check, field: ue.UplaneReport.pkt_rx6, op: greater_than, expected: 0 }
+          # An IPv6-only session sends no IPv4 at all.
+          - { type: check, field: ue.UplaneReport.pkt_tx4, op: equals, expected: 0 }
+          # Every downlink G-PDU (the RA included) came on this session's tunnel.
+          - { type: check, field: ue.UplaneReport.dl_gpdu_rx, op: greater_than, expected: 0 }
+      - event:
+          or:
+            - NASDownlinkTransport.PDUSessionEstablishmentReject
+            - NASDownlinkTransport.DLNASTransport.PDUSessionEstablishmentReject
+        target: failed
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+final_checks:
+  - name: the flow reached `user_plane_verified`
+    metric: final_state_counts.user_plane_verified
+    op: equals
+    value: 1
+  - name: the run asserted the RA and the echo
+    metric: checks_total
+    op: greater_or_equal
+    value: 21
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0

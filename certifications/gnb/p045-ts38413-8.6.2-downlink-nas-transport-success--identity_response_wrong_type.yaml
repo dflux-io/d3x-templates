@@ -1,0 +1,78 @@
+# IdentityResponse returning a NON-requested identity type
+# (3GPP TS 24.501 §5.4.3 — identity procedure).
+#
+# Waits for an AMF-initiated IDENTITY REQUEST (which asks for the SUCI) and
+# answers with a 5G-S-TMSI instead (respond_identity_type=5g_s_tmsi SendParam),
+# modelling a UE returning the wrong identity type. A correct AMF detects the
+# mismatch and re-requests / rejects.
+#
+# TRIGGER DEPENDENCY: like identity_request, the AMF only sends IDENTITY REQUEST
+# when it cannot resolve the SUCI; a provisioned subscriber does not trigger it,
+# so this flow is NOT in a suite and reaches `not_triggered` in the bare lab. Run
+# standalone against an AMF that will issue an IDENTITY REQUEST.
+kind: flow
+name: identity_response_wrong_type
+description: Answer an AMF IDENTITY REQUEST with a wrong (5G-S-TMSI) identity type (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - identity_mismatch_sent
+  - not_triggered
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_identity_request
+        actions:
+          - { type: send, message: InitialUEMessage }
+  wait_identity_request:
+    on_timeout: { duration: 15s, target: not_triggered }
+    transitions:
+      - event: NASDownlinkTransport.IdentityRequest
+        target: identity_mismatch_sent
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: IdentityResponse
+            params:
+              respond_identity_type: 5g_s_tmsi
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow currently claims, said by the flow.
+#
+# The FSM terminates on its own IDENTITY RESPONSE (wrong type). Silence is
+# `not_triggered` (the 15 s timer); a transport error is `failed`. Pinning
+# `identity_mismatch_sent` fails the run closed on either of those.
+final_checks:
+  - name: the UE sent the wrong-type IDENTITY RESPONSE
+    metric: final_state_counts.identity_mismatch_sent
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NAS UPLINK TRANSPORT was sent (IdentityResponse)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 1
+  - name: an IDENTITY REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.IdentityRequest
+    op: greater_or_equal
+    value: 1
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

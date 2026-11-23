@@ -1,0 +1,159 @@
+# Authentication failure (synch failure + AUTS) — negative / resync test.
+#
+# 3GPP ref: TS 24.501 §5.4.1.3.7 (UE detects SQN out of range) and AMF/UDM
+# resynchronisation handling §5.4.1.3.6; TS 33.102 §6.3.5 (AUTS / SQN_MS
+# resync). NGAP carriage per TS 38.413 §8.6.
+#
+# Abnormal input sent: the gNB drives a UE through the registration preamble
+# (InitialUEMessage -> AuthenticationRequest) and then sends an
+# AuthenticationFailure with 5GMM cause #21 "synch failure" carrying an AUTS
+# parameter (params {cause: 21}). This models a UE whose stored SQN_MS is out
+# of range relative to the network's SQN, requiring SQN resynchronisation.
+#
+# Expected-correct Open5GS behavior: per 24.501 §5.4.1.3.6 the AMF forwards the
+# AUTS to the UDM (Nudm_UEAuthentication), which resynchronises SQN and returns
+# a fresh authentication vector. The AMF then re-challenges the UE with a new
+# NASDownlinkTransport.AuthenticationRequest carrying a new RAND/AUTN. The AMF
+# MUST NOT reject for a single synch failure, MUST NOT proceed to security mode,
+# and MUST NOT crash. Success terminal = receiving the resync re-challenge
+# (auth_resynced).
+
+kind: flow
+name: auth_failure_sync
+description: Auth preamble then AuthenticationFailure cause #21 (synch failure + AUTS) — expect resync re-challenge (YAML)
+detail: |
+  Negative authentication / SQN-resynchronisation test (3GPP TS 24.501
+  §5.4.1.3.7, TS 33.102 §6.3.5). The UE registers up to the AuthenticationRequest,
+  then returns an AuthenticationFailure with 5GMM cause #21 "synch failure"
+  (carrying AUTS) instead of an AuthenticationResponse.
+
+  A spec-compliant AMF (Open5GS) relays the AUTS to the UDM to resynchronise the
+  sequence number, obtains a fresh authentication vector, and re-challenges the
+  UE with a new AuthenticationRequest containing a new RAND. The compliance
+  assertion is that the AMF resyncs and re-challenges rather than rejecting or
+  crashing. Success = receiving the fresh AuthenticationRequest.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - auth_resynced
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          - type: send
+            message: InitialUEMessage
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_resync_challenge
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          # Instead of AuthResponse, signal synch failure + AUTS (24.501 cause #21).
+          - type: send
+            message: AuthenticationFailure
+            params:
+              cause: 21
+
+  wait_resync_challenge:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      # Spec-correct reaction: AMF resynced SQN against the UDM and re-challenges
+      # with a fresh AuthenticationRequest (new RAND). This is the success terminal.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: auth_resynced
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — this row's claim IS a NAS message identity, and
+# until rx_events existed none of it could be stated.
+#
+# The claim, from the header above, has four parts and every one of them is
+# about WHICH NAS message came back, not how many:
+#
+#   "the AMF … re-challenges the UE with a new AuthenticationRequest"
+#   "MUST NOT reject for a single synch failure"
+#   "MUST NOT proceed to security mode"
+#   "MUST NOT crash"
+#
+# THE OLD VOCABULARY COULD NOT SEPARATE ANY OF THEM. AUTHENTICATION REQUEST,
+# SECURITY MODE COMMAND, AUTHENTICATION REJECT and REGISTRATION REJECT all
+# arrive as NGAP_NAS_DOWNLINK_TRANSPORT, so an AMF that answered the synch
+# failure by rejecting the registration produced exactly the same
+# `msg_types.rx.ngap.NGAP_NAS_DOWNLINK_TRANSPORT = 2` as one that resynced and
+# re-challenged. The strongest thing expressible was "two NAS downlinks
+# arrived", which is true of the conformant behaviour and of the two
+# behaviours the header says are violations.
+#
+# The FSM does force the identity of the SECOND downlink — `auth_resynced` is
+# reachable only by consuming an AUTHENTICATION REQUEST there — but the three
+# NEGATIVE claims are reachable by no FSM path at all: a REJECT the flow names
+# no transition for is refused by the bus and the flow simply times out into
+# `failed`, which reports "we did not get our re-challenge", not "the AMF
+# rejected, which §5.4.1.3.6 forbids". rx_events counts what ARRIVED, refused
+# or not, so the three MUST NOTs become assertions.
+#
+# Counts are derived from the FSM and the clauses named above; no core was
+# contacted in the change that added this block.
+final_checks:
+  - name: the AMF resynced and re-challenged
+    metric: final_state_counts.auth_resynced
+    op: equals
+    value: 1
+  # TWO AUTHENTICATION REQUESTs: the initial challenge and the post-resync
+  # re-challenge. A floor rather than `equals`, because TS 24.501 §5.4.1.3.7
+  # lets the AMF retransmit the challenge on T3560 expiry.
+  - name: a second AUTHENTICATION REQUEST came back after the synch failure
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 2
+  # "The AMF MUST NOT reject for a single synch failure" (TS 24.501 §5.4.1.3.6).
+  - name: and it did not reject the authentication
+    metric: rx_events.NASDownlinkTransport.AuthenticationReject
+    op: equals
+    value: 0
+  - name: nor the registration
+    metric: rx_events.NASDownlinkTransport.RegistrationReject
+    op: equals
+    value: 0
+  # "MUST NOT proceed to security mode" — an AMF that activated security on an
+  # unauthenticated UE would be the finding this row exists to catch.
+  - name: and it did not proceed to security mode
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: equals
+    value: 0
+  # Ours, exactly: one INITIAL UE MESSAGE and one NAS uplink (the
+  # AUTHENTICATION FAILURE). There is no AUTH RESPONSE on this path — sending
+  # one would mean the flow authenticated normally and tested nothing.
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: exactly one NAS uplink went out — the AUTHENTICATION FAILURE
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 1
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and it passed
+    metric: checks_failed
+    op: equals
+    value: 0

@@ -1,0 +1,264 @@
+# Secured/abnormal NAS probe — SECURITY MODE COMPLETE with a corrupted MAC, i.e. an integrity
+# failure (TS 24.501 §4.4.4.3, TS 33.501 §6.4.3.2).
+#
+# ============================================================================================
+# SILENCE IS THE CORE'S ANSWER, NOT ITS ABSENCE — AND AN ANSWER WE CANNOT HEAR IS NOT EVIDENCE.
+# ============================================================================================
+#
+# WHAT WAS WRONG THE FIRST TIME (xp-245). The row scored `tolerated` — "the core accepted a
+# forged MAC" — against tinycore, Open5GS and free5GC alike, which is not credible for three
+# independent implementations. The probe was never vacuous: the MAC really is wrong on the wire
+# (tinycore logged `nas: MAC mismatch: received 5f1032c3, expected a0efcd3c`, the byte-for-byte
+# XOR-0xFF the enricher applies) and it really was discarded. The defect was in the FLOW.
+# §4.4.4.3 says the receiver "shall discard" a NAS message that fails its integrity check, and a
+# discard emits nothing; the flow had no transition for nothing, fell through `on_timeout` into
+# `tolerated`, and reported the one behaviour the spec MANDATES as the violation it exists to
+# catch.
+#
+# WHAT WAS STILL WRONG THE SECOND TIME (xp-268, xp-276). Inverting the window — making silence
+# `rejected` — moved the defect rather than ending it. The same bare timer that had manufactured
+# a false security finding now manufactured an unearned PASS, and lib/outcome.py DEFENCE 11
+# rightly refuses a terminal reached only by a timer in EITHER direction. Measured on
+# 2026-08-12: `inconclusive` on ALL THREE CORES.
+#
+# AND THE TRACES SHOW WHY THAT REFUSAL IS RIGHT. free5gc did not go quiet at all — it discarded
+# the completion and RETRANSMITTED the SECURITY MODE COMMAND (arrival #9 in the message log,
+# the T3560 retransmission of TS 24.501 §5.4.2.7 b), and this flow named no transition for it,
+# so the bus dropped the message and the state timed out. The silence the verdict rested on was
+# OUR state machine's, not the network's. tinycore, by contrast, sent NOTHING for the full ten
+# seconds — no retransmission at all, the same absence it shows on REG-437 and a candidate
+# conformance finding of its own against §5.4.2.7 b).
+#
+# ============================================================================================
+# THE DISCRIMINATOR, TRANSFERRED FROM REG-437 BECAUSE IT IS THE SAME QUESTION.
+# ============================================================================================
+#
+# The row asks whether the AMF activated security on a message whose MAC does not verify. The
+# two states of the world differ in what the AMF does NEXT, and TS 24.501 §5.4.2.4 says what:
+# "The AMF shall, upon receipt of the SECURITY MODE COMPLETE message, stop timer T3560 ... the
+# AMF shall complete the ongoing registration procedure by considering the REGISTRATION REQUEST
+# message contained in the NAS message container IE as the message that triggered the
+# procedure."
+#
+#   DISCARDED (conformant)  — security mode control is still open. A correctly MAC'd SECURITY
+#                             MODE COMPLETE sent afterwards on the same association is the
+#                             message the AMF is waiting for, and a REGISTRATION ACCEPT follows.
+#   ACCEPTED (the defect)   — the procedure closed on the FORGED message and the REGISTRATION
+#                             ACCEPT was sent then and there, inside the absence window.
+#
+# So every scoring branch is carried by a MESSAGE:
+#
+#   `tolerated`  a REGISTRATION ACCEPT inside the absence window — security activated on an
+#                unverified completion, stated by the core itself. The finding.
+#   `rejected`   the SECURITY MODE COMMAND retransmission (§5.4.2.7 b — the AMF is still waiting,
+#                which it only does because it never accepted the forged completion), OR the
+#                deferred correctly-MAC'd completion drawing the REGISTRATION ACCEPT the forged
+#                one did not. Alive, reached, and provably still inside the procedure.
+#   `unproven`   silence even to a correctly protected message, or an answer that proves
+#                liveness without separating the two states of the world. DEFENCE 11 turns the
+#                timer route into `inconclusive`, which is the honest verdict for "we could not
+#                tell".
+#
+# COUNT DISCIPLINE. `bad_mac` corrupts the MAC AFTER EncodeSecureNewContext has run, so the UE's
+# uplink COUNT has already advanced to 1 while the AMF — which rejects at the MAC comparison,
+# before DecodeSecure's count update — still holds 0. The probe therefore goes out at COUNT 1
+# and the receiver reconstructs COUNT from the sequence number it actually received, so the
+# forward step verifies. Do not rewind: encodeSecure increments whatever it is handed, and a
+# rewound context leaves every later uplink failing its own MAC (the EnrichSecuredUplinkStaleCount
+# trap, already paid for once).
+kind: flow
+name: smc_wrong_mac_rejected
+description: SecurityModeComplete with a corrupted MAC (integrity failure) (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, unproven, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions: [{ type: send, message: InitialUEMessage }]
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_reaction
+        actions:
+          # The integrity algorithm the AMF selected, read off the wire and recorded as a fact.
+          # Same construction and same non-vacuity argument as REG-437's ciphering check: the
+          # enum is wire-nibble+1, so 0 is the decoder's "IE absent" sentinel and 1..8 a genuine
+          # selection. An AMF that omits the mandatory Selected NAS Security Algorithms IE fails
+          # here rather than silently giving this row nothing to corrupt.
+          - type: check
+            field: nas.selected_nas_security_algorithms_integrity
+            op: greater_or_equal
+            expected: 1
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - type: send
+            message: SecurityModeComplete
+            params: { bad_mac: true }
+  wait_reaction:
+    # THE ABSENCE WINDOW, AND IT DECIDES NOTHING BY ITSELF. 6 s against a T3560 of 6 s
+    # (TS 24.501 §10.2) and an acceptance path that answers in single-digit milliseconds:
+    # long enough that both of the things a core might do have had time to happen, short
+    # enough to leave the probe room inside the row's budget.
+    on_timeout:
+      duration: 6s
+      target: probe_still_awaiting_completion
+      actions:
+        # THE PROBE: the same SECURITY MODE COMPLETE with an intact MAC. Everything it does
+        # differently from the send above is that its integrity check passes.
+        - { type: send, message: SecurityModeComplete }
+    transitions:
+      # Security got activated on a message whose MAC does not verify. That is the finding, and
+      # it arrives as a REGISTRATION ACCEPT.
+      #
+      # NO CHECK ON THIS BRANCH, DELIBERATELY. A check is a GATE — a failure runs failUE and the
+      # named target is never entered — so any check here is a way for the FINDING to vanish
+      # into `wrong-response`. The arrival of the accept is the assertion.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: tolerated
+      # THE RETRANSMISSION IS POSITIVE EVIDENCE OF THE DISCARD. free5gc sent one here on
+      # 2026-08-12 and this flow had no transition for it, so the bus refused the message and
+      # the harness read OUR silence as the core's consent.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - type: check
+            field: nas.selected_nas_security_algorithms_integrity
+            op: greater_or_equal
+            expected: 1
+      # An explicit refusal is also a refusal: §4.4.4.3's discard is a floor, not a ceiling, and
+      # both of these carry a 5GMM cause as a mandatory IE (TS 24.501 §8.2.9, §8.2.29) so the
+      # branch asserts on the message that fired it.
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      # THE AMF GOING BACK TO AUTHENTICATION, and an explicit refusal or release. Each of these
+      # is the row's criterion satisfied ON A MESSAGE — no REGISTRATION ACCEPT, no PDU session
+      # signalling, and a core provably alive and reached. The AUTHENTICATION REQUEST branch
+      # asserts on the ABBA, mandatory in that message (TS 24.501 §8.2.1); the other two carry no
+      # mandatory IE to assert on and take no check, for the same reason the `tolerated` branch
+      # takes none — a gate that cannot be justified is a gate that silently discards
+      # observations. The NGAP ERROR INDICATION is the exception: it says our message was not
+      # processed as sent, which is the "never received it" branch of the failure list rather
+      # than a §4.4.4.3 discard, so it scores `unproven`.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: rejected
+        actions:
+          - { type: check, field: nas.abba, op: ie_present }
+      - event:
+          or:
+            - NASDownlinkTransport.AuthenticationReject
+            - UEContextReleaseCommand
+        target: rejected
+      - event: ErrorIndication
+        target: unproven
+  probe_still_awaiting_completion:
+    # Silence here is silence to a message the AMF is REQUIRED to act on. It says nothing about
+    # §4.4.4.3 and it must never read as a pass.
+    on_timeout: { duration: 8s, target: unproven }
+    transitions:
+      # THE DISCRIMINATOR FIRING. The registration completed on the SECOND, correctly MAC'd
+      # completion — so at the moment we sent it the AMF was still inside security mode control,
+      # which is only true if the forged one was discarded per §4.4.4.3.
+      - event:
+          or:
+            - InitialContextSetupRequest.RegistrationAccept
+            - NASDownlinkTransport.RegistrationAccept
+        target: rejected
+        actions:
+          # The AMF answered under the context it commanded. `equals true` fails on a field that
+          # does not resolve, so none of these passes by absence.
+          - { type: check, field: nas.security.protected, op: equals, expected: true }
+          - { type: check, field: nas.security.mac_verified, op: equals, expected: true }
+          # And it is a REGISTRATION ACCEPT rather than something merely shaped like one: the
+          # 5GS registration result IE is mandatory in it (TS 24.501 §8.2.7).
+          - { type: check, field: nas.registration_result, op: ie_present }
+      # A T3560 retransmission that landed the other side of the 6 s boundary — same evidence,
+      # named here too so the verdict does not depend on the core's timer phase.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - type: check
+            field: nas.selected_nas_security_algorithms_integrity
+            op: greater_or_equal
+            expected: 1
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - NASDownlinkTransport.5GMMStatus
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: ie_present }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: rejected
+        actions:
+          - { type: check, field: nas.abba, op: ie_present }
+      - event:
+          or:
+            - NASDownlinkTransport.AuthenticationReject
+            - UEContextReleaseCommand
+        target: rejected
+      - event: ErrorIndication
+        target: unproven
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — the row's claim, in the row.
+#
+# THIS IS THE TEMPLATE THAT PROVES A VERDICT CANNOT BE INFERRED FROM
+# `final_states`. Three of the four terminals here are non-failure —
+# `rejected`, `tolerated` and `unproven` — and the difference between them IS
+# the finding. `tolerated` means the AMF activated security on a forged MAC
+# (a TS 24.501 §4.4.4.3 violation, and the reason this row exists); `unproven`
+# means the probe could not separate the two. Only the flow knows which one it
+# claims, so only the flow can say it.
+#
+# `final_state_counts.rejected equals 1` is therefore the whole verdict of this
+# row, and it fails in BOTH of the ways the row was previously wrong: it fails
+# when the core tolerates the forgery, and it fails when the flow times out into
+# `unproven` having proved nothing. The load-time check refuses a state name
+# this flow does not declare, so the assertion cannot be a typo that reads 0.
+final_checks:
+  - name: the AMF refused the forged MAC (TS 24.501 §4.4.4.3)
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  # Non-vacuity floor. The two pre-probe checks always run; every branch that
+  # reaches `rejected` on a message adds at least one more, except the
+  # AUTHENTICATION REJECT / UE CONTEXT RELEASE pair which carry none. Three is
+  # the count of the shortest path that still proves an assertion was made.
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0
+  # The forged completion, and (on the timer route) the correctly-MAC'd probe.
+  # AUTH RESPONSE is the third. Floor rather than equals: which branch fires
+  # decides whether the probe was sent at all.
+  - name: the forged SECURITY MODE COMPLETE went out
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: greater_or_equal
+    value: 2

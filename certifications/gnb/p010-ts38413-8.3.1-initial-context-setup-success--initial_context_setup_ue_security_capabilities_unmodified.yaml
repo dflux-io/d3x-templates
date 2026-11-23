@@ -1,0 +1,308 @@
+# REG-482 — the UE Security Capabilities the AMF forwards to the NG-RAN node
+# correspond exactly to the algorithms the UE advertised, unmodified and
+# untruncated.
+#
+# TS 38.413 §9.3.1.86 UE Security Capabilities (retrieved with
+# matrix/scripts/spec-clause.py against the pinned Rel-18 corpus, verbatim):
+#
+#   "The Security Capabilities received from NAS signaling SHALL NOT BE MODIFIED
+#    OR TRUNCATED when forwarded to NG-RAN nodes and the NG-RAN nodes store and
+#    send the complete bitmaps without modification or truncation as specified
+#    in TS 38.300."
+#
+#   NR Encryption Algorithms, BIT STRING(SIZE(16,…)): "all bits equal to 0" – UE
+#   supports no other algorithm than NEA0; "first bit" – 128-NEA1; "second bit"
+#   – 128-NEA2; "third bit" – 128-NEA3; "fourth to seventh bit" are mapped from
+#   bit 4 to bit 1 of octet 3 in the UE Security Capability IE. The NR Integrity
+#   Protection Algorithms and the two E-UTRA bitmaps are coded the same way.
+#
+# TS 33.501 §5.11.2: the UE security capabilities the AMF holds are the ones the
+# UE sent, and the network must not act on any other set — the anti-bidding-down
+# requirement this IE exists to serve.
+#
+# THE ROW'S WORD IS "CORRESPOND", AND CORRESPONDENCE NEEDS TWO ENDS
+# -----------------------------------------------------------------
+# A flow that only asserts a constant on N2 is asserting a number, not a
+# correspondence: it would pass against an AMF that ignores the UE entirely and
+# emits that constant unconditionally. So this row pins BOTH ends of the
+# forwarding path within one registration:
+#
+#   N1, INPUT SIDE — the SECURITY MODE COMMAND's Replayed UE security
+#     capabilities IE. TS 24.501 §5.4.2.2 requires the AMF to replay the UE
+#     security capabilities IT RECEIVED, so this IE is the AMF's own copy of the
+#     input, read back off the wire rather than assumed from what we sent. All
+#     seven algorithm bits that feed each NGAP bitmap are asserted true.
+#
+#   N2, OUTPUT SIDE — the four bitmaps of the INITIAL CONTEXT SETUP REQUEST's UE
+#     Security Capabilities IE, asserted at the exact values §9.3.1.86's mapping
+#     produces from that input.
+#
+# Both readings come from the same registration and the same UE, so a mismatch
+# between them IS the modification/truncation the clause forbids.
+#
+# THE DERIVATION OF 65024, WRITTEN OUT
+# ------------------------------------
+# The UE advertises every algorithm: EA0-EA7, IA0-IA7, EEA0-EEA7, EIA0-EIA7,
+# i.e. UE security capability octets FF FF FF FF (MEASURED on the wire in the
+# InitialUEMessage: `… 2e 04 ff ff ff ff`). NEA0 and NIA0 are NOT signalled in
+# the NGAP bitmaps — §9.3.1.86 assigns the first bit to 128-NEA1 — so the
+# forwarded 16-bit string has its top SEVEN bits set and the rest clear:
+#
+#   0b1111_1110_0000_0000 = 0xFE00 = 65024
+#
+# and the same for the other three bitmaps. `ie_present` or `exists` would not
+# do here: §9.3.1.86 says an all-zero NR Encryption Algorithms bitmap is not
+# "absent", it is the positive statement "this UE supports no algorithm but
+# NEA0" — a claim about the UE that is FALSE for the UE registering here, and
+# one the AMF is expressly forbidden from making.
+#
+# MEASURED (2026-08-11, this lab) — tinycore FAILS AT BOTH ENDS, and the two
+# failures are one defect seen twice.
+#
+#   WHAT THE UE SENT (InitialUEMessage, raw N2 hex):
+#       … 2e 04 ff ff ff ff …
+#         ^^ IEI 0x2E = UE security capability
+#            ^^ length 4
+#               ^^^^^^^^^^^ value FF FF FF FF — every 5GS and every EPS
+#                           algorithm bit set
+#
+#   N1, WHAT THE AMF REPLAYED (SECURITY MODE COMMAND, Replayed UE security
+#   capabilities IE, decoded):
+#       ea0..ea3 true, EA4..EA7 FALSE
+#       ia0..ia3 true, IA4..IA7 FALSE
+#       every EEA and every EIA bit FALSE
+#   i.e. the AMF replayed the equivalent of F0 F0 where the UE sent
+#   FF FF FF FF. Both MODIFIED (the high nibble of each 5GS octet cleared) and
+#   TRUNCATED (the two E-UTRA octets dropped entirely) — the two words
+#   §9.3.1.86 uses, and a violation of §5.4.2.2's requirement to replay the
+#   capabilities the AMF received. This is the first failing check.
+#
+#   N2, WHAT THE AMF FORWARDED (INITIAL CONTEXT SETUP REQUEST, checks
+#   temporarily relaxed to read past the N1 failure):
+#       {eutra_encryption_algorithms:0 eutra_integrity_protection_algorithms:0
+#        nr_encryption_algorithms:0    nr_integrity_protection_algorithms:0}
+#   ALL FOUR BITMAPS ZERO. Per §9.3.1.86 that is not "the IE was omitted", it is
+#   the AMF telling the gNB this UE supports no algorithm but NEA0/NIA0 — the
+#   bidding-down statement §5.11.2 exists to prevent, and false for the UE that
+#   had just advertised FF FF FF FF.
+#
+# This is xp-251. Both assertions are deliberately left failing: they are
+# written to the spec, not to the core.
+
+kind: flow
+name: initial_context_setup_ue_security_capabilities_unmodified
+description: Initial registration; assert the UE Security Capabilities the AMF forwards on N2 correspond exactly, and without truncation, to the algorithms it replayed on N1
+category: functional
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - capabilities_forwarded
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # ue_context_request = 1: §8.3.1.1 lets the AMF defer the Initial
+          # Context Setup procedure when the IE is absent, and this row has
+          # nothing to read without that message.
+          - type: send
+            message: InitialUEMessage
+            message_body: |
+              {
+                "criticality": 1,
+                "rrc_establishment_cause": 0,
+                "ue_context_request": 1
+              }
+
+  wait_auth_request:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - type: check
+            field: amf_ue_ngap_id
+            op: not_empty
+          - type: send
+            message: AuthResponse
+
+  wait_security_mode:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          # --- N1 INPUT SIDE. TS 24.501 §5.4.2.2 makes this IE the AMF's own
+          # --- copy of the capabilities it received; §9.3.1.86 maps exactly
+          # --- these seven bits into each 16-bit NGAP bitmap.
+          - type: check
+            field: nas.replayed_ue_security_capabilities
+            op: ie_present
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ea1_128
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ea2_128
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ea3_128
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ea4
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ea5
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ea6
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ea7
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ia1_128
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ia2_128
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ia3_128
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ia4
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ia5
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ia6
+            op: equals
+            expected: true
+          - type: check
+            field: nas.replayed_ue_security_capabilities.ia7
+            op: equals
+            expected: true
+          - type: send
+            message: SecurityModeComplete
+
+  wait_context_setup:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: capabilities_forwarded
+        actions:
+          # --- N2 OUTPUT SIDE. §9.3.1.86: "shall not be modified or truncated
+          # --- when forwarded to NG-RAN nodes … the complete bitmaps".
+          - type: check
+            field: ue_security_capabilities
+            op: ie_present
+          - type: check
+            field: ue_security_capabilities.nr_encryption_algorithms
+            op: equals
+            expected: 65024
+          - type: check
+            field: ue_security_capabilities.nr_integrity_protection_algorithms
+            op: equals
+            expected: 65024
+          # "the complete bitmaps" is four bitmaps, not two: an AMF that
+          # forwards the NR pair and drops the E-UTRA pair has truncated the
+          # capabilities exactly as the clause forbids.
+          - type: check
+            field: ue_security_capabilities.eutra_encryption_algorithms
+            op: equals
+            expected: 65024
+          - type: check
+            field: ue_security_capabilities.eutra_integrity_protection_algorithms
+            op: equals
+            expected: 65024
+          - type: send
+            message: InitialContextSetupResponse
+          - type: send
+            message: RegistrationComplete
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-482).
+#
+# REG-482 — The NR Encryption Algorithms and NR Integrity Protection Algorithms bitmaps
+# in the INITIAL CONTEXT SETUP REQUEST correspond exactly to the algorithms the UE
+# advertised in the UE security capability IE of its REGISTRATION REQUEST.
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  - name: the flow reached `capabilities_forwarded`
+    metric: final_state_counts.capabilities_forwarded
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL CONTEXT SETUP RESPONSE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: three NAS UPLINK TRANSPORT messages went out (AuthResponse, RegistrationComplete, SecurityModeComplete)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: equals
+    value: 3
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  # The 21 `check` actions on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: all 21 declared checks ran
+    metric: checks_total
+    op: equals
+    value: 21
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

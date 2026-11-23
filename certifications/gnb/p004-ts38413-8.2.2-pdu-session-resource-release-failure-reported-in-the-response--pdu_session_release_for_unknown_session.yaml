@@ -1,0 +1,155 @@
+# PDU Session Release Request for an UNKNOWN PDU session id
+# (3GPP TS 24.501 §6.4.3 / abnormal — releasing a non-existent session).
+#
+# Registers (no PDU session established), then sends a NAS PDUSessionReleaseRequest
+# targeting a PDU session id that does not exist (release_pdu_session_id=99). A
+# correct SMF/AMF rejects or ignores the request for the unknown session rather
+# than acting on it.
+#
+# Success terminal is `handled`: the AMF flags the unknown session instead of
+# acting on it. REG-363 names PDU SESSION RELEASE REJECT with 5GSM cause #43.
+# nasEventMap has no NAS_PDUSessionReleaseReject entry, so the resolver never
+# emits PDUSessionReleaseReject — a transition on that string cannot fire, and
+# adding the map entry is an engine change this flow does not make. What this
+# AMF does send, and what the resolver does name, is a DL NAS TRANSPORT with
+# 5GMM cause #90 (TS 24.501 §5.4.5.3.2 case e), which tinycore builds in
+# sendN1SmNotForwarded. That event was not on this FSM, so the answer was
+# dropped and the wait timed out to `tolerated`. Silence stays `tolerated`
+# and the pin still fails closed on it. `failed` is a transport error or a
+# timeout during the registration preamble.
+# PDUSessionReleaseCommand stays a `handled` transition because this file's
+# claim is "the AMF flagged it", which already listed that command. REG-363
+# also says no PDUSessionResourceReleaseCommand may arrive; that branch is not
+# retargeted here, and tinycore does not send one for an unknown session.
+kind: flow
+name: pdu_session_release_for_unknown_session
+description: Release a non-existent PDU session id; assert AMF rejects/ignores (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - handled
+  - tolerated
+  - failed
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_auth_request
+        actions:
+          # Uplink NAS is pending after registration, so the FOR bit must say so
+          # (TS 24.501 §9.11.3.7) — otherwise the AMF may release the N1 connection
+          # as soon as registration completes, and free5GC does.
+          - { type: send, message: InitialUEMessage, params: { follow_on_request: true } }
+  wait_auth_request:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_mode
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+  wait_security_mode:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: wait_context_setup
+        actions:
+          - { type: check, field: ue.SecCtx, op: not_empty }
+          - { type: send, message: SecurityModeComplete }
+  wait_context_setup:
+    on_timeout: { duration: 10s, target: failed }
+    transitions:
+      - event: InitialContextSetupRequest.RegistrationAccept
+        target: wait_reaction
+        actions:
+          - { type: check, field: ue.AmfUeNgapId, op: not_empty }
+          - { type: send, message: InitialContextSetupResponse }
+          - { type: send, message: RegistrationComplete }
+          - type: send
+            message: PDUSessionReleaseRequest
+            params:
+              release_pdu_session_id: 99
+  wait_reaction:
+    on_timeout: { duration: 10s, target: tolerated }
+    transitions:
+      # No SM routing context: DL NAS TRANSPORT, 5GMM cause #90, the session id
+      # echoed. This is the name the resolver emits (PayloadNotForwarded). A
+      # PDU SESSION RELEASE REJECT cause #43 is the register's message, and it
+      # is not waited on here because the resolver has no name for it — see
+      # the header. nas.gmm_cause is the 5GMM cause; the container is the UE's
+      # own request, so it is not where cause #43 would be.
+      - event: NASDownlinkTransport.DLNASTransport.PayloadNotForwarded
+        target: handled
+        actions:
+          - { type: check, field: nas.gmm_cause, op: equals, expected: 90 }
+          - { type: check, field: nas.pdu_session_id, op: equals, expected: 99 }
+      - event: PDUSessionReleaseCommand
+        target: handled
+      # The same reaction with the NAS PDU SESSION RELEASE COMMAND inside: a
+      # release the UE is told about is answered on both layers — the N2
+      # response, and the 5GSM PDU SESSION RELEASE COMPLETE (TS 24.501
+      # §6.4.3.3) in an integrity-protected UL NAS TRANSPORT.
+      - event: PDUSessionReleaseCommand.DLNASTransport.PDUSessionReleaseCommand
+        target: handled
+        actions:
+          - { type: send, message: PDUSessionResourceReleaseResponse }
+          - { type: send, message: PDUSessionReleaseComplete }
+      - event: NASDownlinkTransport.5GMMStatus
+        target: handled
+      - event: ErrorIndication
+        target: handled
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this
+# flow ran correctly. The claim this FSM can currently state is: registration
+# completed, a release for session id 99 went out, and the AMF reacted
+# (`handled`). Silence is `tolerated` and fails the pin.
+final_checks:
+  - name: the AMF reacted to the unknown-session release (`handled`)
+    metric: final_state_counts.handled
+    op: equals
+    value: 1
+  - name: one INITIAL UE MESSAGE was sent
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  # Four on every route but one: a NAS release command adds the UE's
+  # PDUSessionReleaseComplete. The reactions are alternatives, so the
+  # count is a floor and a ceiling rather than one number.
+  - name: at least four NAS UPLINK TRANSPORT messages went out (AuthResponse, SecurityModeComplete, RegistrationComplete, PDUSessionReleaseRequest)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: greater_or_equal
+    value: 4
+  - name: at most five (a PDUSessionReleaseComplete when a NAS release command came back)
+    metric: msg_types.tx.ngap.NGAP_NAS_UPLINK_TRANSPORT
+    op: less_or_equal
+    value: 5
+  - name: the context setup was answered
+    metric: msg_types.tx.ngap.NGAP_INITIAL_CONTEXT_SETUP_RESPONSE
+    op: equals
+    value: 1
+  - name: an AUTHENTICATION REQUEST arrived
+    metric: rx_events.NASDownlinkTransport.AuthenticationRequest
+    op: greater_or_equal
+    value: 1
+  - name: a SECURITY MODE COMMAND arrived
+    metric: rx_events.NASDownlinkTransport.SecurityModeCommand
+    op: greater_or_equal
+    value: 1
+  - name: a REGISTRATION ACCEPT arrived (in an INITIAL CONTEXT SETUP REQUEST)
+    metric: rx_events.InitialContextSetupRequest.RegistrationAccept
+    op: greater_or_equal
+    value: 1
+  - name: the three preamble checks ran
+    metric: checks_total
+    op: greater_or_equal
+    value: 3
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

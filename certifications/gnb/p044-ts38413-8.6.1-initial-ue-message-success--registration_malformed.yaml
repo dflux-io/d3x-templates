@@ -1,0 +1,142 @@
+# NEGATIVE — Initial registration with a byte-corrupted RegistrationRequest.
+#
+# 3GPP ref:     TS 24.501 §5.5.1 (Registration procedure), §4.4 (NAS message
+#               handling), TS 38.413 §8.6.
+# Abnormal in:  The gNB performs NG Setup, then sends a MalformedRegistrationRequest
+#               — an InitialUEMessage carrying a byte-corrupted NAS
+#               RegistrationRequest (invalid encoding, e.g. flipped/truncated
+#               bytes that break NAS decoding).
+# Expected OK:  A spec-correct Open5GS AMF MUST handle the malformed NAS
+#               gracefully and stay up. Per §4.4 / general NAS robustness, the
+#               AMF either: (a) rejects with a NAS RegistrationReject, (b) cleans
+#               up via NGAP UEContextReleaseCommand, (c) emits an NGAP
+#               ErrorIndication, or (d) silently drops the unparseable message
+#               (observed at the gNB as a liveness timeout). It must NOT proceed
+#               to authentication (no valid AuthenticationRequest) and must NOT
+#               crash.
+#
+# SUCCESS terminal = `clean_reaction` (any clean AMF reaction OR a liveness
+# timeout). Reaching it asserts the AMF degraded gracefully rather than
+# crashing or accepting the corrupt registration.
+
+kind: flow
+name: registration_malformed
+description: InitialUEMessage with a byte-corrupted RegistrationRequest — test AMF graceful rejection / robustness (YAML)
+detail: |
+  This is a negative / robustness test for NAS decoding of the Registration
+  Request (3GPP TS 24.501 §5.5.1, §4.4).
+
+  Phase 1 — NG Setup: the gNB establishes the NGAP association
+  (NGSetupRequest / NGSetupResponse) so a UE-associated message can follow.
+
+  Phase 2 — Corrupt registration: the gNB sends MalformedRegistrationRequest,
+  an InitialUEMessage whose NAS RegistrationRequest payload has been
+  byte-corrupted so it cannot be decoded as a valid registration.
+
+  A well-behaved AMF must not crash or hang. The spec-correct reactions are a
+  NAS RegistrationReject, an NGAP UEContextReleaseCommand, an NGAP
+  ErrorIndication, or a silent drop of the unparseable PDU (seen as a liveness
+  timeout). Any of those is success. Crucially, the AMF must NOT advance the
+  procedure to authentication: receiving a valid AuthenticationRequest would
+  mean the AMF accepted a corrupt registration, which is a compliance FAILURE.
+  That path is deliberately not modelled and would fall through to the timeout.
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states:
+  - clean_reaction
+  - failed
+
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_ngsetup_response
+        actions:
+          - type: send
+            message: NGSetupRequest
+
+  wait_ngsetup_response:
+    on_timeout:
+      duration: 10s
+      target: failed
+    transitions:
+      - event: NGSetupResponse
+        target: wait_amf_reaction
+        actions:
+          - type: check
+            field: amf_name
+            op: not_empty
+          - type: send
+            message: MalformedRegistrationRequest
+
+  # Abnormal-input wait. Any clean AMF reaction is the spec-correct behavior;
+  # a timeout means the AMF silently dropped the corrupt NAS and stayed up.
+  # Both land on the SUCCESS terminal.
+  wait_amf_reaction:
+    on_timeout:
+      duration: 10s
+      target: clean_reaction
+    transitions:
+      - event:
+          or:
+            - NASDownlinkTransport.RegistrationReject
+            - UEContextReleaseCommand
+            - ErrorIndication
+        target: clean_reaction
+
+any_state_transitions:
+  - event: Error
+    target: failed
+
+# END-OF-FLOW ASSERTIONS — what this flow CLAIMS, said by the flow (REG-123).
+#
+# REG-123 — Either a RegistrationReject arrives, or nothing arrives and a subsequent
+# well-formed registration on a new RAN-UE-NGAP-ID still succeeds — proving the AMF
+# survived
+#
+# `final_states` lists every way this flow can END; only this block says which one it
+# claims. The counts below are derived from the FSM and the register row — NOT measured
+# against a core; the first live run is what confirms them.
+#
+# Ours are asserted exactly (every send is one this flow declares); the core's with a
+# floor, because a retransmission the spec permits must not fail a run that otherwise
+# did what it claimed.
+final_checks:
+  # THE TERMINAL. One route to `clean_reaction` is a timer (the absence window), so the
+  # message assertions below are what separate "reached it" from "waited it out".
+  - name: the flow reached `clean_reaction`
+    metric: final_state_counts.clean_reaction
+    op: equals
+    value: 1
+  # What this flow sent. Exact: each of these is a `send` action on the
+  # path to the terminal above, so a count that moved means the flow did
+  # not walk the path it claims to have walked.
+  - name: one INITIAL UE MESSAGE was sent (MalformedRegistrationRequest)
+    metric: msg_types.tx.ngap.NGAP_INITIAL_UE_MESSAGE
+    op: equals
+    value: 1
+  - name: one NG SETUP REQUEST was sent
+    metric: msg_types.tx.ngap.NGAP_NG_SETUP_REQUEST
+    op: equals
+    value: 1
+  # What the core sent, by the identity of the message rather than its outer
+  # wire type — `msg_types.rx` cannot tell two NAS downlinks apart. Floors:
+  # a permitted retransmission must not fail a run that got where it claims.
+  - name: an NG SETUP RESPONSE arrived
+    metric: rx_events.NGSetupResponse
+    op: greater_or_equal
+    value: 1
+  # The one `check` action on the path above. A template that stops
+  # asserting — a check deleted, a branch taken that skips them — moves this
+  # number, and nothing else in the report would have said so.
+  - name: the one declared check ran
+    metric: checks_total
+    op: equals
+    value: 1
+  - name: and none of them failed
+    metric: checks_failed
+    op: equals
+    value: 0

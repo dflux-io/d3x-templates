@@ -1,0 +1,148 @@
+# Register advertising ONLY null security algorithms (NEA0/NIA0); a non-emergency
+# UE must not be allowed to run with NIA0 (3GPP TS 33.501 §5.5.2, TS 24.501
+# §4.4.4.1 — which enumerates the only four cases where 5G-IA0 is permitted, none
+# of them an ordinary subscriber).
+#
+# REG-435. The pass_criterion is a DISJUNCTION with a carve-out: either the
+# registration is rejected or released, OR a SECURITY MODE COMMAND arrives
+# selecting a NON-NULL integrity algorithm — and an SMC selecting 5G-IA0 is
+# explicitly a failure. This flow was purely event-level until 2026-08-12: every
+# transition was a bare `{event, target}` with no actions, so the row reached its
+# expected terminal `rejected` on ANY downlink and asserted NOTHING on the way.
+# The carve-out — the entire security content of the row — was unexpressed, and
+# the defect scored green. An AUTHENTICATION REQUEST is not that decision:
+# tinycore selects algorithms only after AuthResponse, in deriveKamfAndAlgKeys,
+# and a null-only UE fails the cipher intersection (NEA0 is not in the default
+# order) with REGISTRATION REJECT cause #23. Stopping on the challenge pinned
+# `rejected` for a message the criterion does not name, and those branches
+# carried no checks, so checks_total stayed 0.
+kind: flow
+name: smc_null_integrity_rejected_nonemergency
+description: Register with null-only UE security capabilities; assert AMF reaction (YAML)
+category: negative
+type: client
+protocol: ngap
+nf: gnb
+initial_state: idle
+final_states: [rejected, tolerated, failed]
+states:
+  idle:
+    transitions:
+      - event: Start
+        target: wait_reaction
+        actions:
+          - type: send
+            message: InitialUEMessage
+            params: { null_security_caps: true }
+  wait_reaction:
+    on_timeout: { duration: 12s, target: tolerated }
+    transitions:
+      # THE BRANCH THE ROW EXISTS FOR. Until 2026-08-12 this transition carried
+      # NO actions, so a SECURITY MODE COMMAND selecting 5G-IA0 — the precise
+      # P0 defect named in the pass_criterion ("A SECURITY MODE COMMAND
+      # selecting 5G-IA0 for this non-emergency UE is a failure") — landed on
+      # `rejected`, which IS this row's expected_terminal. The row scored a
+      # clean PASS on the security hole it was written to catch.
+      #
+      # nas5g's NAS_IntegrityAlgorithm is the wire nibble PLUS ONE
+      # (enrichers_amf.go: `NAS_IntegrityAlgorithm(SecCtx.IntegrityAlg + 1)`):
+      # 0 = IA_NONE, the decoder's "IE absent" sentinel; 1 = 5G-IA0, the null
+      # algorithm; 2/3/4 = 128-NIA1/2/3. `greater_or_equal 2` is therefore
+      # exactly "a NON-NULL integrity algorithm was selected", and it fails on
+      # both 5G-IA0 and an absent IE. Same operator, same constant, same
+      # reasoning as no_null_integrity_downgrade_on_existing_context.yaml.
+      #
+      # `ie_present` is NOT usable here: the field is a non-pointer scalar with
+      # no `,omitempty`, so the JSON key is always emitted and the op can never
+      # fail. That is the same vacuity trap this file's other half just fixed.
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+      # The criterion's other satisfying leg: "the registration is rejected or
+      # released". A REGISTRATION REJECT carries a mandatory 5GMM cause
+      # (TS 24.501 §8.2.16) and cause 0 is not a defined value, so
+      # `greater_than 0` asserts a real refusal rather than merely a message
+      # arriving. `ie_present` would be vacuous here for the same no-omitempty
+      # reason as above.
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: greater_than, expected: 0 }
+      # Not a decision. Answer the challenge and wait for the reject, the
+      # release, or the SMC. amf_ue_ngap_id not_empty can fail: an
+      # Authentication Request with no UE id is not this registration.
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_decision
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+      # "rejected or released". A UE CONTEXT RELEASE COMMAND is the release
+      # leg. ran_ue_ngap_id not_empty can fail; a release with no RAN UE id
+      # is not an answer to this UE. The complete is the answer §8.3.3
+      # requires — naming the event suppresses Dispatch's default send.
+      - event: UEContextReleaseCommand
+        target: rejected
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+      # ErrorIndication is not named. Dispatch's default sends it to `failed`,
+      # which is not "rejected or released or a non-null SMC".
+  wait_security_decision:
+    on_timeout: { duration: 12s, target: tolerated }
+    transitions:
+      - event: NASDownlinkTransport.SecurityModeCommand
+        target: rejected
+        actions:
+          - { type: check, field: nas.selected_nas_security_algorithms_integrity, op: greater_or_equal, expected: 2 }
+      - event: NASDownlinkTransport.RegistrationReject
+        target: rejected
+        actions:
+          - { type: check, field: nas.gmm_cause, op: greater_than, expected: 0 }
+      - event: NASDownlinkTransport.AuthenticationRequest
+        target: wait_security_decision
+        actions:
+          - { type: check, field: amf_ue_ngap_id, op: not_empty }
+          - { type: send, message: AuthResponse }
+      - event: UEContextReleaseCommand
+        target: rejected
+        actions:
+          - { type: check, field: ran_ue_ngap_id, op: not_empty }
+          - { type: send, message: UEContextReleaseComplete }
+any_state_transitions:
+  - { event: Error, target: failed }
+
+# END-OF-FLOW ASSERTIONS — Runik is the only thing that decides whether this flow
+# ran correctly, so the row's claim is stated here rather than reassembled downstream.
+#
+# THE REGISTER'S CLAIM, VERBATIM: REG-435 (negative, expected_terminal: rejected) —
+# After a REGISTRATION REQUEST advertising only NEA0/NIA0, either the registration is
+# rejected or released, or a SECURITY MODE COMMAND arrives selecting a non-null
+# integrity algorithm. A SECURITY MODE COMMAND selecting 5G-IA0 for this non-emergency
+# UE is a failure.
+#
+# REG-435's pass is "either the registration is rejected or released, or a SECURITY MODE
+# COMMAND arrives selecting a NON-NULL integrity algorithm". `tolerated` is the 12 s
+# timer on either wait, and the pin on `rejected` fails it, so silence is not a pass.
+# Every transition into `rejected` now carries a check that can fail: the integrity
+# nibble on an SMC, `nas.gmm_cause` on a REGISTRATION REJECT, `ran_ue_ngap_id` on a
+# release. The AUTHENTICATION REQUEST is not one of those transitions. `checks_total
+# greater_or_equal 1` remains the floor — the shortest accepting route is a single
+# check (a reject or an SMC before authentication). A retransmission of the challenge
+# runs the id check again, so the floor is not an equality.
+#
+# Counts below are derived from this FSM's own transitions and from the clauses named
+# above; no core was contacted.
+final_checks:
+  - name: the flow reached `rejected` — the terminal this row claims
+    metric: final_state_counts.rejected
+    op: equals
+    value: 1
+  - name: the run asserted something on the messages it saw
+    metric: checks_total
+    op: greater_or_equal
+    value: 1
+  - name: and no assertion failed
+    metric: checks_failed
+    op: equals
+    value: 0
